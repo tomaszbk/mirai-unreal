@@ -43,8 +43,9 @@ engine_missing :: proc(c:^Context,path:string) -> bool {
 
 // The translation of the material at path, or the grid that stands for it
 // when it is of the engine, or reads content of the engine, and no mount
-// holds that; ok is false, with a warning, when there is neither.
-translation_or_grid :: proc(c:^Context,path:string) -> (t:material.Translated_Material,ok:bool) {
+// holds that; ok is false, with a warning, when there is neither. custom:
+// the PerInstanceSMCustomData of the instances it shows.
+translation_or_grid :: proc(c:^Context,path:string,custom:[]f32=nil) -> (t:material.Translated_Material,ok:bool) {
     library_lock(c)
     defer library_unlock(c)
     unmounted :: "of Unreal's engine, which is not mounted (no Unreal installation): the grid of Mirai stands for it"
@@ -57,7 +58,7 @@ translation_or_grid :: proc(c:^Context,path:string) -> (t:material.Translated_Ma
         warn(c,"the material %s is not in its package; its slot keeps the material of its mesh",path)
         return
     }
-    translated,error:=material.translate(c.lib,object,{reads=c.texture_reads[:]},context.temp_allocator)
+    translated,error:=material.translate(c.lib,object,{reads=c.texture_reads[:],custom_data=custom},context.temp_allocator)
     if error.code!=.None {
         if missing:=uasset.engine_missing_named(c.lib,error.message);missing!="" {
             warn(c,"the material %s reads %s %s",path,missing,unmounted)

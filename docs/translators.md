@@ -98,9 +98,11 @@ nivel, en el espacio de una entidad en el origen de la escena.
   ([decisión](decisions.md#follaje-de-unreal-reimportar-conserva-los-ids)). Si el archivo anterior
   no se lee, la importación lo avisa y numera desde 1.
 - Con escalas X e Y distintas una instancia toma su media geométrica (`averaged`); una escala nula,
-  negativa o fuera de rango la descarta (`dropped`). Los floats propios de cada instancia
-  (`PerInstanceSMCustomData`) y un material que el nivel guarda dentro de un actor no tienen lugar
-  en un tipo: se avisan y se muestran los de la malla.
+  negativa o fuera de rango la descarta (`dropped`). Un material que el nivel guarda dentro de un
+  actor se escribe al pedirlo (`instanced_material`), porque ninguna entidad lo toma al terminar el
+  nivel; las instancias de cada juego de floats propios (`PerInstanceSMCustomData`) son un lote
+  que muestra la variante, con esos valores, de los materiales que los leen (el color de las
+  paredes de un blueprint).
 - **Al importar un nivel**, el traductor de `Foliage_Unreal` escribe por escena un `.foliage` de
   `levels/<mapa>/` con su `Import_Info`, con el nombre de la celda de World Partition (`Foliage`
   en la escena del mapa), y una entidad `Foliage` en su origen.

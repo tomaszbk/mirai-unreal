@@ -9,6 +9,7 @@ import importer "mirai:cook/import"
 import uasset "project:plugins/unreal/editor/model"
 import material "project:plugins/unreal/editor/material"
 import material_write "project:plugins/unreal/editor/material/write"
+import unreal_mesh "project:plugins/unreal/editor/mesh"
 import "project:plugins/unreal/editor/level"
 import unreal "project:plugins/unreal/editor/package"
 import "mirai:cook/prefab"
@@ -98,10 +99,7 @@ variants_finish :: proc(c:^Context) {
             use_rows[i]=-1
             t,translated_ok:=translation_or_grid(c,use.path)
             if !translated_ok {continue}
-            if strings.index_byte(use.path,':')>=0 {
-                inner:=strings.trim_prefix(use.path[strings.index_byte(use.path,':')+1:],"PersistentLevel.")
-                t.name,_=strings.replace_all(inner,".","_",context.temp_allocator)
-            }
+            if held_name(use.path)!="" {t.name=held_name(use.path)}
             rows[use.path]=len(translated)
             use_rows[i]=len(translated)
             append(&translated,t)
@@ -120,6 +118,86 @@ variants_finish :: proc(c:^Context) {
             component_set(c,use.entity,"Mesh_Renderer",&shown)
         }
     }
+}
+
+// A material the level keeps inside an actor is named after the objects that
+// hold it; "" for one of a package.
+@(private)
+held_name :: proc(path:string) -> string {
+    colon:=strings.index_byte(path,':')
+    if colon<0 {return ""}
+    name,_:=strings.replace_all(strings.trim_prefix(path[colon+1:],"PersistentLevel."),".","_",context.temp_allocator)
+    return name
+}
+
+// The object path of the material of each slot (by row of the slots of the
+// mesh) that an instanced component draws: the one it overrides, or the mesh's.
+slot_material_paths :: proc(c:^Context,k:int) -> []string {
+    d:=c.d
+    ref:=d.components[k].ref
+    mesh_path:=level.path_of(d,ref,"StaticMesh")
+    m,_:=mesh_import(c,mesh_path)
+    own,seen:=c.slot_paths[mesh_path]
+    if !seen {
+        library_lock(c)
+        if object,found:=material.object_find(c.lib,mesh_path);found {
+            if list,list_error:=material.object_properties(object);list_error.code==.None && list!=nil {
+                own,_=unreal_mesh.static_material_paths(&object.pkg.p,list,context.temp_allocator)
+            }
+        }
+        library_unlock(c)
+        c.slot_paths[strings.clone(mesh_path,context.temp_allocator)]=own
+    }
+    overrides:=level.paths_of(d,ref,"OverrideMaterials")
+    paths:=make([]string,min(len(m.slot_ids),render.MATERIAL_SLOTS),context.temp_allocator)
+    for &path,row in paths {
+        index:=int(m.slot_ids[row])-1
+        if index>=0 && index<len(overrides) && overrides[index]!="" {path=overrides[index]} else if index>=0 && index<len(own) {path=own[index]}
+    }
+    return paths
+}
+
+// The material a slot of instances shows when its entity-less instances
+// cannot take it at the end of the level, written now: one the level keeps
+// inside an actor, and the variant of a material that reads the custom
+// data of the instances (custom, their PerInstanceSMCustomData) for those
+// values. ok is false for any other: the slot shows what mesh_renderer gave it.
+instanced_material :: proc(c:^Context,path:string,custom:[]f32) -> (id:base.Asset_Id,ok:bool) {
+    if path=="" {return}
+    custom:=custom
+    if len(custom)>0 && !custom_reads(c,path) {custom=nil}
+    name:=held_name(path)
+    held:=name!="" || engine_missing(c,path)
+    if !held && len(custom)==0 {return}
+    hash:=base.name_hash(path)
+    for value in custom {hash=base.hash_combine(hash,u64(transmute(u32)value))}
+    key:=fmt.tprintf("%s|%x",path,hash)
+    if found,seen:=c.materials[key];seen {return found,found!={}}
+    defer c.materials[key]=id
+    package_name,_:=object_split(path)
+    file:=package_file(c,package_name)
+    if file=="" && engine_missing(c,path) {file=c.source}
+    if file=="" {return}
+    t:=translation_or_grid(c,path,custom) or_return
+    defer material.translated_destroy(&t)
+    if name!="" {t.name=name}
+    if len(custom)>0 {t.name=fmt.tprintf("%s_%08x",t.name,u32(hash))}
+    ids:=materials_write(c,file,{t},strings.has_suffix(file,".umap")?c.folder:"") or_return
+    return ids[0],true
+}
+
+// Whether the material at path reads PerInstanceCustomData: then each set of
+// custom data of the instances shows another variant of it.
+@(private)
+custom_reads :: proc(c:^Context,path:string) -> bool {
+    if reads,seen:=c.custom_reads[path];seen {return reads}
+    reads:=false
+    defer c.custom_reads[strings.clone(path,context.temp_allocator)]=reads
+    if engine_missing(c,path) {return false}
+    t:=translation_or_grid(c,path) or_return
+    defer material.translated_destroy(&t)
+    reads=t.reads_custom_data
+    return reads
 }
 
 // What the entity of a mesh component draws: its mesh, imported once, and the
@@ -452,7 +530,11 @@ materials_write :: proc(c:^Context,file:string,translated:[]material.Translated_
     if folder=="" {folder=project.path(c.assets,"materials",allocator=context.temp_allocator)}
     write_zone:=importer.zone_begin(c.options,"level.materials")
     textures,_:=decoder(c)
-    report,error:=material_write.materials_write(c.lib,translated,file,folder,c.shaders,c.options,c.report.allocator,&c.images,&c.library_lock,textures)
+    // The writes of one package each give their materials indices of their own.
+    options:=c.options
+    options.material_index=c.material_indices[file]
+    c.material_indices[strings.clone(file,context.temp_allocator)]=options.material_index+len(translated)
+    report,error:=material_write.materials_write(c.lib,translated,file,folder,c.shaders,options,c.report.allocator,&c.images,&c.library_lock,textures)
     base.profile_end(write_zone)
     defer images_trim(c)
     if error.code!=.None {

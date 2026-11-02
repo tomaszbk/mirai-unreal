@@ -199,7 +199,10 @@ Context :: struct {
     meshes:map[string]Mesh_Import,     // by object path
     bodies:map[string]Mesh_Body,       // by object path
     clips:map[string]Clip_Import,      // by object path
-    materials:map[string]base.Asset_Id, // by object path
+    materials:map[string]base.Asset_Id, // by object path; a variant (instanced_material) by its name
+    slot_paths:map[string][]string,     // the materials of the slots of each mesh, by Unreal's index
+    custom_reads:map[string]bool,       // whether a material reads PerInstanceCustomData, by object path
+    material_indices:map[string]int,    // the index of the next material written of each package, by file
     variant_uses:[dynamic]Variant_Use,  // the slots whose material is written at the end of the level
     held:[dynamic]Held_Slot,            // of the component being translated: its slots that name a material the level keeps
     texts:map[u64]base.Asset_Id,        // the .ui of each text, by its text, size, color and alignment
@@ -306,7 +309,8 @@ document_import :: proc(d:^level.Document,source:string,size,hash:u64,options:im
     defer asset.types_destroy(&types)
     c:=Context{d=d,lib=&materials,types=&types,options=options,report=&report}
     c.meshes.allocator,c.materials.allocator,c.layers.allocator,c.left.allocator=scratch,scratch,scratch,scratch
-    c.clips.allocator,c.bodies.allocator=scratch,scratch
+    c.clips.allocator,c.bodies.allocator,c.slot_paths.allocator,c.custom_reads.allocator=scratch,scratch,scratch,scratch
+    c.material_indices.allocator=scratch
     c.variant_uses.allocator,c.texts.allocator,c.held.allocator=scratch,scratch,scratch
     c.translators=translators
     c.texture_reads.allocator=scratch

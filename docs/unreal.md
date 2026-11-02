@@ -641,7 +641,9 @@ las mallas importadas y el tiempo.
   construction script) se traduce de su `.umap`, se nombra por los objetos que lo contienen y va a
   `levels/<mapa>/`, junto con los demás del nivel en una sola importación al terminarlo, después
   de los traductores: lee por UV las texturas que ellos agregaron (`texture_read_add`, el render
-  target que un componente de Niagara da a su sistema).
+  target que un componente de Niagara da a su sistema). Las escrituras de un mismo paquete en una
+  importación numeran sus materiales a continuación de las anteriores (`material_index`): el
+  importador empareja por índice un material que no reconoce por nombre.
   Los componentes instanciados (`InstancedStaticMeshComponent`, el jerárquico y el de follaje, y
   los que hornean PCG y los packed level actors) nunca son una entidad por instancia: los toma el
   traductor con `instanced` de su escena, el de `foliage`, como lotes de follaje

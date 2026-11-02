@@ -384,13 +384,16 @@ previous_keep :: proc(c:^unreal_scene.Context,s:^foliage.Source,name,path:string
 // The batches of the instanced components of the scene (c.instanced): each
 // its mesh and the materials its slots override, the cull distances of its
 // instances, its shadows and rays, and the box of its mesh when it collides;
-// its instances where they are in the world.
+// its instances where they are in the world. A material the level keeps
+// inside an actor is written now, since no entity takes it at the end of the
+// level, and the instances of each set of custom data (PerInstanceSMCustomData)
+// are a batch that shows the variants of the materials that read it.
 @(private)
 instanced_batches :: proc(c:^unreal_scene.Context) -> []Instanced_Batch {
     d:=c.d
     batches:=make([dynamic]Instanced_Batch,context.temp_allocator)
     boxes:=make(map[string]level.Mesh_Box,context.temp_allocator)
-    unread,held,custom:=0,0,0
+    unread,held:=0,0
     for item in c.instanced {
         a,k:=item.actor,item.component
         ref:=d.components[k].ref
@@ -399,14 +402,17 @@ instanced_batches :: proc(c:^unreal_scene.Context) -> []Instanced_Batch {
         shown,ok:=unreal_scene.mesh_renderer(c,a,k,false)
         unreal_scene.zone_end(renderer_zone)
         if !ok {unread+=1;continue}
-        if len(c.held)>0 {held+=1}
+        missing:=false
+        for h in c.held {
+            if id,found:=unreal_scene.instanced_material(c,h.path,nil);found {shown.materials[h.row]=id} else {missing=true}
+        }
+        if missing {held+=1}
         instances_zone:=unreal_scene.zone_begin(c,"foliage.instances")
         world,world_error:=level.component_world(d,k)
         instances,instances_error:=level.component_instances(d,k,context.temp_allocator)
         unreal_scene.zone_end(instances_zone)
         if world_error.code!=.None || instances_error.code!=.None {unread+=1;continue}
         if len(instances.matrices)==0 {continue}
-        if instances.per_instance>0 {custom+=len(instances.matrices)}
         path:=level.path_of(d,ref,"StaticMesh")
         _,object:=unreal_scene.object_split(path)
         t:=Instanced_Type{name=unreal.asset_name(object),mesh=shown.mesh,materials=shown.materials}
@@ -420,16 +426,32 @@ instanced_batches :: proc(c:^unreal_scene.Context) -> []Instanced_Batch {
         }
         place_zone:=unreal_scene.zone_begin(c,"foliage.place")
         defer unreal_scene.zone_end(place_zone)
-        placed:=make([dynamic]mm.Transform,0,len(instances.matrices),context.temp_allocator)
-        for m in instances.matrices {
+        paths:=instances.per_instance>0?unreal_scene.slot_material_paths(c,k):nil
+        types:=make([dynamic]Instanced_Type,context.temp_allocator)
+        placed:=make([dynamic][dynamic]mm.Transform,context.temp_allocator)
+        sets:=make(map[u64]int,context.temp_allocator) // the batch of each set of custom data
+        for m,i in instances.matrices {
             local,local_error:=level.matrix_to_mirai(m)
             if local_error.code!=.None {unread+=1;continue}
-            append(&placed,mm.transform_compose(world,local))
+            custom:=level.instance_custom(instances,i)
+            key:=u64(0)
+            for value in custom {key=base.hash_combine(key,u64(transmute(u32)value))}
+            at,seen:=sets[key]
+            if !seen {
+                variant:=t
+                for material_path,row in paths {
+                    if id,found:=unreal_scene.instanced_material(c,material_path,custom);found {variant.materials[row]=id}
+                }
+                at=len(types)
+                sets[key]=at
+                append(&types,variant)
+                append(&placed,make([dynamic]mm.Transform,context.temp_allocator))
+            }
+            append(&placed[at],mm.transform_compose(world,local))
         }
-        append(&batches,Instanced_Batch{type=t,instances=placed[:]})
+        for variant,i in types {append(&batches,Instanced_Batch{type=variant,instances=placed[i][:]})}
     }
     unreal_scene.tally(c,"instanced components or instances could not be read and are left out",unread)
-    unreal_scene.tally(c,"instanced components name a material the level keeps inside an actor: their foliage shows the material of the mesh",held)
-    unreal_scene.tally(c,"instances give their materials custom data (PerInstanceSMCustomData), which foliage does not carry: they show the defaults of their materials",custom)
+    unreal_scene.tally(c,"instanced components name a material the level keeps inside an actor that could not be written: their foliage shows the material of the mesh",held)
     return batches[:]
 }

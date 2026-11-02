@@ -759,3 +759,122 @@ the_basic_shapes_and_materials_of_an_unmounted_engine_are_primitives_with_the_gr
     testing.expect(t,has_warning(&report,"/Engine/BasicShapes/Cube.Cube","not mounted","Cube"),"the substitute names the shape it stands for")
     testing.expect(t,has_warning(&report,"/Engine/EngineMaterials/M_Paint.M_Paint","grid of Mirai"),"and the material")
 }
+
+// M_Tint: the base color of the custom data of an instance, gray without it.
+@(private="file")
+tint_package :: proc() -> []u8 {
+    p:=fx.package_make()
+    tint:=fx.export(&p,fx.class(&p,"/Script/Engine","Material"),0,"M_Tint",nil)
+    data:=fx.writer(&p)
+    fx.color_put(&data,"ConstDefaultValue",{0.5,0.5,0.5,1})
+    custom:=fx.export(&p,fx.class(&p,"/Script/Engine","MaterialExpressionPerInstanceCustomData3Vector"),tint,"Custom",fx.finish(&data))
+    w:=fx.writer(&p)
+    fx.input_put(&w,"BaseColor","ColorMaterialInput",{expression=custom,mask={true,true,true,false}})
+    p.exports[0].data=fx.finish(&w)
+    return fx.package_bytes(&p,"/Game/Materials/M_Tint")
+}
+
+// A map with an actor of two instanced components of the quad: Plain, with
+// one instance and over its slot a MaterialInstanceDynamic of M_Tint the
+// actor keeps, and Tinted, M_Tint with the custom data of its three
+// instances, red, red and blue.
+@(private="file")
+instanced_map :: proc() -> []u8 {
+    l:=fixture.level_begin("/Game/Maps/Tiles")
+    w:=&l.w
+    mesh:=fixture.package_object(w,"/Game/Meshes/SM_Fixture","/Script/Engine","StaticMesh","SM_Fixture")
+    tint:=fixture.package_object(w,"/Game/Materials/M_Tint","/Script/Engine","Material","M_Tint")
+    actor:=fixture.actor_add(&l,fixture.engine_class(w,"Actor"),"Actor_0","Tiles")
+    dynamic_props:=fixture.bytes_make()
+    fixture.object_property(&dynamic_props,w,"Parent",tint)
+    fixture.none(&dynamic_props,w)
+    fixture.put_u32(&dynamic_props,0)
+    held:=fixture.export_add(w,{class=fixture.engine_class(w,"MaterialInstanceDynamic"),outer=actor,name="MID_M_Tint",data=dynamic_props.data[:]})
+    component :: proc(l:^fixture.Level_Writer,actor,mesh,material:i32,name:string,count:int,colors:[][3]f32) -> i32 {
+        w:=&l.w
+        props:=fixture.bytes_make()
+        fixture.object_property(&props,w,"StaticMesh",mesh)
+        fixture.objects_property(&props,w,"OverrideMaterials",{material})
+        fixture.none(&props,w)
+        fixture.put_u32(&props,0)
+        fixture.put_u32(&props,64);fixture.put_u32(&props,u32(count))
+        for i in 0..<count {
+            for row in ([4][4]f32{{1,0,0,0},{0,1,0,0},{0,0,1,0},{f32(i)*100,0,0,1}}) {for v in row {fixture.put_f32(&props,v)}}
+        }
+        fixture.put_u32(&props,4);fixture.put_u32(&props,u32(len(colors)*3))
+        for color in colors {for v in color {fixture.put_f32(&props,v)}}
+        return fixture.export_add(w,{class=fixture.engine_class(w,"InstancedStaticMeshComponent"),outer=actor,name=name,data=props.data[:]})
+    }
+    root:=component(&l,actor,mesh,held,"Plain",1,{})
+    component(&l,actor,mesh,tint,"Tinted",3,{{1,0,0},{1,0,0},{0,0,1}})
+    fixture.actor_set(&l,actor,root)
+    return fixture.level_bytes(&l)
+}
+
+// A translator of instanced components that marks, for each instance, the
+// material instanced_material gives the first slot: an entity named after
+// the component and the instance, which shows it.
+@(private="file")
+instanced_mark :: proc(c:^Context,actors:[]int) -> int {
+    for item in c.instanced {
+        instances,error:=level.component_instances(c.d,item.component,context.temp_allocator)
+        if error.code!=.None {continue}
+        paths:=slot_material_paths(c,item.component)
+        if len(paths)==0 {continue}
+        for _,i in instances.matrices {
+            name:=fmt.tprintf("%s %d",c.d.components[item.component].name,i)
+            e,made:=entity_make(c,0,fmt.tprintf("%s|mark",name),name,{{},1,{1,1,1}})
+            if !made {continue}
+            shown:render.Mesh_Renderer
+            shown.materials[0],_=instanced_material(c,paths[0],level.instance_custom(instances,i))
+            component_set(c,e,"Mesh_Renderer",&shown)
+        }
+    }
+    return len(actors)
+}
+
+// The material of an instanced component the level keeps inside an actor is
+// written for it, and a material that reads the custom data of the instances
+// has a variant for each set of it, with its values.
+@(test)
+instanced_components_show_the_materials_the_level_keeps_and_the_variants_of_their_custom_data :: proc(t:^testing.T) {
+    f:=folders_make("instanced")
+    defer folders_remove(f)
+    _=os.write_entire_file(fmt.tprintf("%s/Content/Materials/M_Tint.uasset",f.unreal),tint_package())
+    path:=fmt.tprintf("%s/Content/Maps/Tiles.umap",f.unreal)
+    _=os.write_entire_file(path,instanced_map())
+    translators:=[]Translator{{classes={0="InstancedFoliageActor"},translate=instanced_mark,instanced=true}}
+    report,error:=level_import(path,{root=f.mirai},translators,"-")
+    if !testing.expectf(t,error.code==.None,"%v: %s",error.code,error.message) {return}
+    defer level_report_destroy(&report)
+    types:asset.Types;asset.types_init(&types);defer asset.types_destroy(&types)
+    scene:asset.Scene
+    if !testing.expect_value(t,asset.scene_load(&scene,&types,report.scene_path),asset.Error.None) {return}
+    defer asset.scene_destroy(&scene)
+    materials:=make(map[base.Asset_Id]string,context.temp_allocator)
+    for a in report.imports.assets {if a.kind==asset.KIND_MATERIAL {materials[a.id]=a.path}}
+    shown :: proc(scene:^asset.Scene,name:string) -> base.Asset_Id {
+        e,_,found:=entity_named(scene,name)
+        if !found {return {}}
+        renderer,_:=asset.scene_get(scene,e,"Mesh_Renderer",render.Mesh_Renderer)
+        return renderer.materials[0]
+    }
+    color :: proc(types:^asset.Types,materials:map[base.Asset_Id]string,id:base.Asset_Id) -> (base_color:[3]f32,ok:bool) {
+        path:=materials[id] or_return
+        file:asset.Asset
+        if asset.asset_load(&file,path,context.temp_allocator)!=.None {return}
+        defer asset.asset_close(&file)
+        view,view_error:=asset.material_view(&file,types)
+        return view.info.base_color,view_error==.None
+    }
+    held:=shown(&scene,"Plain 0")
+    testing.expectf(t,held!={} && strings.contains(materials[held],"/levels/Tiles/") && strings.contains(materials[held],"MID_M_Tint"),"the instance dynamic the actor keeps goes with the map, named after it: %s",materials[held])
+    gray,_:=color(&types,materials,held)
+    testing.expectf(t,close3(gray,{0.5,0.5,0.5}),"the instance without custom data shows the default: %v",gray)
+    red,blue:=shown(&scene,"Tinted 0"),shown(&scene,"Tinted 2")
+    testing.expect(t,red!={} && red==shown(&scene,"Tinted 1"),"instances with the same custom data share a variant")
+    testing.expect(t,blue!={} && blue!=red,"other custom data, another variant")
+    red_color,_:=color(&types,materials,red)
+    blue_color,_:=color(&types,materials,blue)
+    testing.expectf(t,close3(red_color,{1,0,0}) && close3(blue_color,{0,0,1}),"each variant the color of its data: %v %v",red_color,blue_color)
+}
