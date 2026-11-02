@@ -198,6 +198,9 @@ line_emit :: proc(m:^Emitter,n:u32,indent:string) {
     case .Pixel_Depth:code="ctx.depth*100.0"
     case .Scene_Depth:code="ctx.scene_depth*100.0"
     case .Particle_Data:code=fmt.tprintf("(((ctx.particle_given>>%du)&1u)!=0u?ctx.particle_data[%d]:%s)",node.index,node.index,literal(node.value,4))
+    case .Particle_Random:code="ctx.particle_random"
+    // Unreal keeps it above a thousandth of a centimetre.
+    case .Particle_Radius:code="max(ctx.particle_radius*100.0,0.001)"
     case .Texture_Size:code=fmt.tprintf("mirai_texture_size(%s)",operand(m,a))
     case .Texture_Read:
         read:=m.g.textures[node.index].read

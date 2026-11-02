@@ -732,6 +732,8 @@ niagara_render_write :: proc(w:^Niagara_Writer,s:^strings.Builder) {
     for name,i in NIAGARA_DYNAMIC_PARAMETERS {
         if has(w,name,"float4") {fmt.sbprintf(s,"    visual.data[%d] = %s;\n    visual.given |= %du;\n",i,niagara_attr_get("a",name,"float4"),u32(1)<<uint(i))}
     }
+    // Unreal's renderers give the material 0 for random where the emitter keeps no MaterialRandom.
+    strings.write_string(s,has(w,"MaterialRandom","float")?"    visual.random = a.MaterialRandom;\n":"    visual.random = 0.0;\n")
     strings.write_string(s,"}\n")
 }
 

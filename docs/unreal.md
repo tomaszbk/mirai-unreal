@@ -410,6 +410,8 @@ nombra). Todo vive en el arena de la biblioteca.
 - **Partículas.** `DynamicParameter` (de índice `ParameterIndex`) lee lo que da la partícula del
   sprite que dibuja el punto (`ctx.particle_data`), y su `DefaultValue` donde no lo da, como
   `GetDynamicParameter` de Unreal; el puente `unreal_vfx` lo pasa desde los atributos de Niagara.
+  `ParticleRandom` es el valor al azar de la partícula (`ctx.particle_random`) y `ParticleRadius`
+  la mitad de su sprite (`ctx.particle_radius`).
   `ParticleColor` es blanco: el sprite multiplica lo que da el material por el color de su
   partícula.
 - **Programa.** Si una salida no cabe, el material entero es un programa Surface escrito de la

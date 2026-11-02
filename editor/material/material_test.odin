@@ -988,7 +988,8 @@ translate_one :: proc(t:^testing.T,lib:^Library,path:string) -> (translated:Tran
 
 // Where the point is in the image and how deep, the opaque scene behind it,
 // the size of the box around the object and the data a particle gives (its
-// Dynamic Parameter, or the default where it gives none) are seen by a program.
+// Dynamic Parameter, or the default where it gives none), its random value and
+// its radius are seen by a program.
 @(test)
 the_screen_the_depth_and_the_bounds_are_seen_by_a_program :: proc(t:^testing.T) {
     b:=material_begin("M_Screen")
@@ -1005,6 +1006,10 @@ the_screen_the_depth_and_the_bounds_are_seen_by_a_program :: proc(t:^testing.T) 
     fx.int_put(&w,"ParameterIndex",2)
     fx.color_put(&w,"DefaultValue",{0.25,0.5,0.75,1})
     particle:=expression(&b,"DynamicParameter","Particle",&w)
+    w=fx.writer(&b.p)
+    random:=expression(&b,"ParticleRandom","Random",&w)
+    w=fx.writer(&b.p)
+    radius:=expression(&b,"ParticleRadius","Radius",&w)
     m:=fx.writer(&b.p)
     fx.enum_put(&m,"BlendMode","EBlendMode","BLEND_Translucent")
     fx.input_put(&m,"Metallic","ScalarMaterialInput",{expression=particle,output=1})
@@ -1012,6 +1017,8 @@ the_screen_the_depth_and_the_bounds_are_seen_by_a_program :: proc(t:^testing.T) 
     fx.input_put(&m,"EmissiveColor","ColorMaterialInput",{expression=screen,output=1})
     fx.input_put(&m,"Opacity","ScalarMaterialInput",{expression=fade})
     fx.input_put(&m,"Roughness","ScalarMaterialInput",{expression=depth})
+    fx.input_put(&m,"Specular","ScalarMaterialInput",{expression=random})
+    fx.input_put(&m,"AmbientOcclusion","ScalarMaterialInput",{expression=radius})
     b.p.exports[0].data=fx.finish(&m)
     lib:Library
     library_with(&lib,{"/Game/M/M_Screen",fx.package_bytes(&b.p,"/Game/M/M_Screen")})
@@ -1022,7 +1029,7 @@ the_screen_the_depth_and_the_bounds_are_seen_by_a_program :: proc(t:^testing.T) 
     testing.expect_value(t,len(translated.untranslated),0)
     if !testing.expect(t,!translated_is_standard(&translated)) {return}
     source:=translated.program.source
-    for code in ([]string{"ctx.screen","ctx.screen_size","ctx.depth*100.0","ctx.scene_depth*100.0","unreal_object_bounds(ctx,1)","unreal_object_axis(ctx,2)","((ctx.particle_given>>2u)&1u)!=0u?ctx.particle_data[2]:float4(0.25,0.5,0.75,1"}) {
+    for code in ([]string{"ctx.screen","ctx.screen_size","ctx.depth*100.0","ctx.scene_depth*100.0","unreal_object_bounds(ctx,1)","unreal_object_axis(ctx,2)","((ctx.particle_given>>2u)&1u)!=0u?ctx.particle_data[2]:float4(0.25,0.5,0.75,1","ctx.particle_random","ctx.particle_radius*100.0"}) {
         testing.expectf(t,strings.contains(source,code),"the program reads %s",code)
     }
 }

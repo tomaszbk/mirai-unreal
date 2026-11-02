@@ -181,7 +181,8 @@ que usa `shaders/unreal_noise.slang`.
   `Unlit`, `lit`); lo que Mirai no tiene (módulos, renderers, luces aproximadas) es un aviso del
   emisor. Los `DynamicMaterialParameter` (y `1` a `3`) que guardan las partículas de un emisor
   compilado son los datos que `render` da al material de sus sprites, el índice de cada uno el
-  del `DynamicParameter` que los lee.
+  del `DynamicParameter` que los lee; su `MaterialRandom` es el valor al azar que lee
+  `ParticleRandom`, 0 si el emisor no lo guarda, como en Unreal.
 - Un data interface de malla (`StaticMesh`, `SkeletalMesh`) que el componente apunta a un actor
   del nivel (`SoftSourceActor`, también el de un parámetro `User.`) es la superficie de la entidad
   de ese actor, por el nombre de su objeto con su número (`Statue_2`): la piel posada de un

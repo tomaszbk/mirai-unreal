@@ -691,6 +691,10 @@ expression_build :: proc(e:^Evaluator,o:Object,output:i32,scope:i32) -> Value {
         case 4:return nodes(swizzle(g,data,{0,1,2,0},3))
         }
         return nodes(data)
+    // The random value of the particle, as its program gives it (Mirai_Vfx_Visual.random),
+    // and its radius: half the narrower side of its sprite.
+    case "ParticleRandom":return nodes(context_value(g,.Particle_Random,1))
+    case "ParticleRadius":return nodes(context_value(g,.Particle_Radius,1))
     case "ParticleSubUV","ParticlePositionWS","ParticleRelativeTime":
         return untranslated(e,o,"particle values belong to .particle programs")
     case "Custom":return custom_expression(e,o,output,scope)

@@ -194,10 +194,11 @@ niagara_decompiled_scripts_make_a_program :: proc(t:^testing.T) {
     w.spawns=make([dynamic]string,context.temp_allocator)
     w.kept=make([dynamic]Niagara_Kept,context.temp_allocator)
     src.parts=niagara_parts(&w,src)
-    // A particle that keeps its second Dynamic Parameter gives it to its material.
+    // A particle that keeps its second Dynamic Parameter and its random value gives them to its material.
     attributes:=make([dynamic]Hlsl_Field,context.temp_allocator)
     append(&attributes,..niagara_attributes(src.parts))
     append(&attributes,Hlsl_Field{"float4","DynamicMaterialParameter1"})
+    append(&attributes,Hlsl_Field{"float","MaterialRandom"})
     src.attributes=attributes[:]
     testing.expect(t,len(src.parts)==2 && src.parts[0].entry=="SimulateMapSpawn" && src.parts[1].entry=="Simulate")
     testing.expect(t,niagara_program(&w,src))
@@ -212,6 +213,7 @@ niagara_decompiled_scripts_make_a_program :: proc(t:^testing.T) {
         "    a.Age = Context.Map.Particles.Age;",
         "    visual.data[1] = float4(a.DynamicMaterialParameter1__0, a.DynamicMaterialParameter1__1, a.DynamicMaterialParameter1__2, a.DynamicMaterialParameter1__3);",
         "    visual.given |= 2u;",
+        "    visual.random = a.MaterialRandom;",
     }) {
         testing.expectf(t,strings.contains(program,line),"the program has %q:\n%s",line,program)
     }
