@@ -407,6 +407,11 @@ nombra). Todo vive en el arena de la biblioteca.
   (`Multiply_Base_Color`), porque ese modelo los multiplica siempre; un programa los lee como dato
   (`ctx.vertex_color`) con su base color entero (`Program`); `Unused` dice que una malla los puede
   descartar.
+- **Partículas.** `DynamicParameter` (de índice `ParameterIndex`) lee lo que da la partícula del
+  sprite que dibuja el punto (`ctx.particle_data`), y su `DefaultValue` donde no lo da, como
+  `GetDynamicParameter` de Unreal; el puente `unreal_vfx` lo pasa desde los atributos de Niagara.
+  `ParticleColor` es blanco: el sprite multiplica lo que da el material por el color de su
+  partícula.
 - **Programa.** Si una salida no cabe, el material entero es un programa Surface escrito de la
   tabla (`slang.odin`): texturas y parámetros de Unreal son sus parámetros (los que pasan del límite
   quedan constantes), posición y normales pasan a centímetros y Z arriba, las normal maps se

@@ -183,10 +183,11 @@ particles_place :: proc(c:^unreal_scene.Context,a,k:int,niagara:bool,e:base.Enti
         }
         for binding in written.bindings[i] {
             if binding.level {
-                // The actor of the level the component names, by the name of its object.
+                // The actor of the level the component names, by the name of its object
+                // with its number (Statue_2).
                 named:=niagara_mesh_actor(d,ref)
                 for actor,other in d.actors {
-                    if named=="" || sources>=len(bound.sources) || object_name(d,actor.ref)!=named {continue}
+                    if named=="" || sources>=len(bound.sources) || object_numbered_name(d,actor.ref)!=named {continue}
                     if entity,placed:=unreal_scene.actor_entity(c,other);placed {
                         base.text_set(bound.sources[sources].resource[:],binding.resource)
                         bound.sources[sources].entity=core.Entity(entity)
@@ -304,6 +305,14 @@ object_name :: proc(d:^level.Document,ref:level.Ref) -> string {
     p:=level.library_package(d.library,int(ref.pkg))
     name,ok:=unreal.reference_name(p,ref.object)
     return unreal.name_plain(p,name) if ok else ""
+}
+
+// The name of the object as its paths say it: with the number of its name.
+@(private)
+object_numbered_name :: proc(d:^level.Document,ref:level.Ref) -> string {
+    p:=level.library_package(d.library,int(ref.pkg))
+    name,ok:=unreal.reference_name(p,ref.object)
+    return unreal.name_text(p,name,context.temp_allocator) if ok else ""
 }
 
 // The fields of a struct property of ref, older tagged layouts too.

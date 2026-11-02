@@ -29,10 +29,11 @@ Op :: enum u8 {
     // of a terrain, by the order of its layers. Screen_Position: the point in
     // the image of the view, 0 to 1; Screen_Size: that image in pixels;
     // Pixel_Depth: the distance of the point along the view; Scene_Depth:
-    // that of the opaque surface behind it.
+    // that of the opaque surface behind it. Particle_Data: the data index
+    // the particle that draws the point gives, or value where it gives none.
     UV,Vertex_Color,Time,World_Position,Origin,Object_Position,Object_Radius,Actor_Position,Object_Axis,Object_Bounds,Layer_Weights,
     Vertex_Normal,Vertex_Tangent,Vertex_Bitangent,Pixel_Normal,
-    Camera_Vector,Camera_Position,Screen_Position,Screen_Size,Per_Instance_Random,Two_Sided_Sign,Pixel_Depth,Scene_Depth,
+    Camera_Vector,Camera_Position,Screen_Position,Screen_Size,Per_Instance_Random,Two_Sided_Sign,Pixel_Depth,Scene_Depth,Particle_Data,
     // Unreal's Fresnel node, whose value at normal incidence (value) it reads
     // as: Mirai's BSDF has the Fresnel of the surface already.
     Fresnel,
@@ -61,7 +62,7 @@ Op :: enum u8 {
 }
 
 UNARY :: bit_set[Op]{.Abs,.Floor,.Ceil,.Frac,.Round,.Trunc,.Sqrt,.Sin,.Cos,.Tan,.Asin,.Acos,.Atan,.Exp,.Exp2,.Log,.Log2,.Saturate,.Sign,.Length,.Normalize}
-CONTEXT :: bit_set[Op]{.UV,.Vertex_Color,.Time,.World_Position,.Origin,.Object_Position,.Object_Radius,.Actor_Position,.Object_Axis,.Object_Bounds,.Layer_Weights,.Vertex_Normal,.Vertex_Tangent,.Vertex_Bitangent,.Pixel_Normal,.Camera_Vector,.Camera_Position,.Screen_Position,.Screen_Size,.Per_Instance_Random,.Two_Sided_Sign,.Pixel_Depth,.Scene_Depth}
+CONTEXT :: bit_set[Op]{.UV,.Vertex_Color,.Time,.World_Position,.Origin,.Object_Position,.Object_Radius,.Actor_Position,.Object_Axis,.Object_Bounds,.Layer_Weights,.Vertex_Normal,.Vertex_Tangent,.Vertex_Bitangent,.Pixel_Normal,.Camera_Vector,.Camera_Position,.Screen_Position,.Screen_Size,.Per_Instance_Random,.Two_Sided_Sign,.Pixel_Depth,.Scene_Depth,.Particle_Data}
 // What the CPU does not evaluate: the context and what only a program computes.
 PROGRAM :: CONTEXT+{.Texture_Size,.Noise,.Vector_Noise,.Custom,.Custom_Output,.Arguments,.Texture_Read}
 // What makes a node vary over the surface: its context and the textures it reads.

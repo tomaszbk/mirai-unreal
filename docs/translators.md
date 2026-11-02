@@ -179,7 +179,13 @@ que usa `shaders/unreal_noise.slang`.
   razón.
 - El material del emisor es la traducción del de Unreal (su `BlendMode` da `blend` y el modelo
   `Unlit`, `lit`); lo que Mirai no tiene (módulos, renderers, luces aproximadas) es un aviso del
-  emisor.
+  emisor. Los `DynamicMaterialParameter` (y `1` a `3`) que guardan las partículas de un emisor
+  compilado son los datos que `render` da al material de sus sprites, el índice de cada uno el
+  del `DynamicParameter` que los lee.
+- Un data interface de malla (`StaticMesh`, `SkeletalMesh`) que el componente apunta a un actor
+  del nivel (`SoftSourceActor`, también el de un parámetro `User.`) es la superficie de la entidad
+  de ese actor, por el nombre de su objeto con su número (`Statue_2`): la piel posada de un
+  esqueleto que su `Animation` mueve.
 - Las luces de partículas hacen sombra si las de Unreal la hacen: en Cascade, las de alta calidad
   con `bShadowCastingLights`; en Niagara, las que toma MegaLights con `bMegaLightsCastShadows`.
 - **Niagara compilado.** Un emisor cuyos scripts guardan el HLSL que generó Niagara es un

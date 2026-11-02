@@ -156,8 +156,9 @@ niagara_bytecode_it_cannot_read_is_refused :: proc(t:^testing.T) {
 
 // The decompiled scripts of a CPU emitter become a program like the HLSL of
 // an older save: the particle loads and stores its attributes, spawn starts
-// them, update moves them and kills them. The program is written to
-// .mirai/tmp/vfx-vm-test for `mirai shaders check`.
+// them, update moves them and kills them, and render gives the material its
+// Dynamic Parameters. The program is written to .mirai/tmp/vfx-vm-test for
+// `mirai shaders check`.
 @(test)
 niagara_decompiled_scripts_make_a_program :: proc(t:^testing.T) {
     update:=update_fixture(false)
@@ -193,7 +194,11 @@ niagara_decompiled_scripts_make_a_program :: proc(t:^testing.T) {
     w.spawns=make([dynamic]string,context.temp_allocator)
     w.kept=make([dynamic]Niagara_Kept,context.temp_allocator)
     src.parts=niagara_parts(&w,src)
-    src.attributes=niagara_attributes(src.parts)
+    // A particle that keeps its second Dynamic Parameter gives it to its material.
+    attributes:=make([dynamic]Hlsl_Field,context.temp_allocator)
+    append(&attributes,..niagara_attributes(src.parts))
+    append(&attributes,Hlsl_Field{"float4","DynamicMaterialParameter1"})
+    src.attributes=attributes[:]
     testing.expect(t,len(src.parts)==2 && src.parts[0].entry=="SimulateMapSpawn" && src.parts[1].entry=="Simulate")
     testing.expect(t,niagara_program(&w,src))
     program:=strings.to_string(w.out)
@@ -205,6 +210,8 @@ niagara_decompiled_scripts_make_a_program :: proc(t:^testing.T) {
         "    p1::Simulate(Context);",
         "    if (!Context.Map.DataInstance.Alive) particle.age = 1.0;",
         "    a.Age = Context.Map.Particles.Age;",
+        "    visual.data[1] = float4(a.DynamicMaterialParameter1__0, a.DynamicMaterialParameter1__1, a.DynamicMaterialParameter1__2, a.DynamicMaterialParameter1__3);",
+        "    visual.given |= 2u;",
     }) {
         testing.expectf(t,strings.contains(program,line),"the program has %q:\n%s",line,program)
     }

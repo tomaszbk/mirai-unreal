@@ -986,8 +986,9 @@ translate_one :: proc(t:^testing.T,lib:^Library,path:string) -> (translated:Tran
     return translated,testing.expect_value(t,error.code,Error_Code.None)
 }
 
-// Where the point is in the image and how deep, the opaque scene behind it
-// and the size of the box around the object are seen by a program.
+// Where the point is in the image and how deep, the opaque scene behind it,
+// the size of the box around the object and the data a particle gives (its
+// Dynamic Parameter, or the default where it gives none) are seen by a program.
 @(test)
 the_screen_the_depth_and_the_bounds_are_seen_by_a_program :: proc(t:^testing.T) {
     b:=material_begin("M_Screen")
@@ -1000,8 +1001,13 @@ the_screen_the_depth_and_the_bounds_are_seen_by_a_program :: proc(t:^testing.T) 
     fade:=expression(&b,"DepthFade","Fade",&w)
     w=fx.writer(&b.p)
     bounds:=expression(&b,"ObjectBounds","Bounds",&w)
+    w=fx.writer(&b.p)
+    fx.int_put(&w,"ParameterIndex",2)
+    fx.color_put(&w,"DefaultValue",{0.25,0.5,0.75,1})
+    particle:=expression(&b,"DynamicParameter","Particle",&w)
     m:=fx.writer(&b.p)
     fx.enum_put(&m,"BlendMode","EBlendMode","BLEND_Translucent")
+    fx.input_put(&m,"Metallic","ScalarMaterialInput",{expression=particle,output=1})
     fx.input_put(&m,"BaseColor","ColorMaterialInput",{expression=bounds})
     fx.input_put(&m,"EmissiveColor","ColorMaterialInput",{expression=screen,output=1})
     fx.input_put(&m,"Opacity","ScalarMaterialInput",{expression=fade})
@@ -1016,7 +1022,7 @@ the_screen_the_depth_and_the_bounds_are_seen_by_a_program :: proc(t:^testing.T) 
     testing.expect_value(t,len(translated.untranslated),0)
     if !testing.expect(t,!translated_is_standard(&translated)) {return}
     source:=translated.program.source
-    for code in ([]string{"ctx.screen","ctx.screen_size","ctx.depth*100.0","ctx.scene_depth*100.0","unreal_object_bounds(ctx,1)","unreal_object_axis(ctx,2)"}) {
+    for code in ([]string{"ctx.screen","ctx.screen_size","ctx.depth*100.0","ctx.scene_depth*100.0","unreal_object_bounds(ctx,1)","unreal_object_axis(ctx,2)","((ctx.particle_given>>2u)&1u)!=0u?ctx.particle_data[2]:float4(0.25,0.5,0.75,1"}) {
         testing.expectf(t,strings.contains(source,code),"the program reads %s",code)
     }
 }

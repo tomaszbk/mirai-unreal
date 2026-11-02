@@ -706,8 +706,13 @@ niagara_entries_write :: proc(w:^Niagara_Writer,s:^strings.Builder,parts:[]Niaga
     niagara_render_write(w,s)
 }
 
-// What a particle shows: the color, size and sub image of Niagara's
-// attributes, where the emitter keeps them.
+// The attributes the renderers of Niagara give the Dynamic Parameter of
+// index i of their material.
+@(private)
+NIAGARA_DYNAMIC_PARAMETERS :: [4]string{"DynamicMaterialParameter","DynamicMaterialParameter1","DynamicMaterialParameter2","DynamicMaterialParameter3"}
+
+// What a particle shows: the color, size, sub image and material data of
+// Niagara's attributes, where the emitter keeps them.
 @(private)
 niagara_render_write :: proc(w:^Niagara_Writer,s:^strings.Builder) {
     has :: proc(w:^Niagara_Writer,name,type:string) -> bool {
@@ -723,6 +728,10 @@ niagara_render_write :: proc(w:^Niagara_Writer,s:^strings.Builder) {
     case has(w,"Scale","float3"): strings.write_string(s,"    visual.size = max(a.Scale__0, max(a.Scale__1, a.Scale__2)) * 0.01;\n")
     }
     if has(w,"SubImageIndex","float") {strings.write_string(s,"    visual.frame = a.SubImageIndex;\n")}
+    // The Dynamic Parameters of the material: what the renderers bind by default.
+    for name,i in NIAGARA_DYNAMIC_PARAMETERS {
+        if has(w,name,"float4") {fmt.sbprintf(s,"    visual.data[%d] = %s;\n    visual.given |= %du;\n",i,niagara_attr_get("a",name,"float4"),u32(1)<<uint(i))}
+    }
     strings.write_string(s,"}\n")
 }
 

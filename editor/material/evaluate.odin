@@ -681,7 +681,17 @@ expression_build :: proc(e:^Evaluator,o:Object,output:i32,scope:i32) -> Value {
         // The particles of an effect multiply what the material gives by their own color.
         note(e,"ParticleColor is taken as white: the particles of an effect tint the material with their color")
         return nodes(constant(g,{1,1,1,1},4))
-    case "ParticleSubUV","ParticlePositionWS","DynamicParameter","ParticleRelativeTime":
+    // What the particle gives the material as its program says (Mirai_Vfx_Visual.data), the
+    // default where it gives none; RGB and RGBA after its four components.
+    case "DynamicParameter":
+        index:=u32(clamp(prop_int(o,"ParameterIndex",0),0,3))
+        data:=node_add(g,{op=.Particle_Data,width=4,index=index,value=prop_vector(o,"DefaultValue",{1,1,1,1}),args={NONE,NONE,NONE}})
+        switch output {
+        case 0..=3:return nodes(component(g,data,u8(output)))
+        case 4:return nodes(swizzle(g,data,{0,1,2,0},3))
+        }
+        return nodes(data)
+    case "ParticleSubUV","ParticlePositionWS","ParticleRelativeTime":
         return untranslated(e,o,"particle values belong to .particle programs")
     case "Custom":return custom_expression(e,o,output,scope)
     case "Noise","VectorNoise":
