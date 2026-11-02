@@ -186,9 +186,10 @@ landscape_translate :: proc(c:^unreal_scene.Context,l:^landscape.Landscape,index
         return false
     }
     defer delete(result.folded)
-    s.materials[0]=whole
+    // A landscape without paint layers shows its material on the one layer of the source.
+    if whole!={} {s.layers[0].material=whole}
     // The material whole blends the layers of the source its layers are.
-    if s.layer_count>0 && layered.ok && len(layered.names)>0 {
+    if len(result.folded)>0 && layered.ok && len(layered.names)>0 {
         mapping:=landscape_mapping(l,&result)
         shown:=false
         for &name in mapping.layers {
