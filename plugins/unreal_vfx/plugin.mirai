@@ -1,0 +1,7 @@
+{
+  "name": "unreal_vfx",
+  "version": "0.1.0",
+  "dependencies": ["unreal", "vfx"],
+  "parts": ["Editor", "Shaders"],
+  "automatic": true
+}

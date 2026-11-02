@@ -1,0 +1,7 @@
+{
+  "name": "unreal_fluids",
+  "version": "0.1.0",
+  "dependencies": ["unreal", "fluids"],
+  "parts": ["Editor", "Shaders"],
+  "automatic": true
+}

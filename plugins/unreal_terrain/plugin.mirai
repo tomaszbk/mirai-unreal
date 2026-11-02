@@ -1,0 +1,7 @@
+{
+  "name": "unreal_terrain",
+  "version": "0.1.0",
+  "dependencies": ["unreal", "terrain"],
+  "parts": ["Editor"],
+  "automatic": true
+}

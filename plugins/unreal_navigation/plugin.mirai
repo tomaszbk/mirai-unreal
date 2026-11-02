@@ -1,0 +1,7 @@
+{
+  "name": "unreal_navigation",
+  "version": "0.1.0",
+  "dependencies": ["unreal", "navigation"],
+  "parts": ["Editor"],
+  "automatic": true
+}

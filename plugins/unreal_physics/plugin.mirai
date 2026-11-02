@@ -1,0 +1,7 @@
+{
+  "name": "unreal_physics",
+  "version": "0.1.0",
+  "dependencies": ["unreal", "physics"],
+  "parts": ["Editor"],
+  "automatic": true
+}

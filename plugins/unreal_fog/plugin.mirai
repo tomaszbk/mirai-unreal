@@ -1,0 +1,7 @@
+{
+  "name": "unreal_fog",
+  "version": "0.1.0",
+  "dependencies": ["unreal", "fog"],
+  "parts": ["Editor"],
+  "automatic": true
+}
