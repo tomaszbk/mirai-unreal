@@ -1,279 +1,275 @@
-# Traductores de niveles de Unreal
+# Unreal level translators
 
-Al importar un `.umap`, el importador de mapas del plugin `unreal` (`Unreal_Maps`) escribe la escena
-con lo que Mirai traduce por sí mismo (mallas, luces, cámaras, cielo, textos;
-[niveles a escena](unreal.md#niveles-a-escena-scene)) y deja los actores de dominios opcionales a
-los traductores de plugins puente `unreal_*`. Cada puente es automático (`automatic: true`), solo
-de editor, y depende de `unreal` y del plugin que traduce: un proyecto que tiene los dos lo recibe
-sin declararlo ([decisión](decisions.md#niveles-de-unreal-a-escenas-de-mirai)).
+When importing a `.umap`, the map importer of the `unreal` plugin (`Unreal_Maps`) writes the scene
+with what Mirai translates itself (meshes, lights, cameras, sky, text;
+[levels to scenes](unreal.md#levels-to-scene-scene)) and leaves the actors of optional domains to
+the translators of `unreal_*` bridge plugins. Each bridge is automatic (`automatic: true`),
+editor-only, and depends on `unreal` and on the plugin it translates to: a project that has both
+gets it without declaring it ([decision](decisions.md#unreal-levels-to-mirai-scenes)).
 
-## El contrato
+## The contract
 
-`unreal_scene.Translator_Provider` es un storage de Editor cuyo único campo da los traductores que
-su plugin sabe escribir; al importar un mapa, `map_prepare` junta los de todos los plugins de la
-biblioteca vigente (`editor.provided_all`).
+`unreal_scene.Translator_Provider` is an Editor storage whose only field gives the translators its
+plugin can write; when importing a map, `map_prepare` collects those of all plugins in the current
+library (`editor.provided_all`).
 
-- Un `Translator` nombra clases nativas (de cualquier paquete `/Script`, como `Landscape` o
-  `InstancedFoliageActor`) y su `translate(c, actores)` recibe los actores de ellas una escena a la
-  vez: la del mapa y la sección de cada celda de World Partition (`c.section`, `section_origin`);
-  devuelve cuántos tradujo y avisa de los demás. Los actores que un traductor toma no los traduce
-  el importador. Con `root`, los de todas las celdas van a la escena del mapa, porque lo que escribe
-  se carga solo por distancia (el terreno, por páginas). Con `instanced` recibe además, después de
-  los actores, los componentes instanciados (`ISM`, `HISM`, follaje) que muestran los actores de
-  la escena (`c.instanced`), aunque no tenga actores: sus instancias nunca son una entidad cada una.
-  Lo que dice de cada escena lo cuenta `tally` y el nivel lo avisa una vez.
-- Uno con `component` en lugar de `translate` nombra clases de componentes: `component(c, a, k, e)`
-  agrega a la entidad `e` que el importador hizo del componente `k` del actor `a`. De una clase
-  que el importador traduce (`StaticMeshComponent`), el importador sigue escribiendo lo que
-  muestra y el plugin agrega lo que sabe (la colisión); de una que no (el `NiagaraComponent` de un
-  Blueprint), la entidad es solo del plugin.
-- Una textura que un sistema del plugin escribe mientras corre la leen los materiales por UV en
-  lugar de una imagen ([materiales](unreal.md#traducción)): el traductor la agrega con
-  `texture_read_add` (el render target que da un componente) para los materiales que el nivel
-  guarda, y el provider da en `reads` las fijas (un parámetro de textura por su nombre), que el
-  plugin `unreal` pasa a toda importación de Unreal: la de un mapa y la de un paquete como modelo.
-- El `Context` da el documento del nivel (`c.d`), la biblioteca de paquetes y texturas del nivel
-  (`c.lib`, `decoder`), `mesh_import`, `material_import` y `mesh_renderer` (la malla y los
-  materiales de los slots de un componente) por ruta de objeto de Unreal, `mesh_body` (la colisión
-  del `BodySetup` de una `StaticMesh`: formas simples en el espacio de la malla importada,
-  `CollisionTraceFlag` y el perfil de su `DefaultInstance`), `layer_materials` (capas de un
-  material de Landscape), `asset_place` y `asset_write` (el id, el archivo y el `Import_Info` de un
-  asset del nivel, en `levels/<mapa>/`), `entity_make` (en la raíz de una sección, donde la pone el
-  transform del mundo), `actor_entity`, `actor_key` y `component_set` (la escena), y `warn`.
-- Un puente se declara como cualquier plugin de editor: un storage con el provider y su default
+- A `Translator` names native classes (from any `/Script` package, such as `Landscape` or
+  `InstancedFoliageActor`), and its `translate(c, actors)` receives their actors one scene at a
+  time: the map's and the section of each World Partition cell (`c.section`, `section_origin`). It
+  returns how many it translated and warns about the rest. The importer does not translate the
+  actors a translator takes. With `root`, those of all cells go to the map's scene, because what it
+  writes loads only by distance (terrain, by pages). With `instanced` it also receives, after the
+  actors, the instanced components (`ISM`, `HISM`, foliage) shown by the scene's actors
+  (`c.instanced`), even with no actors: their instances are never one entity each. `tally` counts
+  what it says about each scene and the level warns once.
+- One with `component` instead of `translate` names component classes: `component(c, a, k, e)`
+  adds to the entity `e` that the importer made from component `k` of actor `a`. For a class the
+  importer translates (`StaticMeshComponent`), the importer still writes what it shows and the
+  plugin adds what it knows (collision); for one it does not (the `NiagaraComponent` of a
+  Blueprint), the entity belongs to the plugin alone.
+- A texture that a plugin system writes at runtime is read by materials by UV instead of an image
+  ([materials](unreal.md#translation)): the translator adds it with `texture_read_add` (the render
+  target a component gives) for the materials the level stores, and the provider gives the fixed
+  ones in `reads` (a texture parameter by name); the `unreal` plugin passes them to every Unreal
+  import: a map's and a package's, such as a model.
+- The `Context` gives the level document (`c.d`), the level's package and texture library
+  (`c.lib`, `decoder`), `mesh_import`, `material_import` and `mesh_renderer` (the mesh and the
+  materials of a component's slots) by Unreal object path, `mesh_body` (the collision of a
+  `StaticMesh`'s `BodySetup`: simple shapes in imported-mesh space, `CollisionTraceFlag` and the
+  profile of its `DefaultInstance`), `layer_materials` (layers of a Landscape material),
+  `asset_place` and `asset_write` (the id, file and `Import_Info` of a level asset, in
+  `levels/<map>/`), `entity_make` (at the root of a section, where the world transform puts it),
+  `actor_entity`, `actor_key` and `component_set` (the scene), and `warn`.
+- A bridge is declared like any editor plugin: a storage with the provider and its default
   (`Terrain_Unreal`, `Foliage_Unreal`, `Physics_Unreal`, `Fog_Unreal`, `Navigation_Unreal`,
-  `Vfx_Unreal`, `Fluids_Unreal`). Sin el puente de una clase, sus actores son avisos que dicen qué
-  plugin activar.
+  `Vfx_Unreal`, `Fluids_Unreal`). Without the bridge for a class, its actors are warnings saying
+  which plugin to enable.
 
-## Terreno (`unreal_terrain`)
+## Terrain (`unreal_terrain`)
 
-Landscape, LandscapeProxy y LandscapeStreamingProxy, en la escena del mapa (`root`).
-`landscape_terrain` (`landscape.odin`) escribe en una fuente Heightfield lo que da
-[`landscape`](unreal.md#landscape-landscape) y devuelve el transform de la entidad que la muestra.
+Landscape, LandscapeProxy and LandscapeStreamingProxy, in the map's scene (`root`).
+`landscape_terrain` (`landscape.odin`) writes into a Heightfield source what
+[`landscape`](unreal.md#landscape-landscape) gives and returns the transform of the entity that
+shows it.
 
-- Alturas, separación y agujeros pasan tal cual; `chunk_cells` es la subsección de Unreal salvo
-  que las opciones digan otro. Las celdas son cuadradas: un landscape escalado distinto en X que
-  en Y es la grilla de su escala X sobre una entidad estirada a lo ancho (la escala x del
-  transform), que el dibujo, la colisión y la residencia ya componen.
-- Las capas son las `LAYERS_MAX` de más peso total. Cada una de las demás suma su peso a la
-  conservada con la que más se solapa (la suma de los mínimos de sus pesos por muestra; sin
-  solape, la de más peso): un borde entre dos capas sigue siendo un borde y cada muestra conserva
-  su peso entero. Una muestra sin peso queda en la primera capa.
-- El material de cada capa es el `.mat` que el llamador da por capa de Unreal; `folded` dice a
-  qué capa fue cada una.
-- **Al importar un nivel**, el traductor de `Terrain_Unreal` escribe cada landscape (el actor y
-  sus proxies de una `LandscapeGuid`) como un `.terrain` de `levels/<mapa>/` con su `Import_Info`,
-  mostrado por una entidad con el label del actor. Las capas toman los materiales de las capas
-  del material del landscape, por nombre; un material sin capas, que mezcla con sus propias splat
-  maps, es el slot 0. El material entero, traducido como el programa que mezcla las capas de la
-  fuente (`landscape_mapping`: la capa de Unreal de cada una y las coordenadas del landscape desde
-  el mundo), es su `layers_material`; si no da un programa, las capas mezclan sus materiales con
-  una advertencia. Capas y materiales enteros de cada landscape son una sola importación del
-  paquete del material (`layer_materials`).
+- Heights, spacing and holes pass through unchanged; `chunk_cells` is the Unreal subsection unless
+  the options say otherwise. Cells are square: a landscape scaled differently in X than in Y is the
+  grid of its X scale on an entity stretched sideways (the transform's x scale), which drawing,
+  collision and residency already compose.
+- The layers are the `LAYERS_MAX` with the most total weight. Each of the others adds its weight to
+  the kept layer it overlaps most (the sum of the minimums of their per-sample weights; with no
+  overlap, the one with the most weight): an edge between two layers stays an edge and each sample
+  keeps its whole weight. A sample with no weight goes to the first layer.
+- Each layer's material is the `.mat` the caller gives per Unreal layer; `folded` says which layer
+  each one went to.
+- **When importing a level**, the `Terrain_Unreal` translator writes each landscape (the actor and
+  its proxies of one `LandscapeGuid`) as a `.terrain` in `levels/<map>/` with its `Import_Info`,
+  shown by an entity labeled with the actor. The layers take the materials of the landscape
+  material's layers, by name; a material without layers, which blends with its own splat maps, is
+  slot 0. The whole material, translated as the program that blends the source's layers
+  (`landscape_mapping`: each one's Unreal layer and the landscape coordinates from the world), is
+  its `layers_material`; if it gives no program, the layers blend their materials with a warning.
+  The layers and whole materials of each landscape are a single import of the material's package
+  (`layer_materials`).
 
-## Follaje (`unreal_foliage`)
+## Foliage (`unreal_foliage`)
 
-InstancedFoliageActor, con los componentes que dibujan sus tipos de ISM actors, y los componentes
-instanciados de cada escena. `foliage.odin` escribe en una fuente lo que da
-[`foliage`](unreal.md#follaje-foliage) y las instancias de los componentes instanciados de un
-nivel, en el espacio de una entidad en el origen de la escena.
+InstancedFoliageActor, with the components that draw its ISM actor types, and the instanced
+components of each scene. `foliage.odin` writes into a source what
+[`foliage`](unreal.md#foliage-foliage) gives and the instances of a level's instanced components,
+in the space of an entity at the scene origin.
 
-- **InstancedFoliageActor** (`foliage_source`, `foliage_add`): un tipo por tipo de static mesh de
-  Unreal, con el `.mesh` que el llamador da por tipo; el viento es 0, porque en Unreal lo mueven sus
-  materiales, y la colisión, una caja de los bounds de la malla. Cada instancia es manual en la
-  celda en que cae, `INSTANCE_GROUNDED` si está puesta sobre algo. Un tipo de actores no es un
-  tipo: sus actores son actores del nivel, que la escena traduce como a los demás (una instancia
-  sin su actor es un aviso). Uno de ISM actors tampoco: los componentes instanciados del actor que
-  lo dibujan (`Foliage.components`) son lotes como los de abajo.
-- **Componentes instanciados** (`instanced_add`): `InstancedStaticMeshComponent`, el jerárquico y
-  el de follaje, también los que hornean PCG y los packed level actors. Un tipo por malla,
-  materiales de sus slots, distancias de recorte (`InstanceStart/EndCullDistance`), sombras, rayos
-  y colisión: la caja de los bounds de la malla si el componente colisiona, nada si no. Sin
-  generador ni viento; las instancias son manuales, donde están.
-- **Reimportar** conserva los ids: el traductor lee el `.foliage` que reemplaza y
-  `foliage_ids_keep` da a cada tipo el id del igual o del de su nombre, malla, prefab y materiales,
-  y a cada instancia manual el de la más cercana de su tipo en su celda dentro de `KEEP_DISTANCE`,
-  `KEEP_TURN` y `KEEP_SCALE`, una a una; las demás toman ids que la anterior nunca dio, así una
-  partida con lápidas no saca otras
-  ([decisión](decisions.md#follaje-de-unreal-reimportar-conserva-los-ids)). Si el archivo anterior
-  no se lee, la importación lo avisa y numera desde 1.
-- Con escalas X e Y distintas una instancia toma su media geométrica (`averaged`); una escala nula,
-  negativa o fuera de rango la descarta (`dropped`). Un material que el nivel guarda dentro de un
-  actor se escribe al pedirlo (`instanced_material`), porque ninguna entidad lo toma al terminar el
-  nivel; las instancias de cada juego de floats propios (`PerInstanceSMCustomData`) son un lote
-  que muestra la variante, con esos valores, de los materiales que los leen (el color de las
-  paredes de un blueprint).
-- **Al importar un nivel**, el traductor de `Foliage_Unreal` escribe por escena un `.foliage` de
-  `levels/<mapa>/` con su `Import_Info`, con el nombre de la celda de World Partition (`Foliage`
-  en la escena del mapa), y una entidad `Foliage` en su origen.
+- **InstancedFoliageActor** (`foliage_source`, `foliage_add`): one type per Unreal static mesh
+  type, with the `.mesh` the caller gives per type; wind is 0, because in Unreal its materials move
+  it, and collision is a box of the mesh bounds. Each instance is manual in the cell where it
+  falls, `INSTANCE_GROUNDED` if placed on something. An actor type is not a type: its actors are
+  level actors, which the scene translates like the others (an instance without its actor is a
+  warning). An ISM actors type is not one either: the actor's instanced components that draw it
+  (`Foliage.components`) are batches like those below.
+- **Instanced components** (`instanced_add`): `InstancedStaticMeshComponent`, the hierarchical one
+  and the foliage one, also those baked by PCG and by packed level actors. One type per mesh,
+  materials of its slots, cull distances (`InstanceStart/EndCullDistance`), shadows, rays and
+  collision: a box of the mesh bounds if the component collides, nothing if not. No generator or
+  wind; instances are manual, where they are.
+- **Reimporting** keeps the ids: the translator reads the `.foliage` it replaces and
+  `foliage_ids_keep` gives each type the id of the equal one or of the one with its name, mesh,
+  prefab and materials, and each manual instance the id of the nearest of its type in its cell
+  within `KEEP_DISTANCE`, `KEEP_TURN` and `KEEP_SCALE`, one to one; the rest take ids the previous
+  file never gave, so a save with tombstones does not bring back others
+  ([decision](decisions.md#unreal-foliage-reimporting-keeps-ids)). If the previous file
+  cannot be read, the import warns and numbers from 1.
+- With different X and Y scales an instance takes their geometric mean (`averaged`); a zero,
+  negative or out-of-range scale drops it (`dropped`). A material the level stores inside an actor
+  is written on request (`instanced_material`), because no entity takes it when the level ends;
+  the instances of each set of per-instance floats (`PerInstanceSMCustomData`) are a batch showing
+  the variant, with those values, of the materials that read them (the wall color of a blueprint).
+- **When importing a level**, the `Foliage_Unreal` translator writes per scene a `.foliage` in
+  `levels/<map>/` with its `Import_Info`, named after the World Partition cell (`Foliage` in the
+  map's scene), and a `Foliage` entity at its origin.
 
-## Física (`unreal_physics`)
+## Physics (`unreal_physics`)
 
-- `BlockingVolume` de un `CubeBuilder`: una caja estática de su tamaño.
-- Cada `StaticMeshComponent`: la colisión del `BodySetup` de su malla (`mesh_body`), si su
-  `BodyInstance` colisiona (`level.component_collision`): salvo con el perfil `NoCollision`, uno
-  de solapamiento (`Overlap*`, `Trigger`, `UI`) o `CollisionEnabled` en `NoCollision`; sin
-  `BodyInstance` guardado, el `BlockAllDynamic` de Unreal, y con `bUseDefaultCollision`, el perfil
-  de la malla. Las instancias de uno instanciado son follaje, que colisiona por sus tipos
-  ([follaje](#follaje-unreal_foliage)).
-  - Solo cajas, esferas y cápsulas de `AggGeom`: colliders de entidades hijas donde están en la
-    malla.
-  - Con un convexo, la entidad colisiona con los colliders que guarda la malla importada: el
-    `Hull` del convexo cuando es la única forma; si hay más, los cascos de todas como
-    triángulos (`Mesh`), o el `Hull` de todas en un cuerpo que simula
-    ([decisión](decisions.md#unreal-convexos-como-casco-o-triángulos-de-la-malla)).
-  - Sin formas simples, o con `CTF_UseComplexAsSimple`: los triángulos (`Hull` si simula).
-  - `bSimulatePhysics` da un `Rigid_Body` dinámico.
+- `BlockingVolume` of a `CubeBuilder`: a static box of its size.
+- Each `StaticMeshComponent`: the collision of its mesh's `BodySetup` (`mesh_body`), if its
+  `BodyInstance` collides (`level.component_collision`): except with the `NoCollision` profile, an
+  overlap one (`Overlap*`, `Trigger`, `UI`) or `CollisionEnabled` set to `NoCollision`; with no
+  stored `BodyInstance`, Unreal's `BlockAllDynamic`, and with `bUseDefaultCollision`, the mesh's
+  profile. The instances of an instanced component are foliage, which collides by its types
+  ([foliage](#foliage-unreal_foliage)).
+  - Only boxes, spheres and capsules of `AggGeom`: colliders of child entities where they are in
+    the mesh.
+  - With a convex, the entity collides with the colliders stored by the imported mesh: the convex's
+    `Hull` when it is the only shape; if there are more, the hulls of all as triangles (`Mesh`), or
+    the `Hull` of all in a simulating body
+    ([decision](decisions.md#unreal-convexes-as-hull-or-mesh-triangles)).
+  - Without simple shapes, or with `CTF_UseComplexAsSimple`: the triangles (`Hull` if it simulates).
+  - `bSimulatePhysics` gives a dynamic `Rigid_Body`.
 
-## Niebla (`unreal_fog`)
+## Fog (`unreal_fog`)
 
-`ExponentialHeightFog` es la niebla del mundo entero con el albedo de su niebla volumétrica, y su
-`SecondFogData`, otra que se le suma desde su altura más el offset; Unreal dibuja solo la primera
-de una escena, y las otras son un aviso. Su `FogInscatteringLuminance` y su luz direccional son
-radiancia que Unreal suma, no un albedo: con una `SkyAtmosphere` Unreal ilumina la niebla con el
-cielo y el sol, como Mirai siempre, y se omiten; la escala de la luz del cielo que no es blanca y lo
-que depende del ojo, `StartDistance`, `FogCutoffDistance` y `FogMaxOpacity`, son avisos.
+`ExponentialHeightFog` is the whole-world fog with the albedo of its volumetric fog, and its
+`SecondFogData` is another one added to it from its height plus the offset; Unreal draws only the
+first of a scene, and the others are a warning. Its `FogInscatteringLuminance` and its directional
+light are radiance that Unreal adds, not an albedo: with a `SkyAtmosphere` Unreal lights the fog
+with the sky and sun, as Mirai always does, and they are omitted; the scale of non-white sky light
+and what depends on the eye, `StartDistance`, `FogCutoffDistance` and `FogMaxOpacity`, are
+warnings.
 
-## Navegación (`unreal_navigation`)
+## Navigation (`unreal_navigation`)
 
-- `NavMeshBoundsVolume` es un `Nav_Bounds` del tamaño de su `CubeBuilder`.
-- `NavModifierVolume` es un `Nav_Area` de ese tamaño: `NavArea_Null` (el que no nombra área),
-  `NavArea_Obstacle` y `NavArea_LowHeight` bloquean, `NavArea_Default` camina, y otra área camina
-  con un aviso para declararla.
-- `NavLinkProxy` da un `Nav_Link` de tipo `Jump` por link de punto, de `Left` a `Right` en el
-  marco del actor, en los dos sentidos o en uno; su smart link, si es relevante, uno `Door` que
-  cruza el juego. Lo que exige sale de su geometría, como cualquier link manual.
-- `RecastNavMesh` es un aviso con su agente: los meshes salen de la colisión, para las clases de
+- `NavMeshBoundsVolume` is a `Nav_Bounds` of the size of its `CubeBuilder`.
+- `NavModifierVolume` is a `Nav_Area` of that size: `NavArea_Null` (the one that names no area),
+  `NavArea_Obstacle` and `NavArea_LowHeight` block, `NavArea_Default` walks, and any other area
+  walks with a warning to declare it.
+- `NavLinkProxy` gives a `Jump` `Nav_Link` per point link, from `Left` to `Right` in the actor's
+  frame, two-way or one-way; its smart link, if relevant, gives a `Door` one that the game crosses.
+  What it requires comes from its geometry, like any manual link.
+- `RecastNavMesh` is a warning with its agent: meshes come from collision, for the classes of
   `Navigation_Settings`.
 
-## Partículas (`unreal_vfx`)
+## Particles (`unreal_vfx`)
 
-Traduce los actores `Emitter` (Cascade) y `NiagaraActor`, y los `ParticleSystemComponent` y
-`NiagaraComponent` de otros actores (un Blueprint), a efectos `.particle` del plugin `vfx`. Sus
-partes Editor y Shaders traen `shaders/niagara.slang`, el preludio de los programas traducidos,
-que usa `shaders/unreal_noise.slang`.
+Translates `Emitter` (Cascade) and `NiagaraActor` actors, and the `ParticleSystemComponent` and
+`NiagaraComponent` of other actors (a Blueprint), into `.particle` effects of the `vfx` plugin.
+Its Editor and Shaders parts bring `shaders/niagara.slang`, the prelude of the translated programs,
+which uses `shaders/unreal_noise.slang`.
 
-- Cada emisor de un sistema es un `.particle` en `levels/<mapa>/`, escrito una vez por sistema;
-  un actor (o el componente) es una entidad con un `Particle_Emitter` (`bAutoActivate` es
-  `active`), o un grupo con una por emisor.
-- **Cascade** (`unreal_cascade.odin`). Los módulos del primer LOD y sus distribuciones: constante,
-  uniforme o curva (sus claves), o los valores que el paquete horneó con ella. Centímetros y Z
-  arriba pasan a metros e Y arriba; un color mayor que uno da su pico a `intensity`; `EmitterLoops`
-  distinto de cero es un efecto que no se repite.
-- **Niagara** (`unreal_niagara.odin`). Lo que el editor guarda de las entradas de los módulos
-  (`RapidIterationParameters` de sus scripts, por `Módulo.Entrada`), las curvas horneadas de sus
-  data interfaces y sus renderers (sprite, ribbon, malla y luces). Los modos (`Lifetime Mode`,
-  `Sprite Size Mode`, `Shape Primitive`, `Velocity Mode`, `Loop Behavior`…) son static switches:
-  el valor de cada uno está en los pines de entrada de su nodo de función en el grafo del emisor
-  (`unreal.graph_node_pins`), y un enum de `/Niagara` da el nombre que muestra el editor
-  (`unreal.user_enum_entries`), con el que se elige: los `NewEnumeratorN` no son valores. Los
-  valores guardados de las otras ramas no cuentan. Solo un módulo cuyo grafo no tiene el switch
-  (guardado antes de que el módulo lo tuviera) toma el rango y lo avisa. Lo que cablean las
-  entradas dinámicas no se lee.
-- **Emisores livianos** (`UNiagaraStatelessEmitter`, `unreal_niagara_stateless.odin`): su ciclo,
-  sus spawns y las propiedades de sus módulos, sin scripts. Una distribución es una constante o un
-  rango (`Min`, `Max`), o valores a lo largo de la vida (`Values` sobre `ValuesTimeRange`); lo que
-  el paquete omite es lo del constructor del módulo; una ligada a un parámetro `User.` toma el
-  valor que guarda el sistema (`ExposedParameters`). Cada módulo es campos del efecto;
-  `RotateAroundPoint` corre `Orbit` y `Scale*SizeBySpeed`, `Speed_Size`, y un efecto corre un solo
-  programa: el segundo es un aviso. Los que no tienen sentido en Mirai (desplazar hacia la cámara,
-  parámetros de material por partícula, decals, escala del dueño) se avisan por clase con la
-  razón.
-- El material del emisor es la traducción del de Unreal (su `BlendMode` da `blend` y el modelo
-  `Unlit`, `lit`); lo que Mirai no tiene (módulos, renderers, luces aproximadas) es un aviso del
-  emisor. Los `DynamicMaterialParameter` (y `1` a `3`) que guardan las partículas de un emisor
-  compilado son los datos que `render` da al material de sus sprites, el índice de cada uno el
-  del `DynamicParameter` que los lee; su `MaterialRandom` es el valor al azar que lee
-  `ParticleRandom`, 0 si el emisor no lo guarda, como en Unreal.
-- Un data interface de malla (`StaticMesh`, `SkeletalMesh`) que el componente apunta a un actor
-  del nivel (`SoftSourceActor`, también el de un parámetro `User.`) es la superficie de la entidad
-  de ese actor, por el nombre de su objeto con su número (`Statue_2`): la piel posada de un
-  esqueleto que su `Animation` mueve.
-- Las luces de partículas hacen sombra si las de Unreal la hacen: en Cascade, las de alta calidad
-  con `bShadowCastingLights`; en Niagara, las que toma MegaLights con `bMegaLightsCastShadows`.
-- **Niagara compilado.** Un emisor cuyos scripts guardan el HLSL que generó Niagara es un
-  programa Vfx escrito en los `shaders/` del proyecto, que la importación publica
-  ([decisión](decisions.md#niagara-el-hlsl-que-compiló-unreal)): `niagara_program.odin` arma el
-  marco y `niagara.slang` es su preludio (espacio de Unreal, aleatorios, ids). Los scripts del
-  sistema dan el estado de cada emisor y sus nacimientos (`//! births`); cada data interface es un
-  cuerpo sobre los recursos de Vfx (`niagara_interfaces.odin`, `niagara_grids.odin`,
-  `niagara_particles.odin`, `niagara_channels.odin`). Lo que una función no traduce da cero y es un
-  aviso que la nombra. Una grilla o un render target 2D es plano a lo largo de y, como una textura
-  del mundo: su celda (x, y) es la (x, 0, y) de la grilla, y los cuerpos y el hilo de sus etapas
-  le dan al script el orden de Niagara. La textura de un `Texture` se hornea en un `.grid` plano a
-  lo largo de y, una celda por texel como Unreal la lee (hasta `NIAGARA_TEXTURE_CELLS` por eje,
-  remuestreada), del que arranca una grilla del efecto: `SampleTexture2D` la muestrea entre
-  texels, repitiéndose (`niagara_textures.odin`). Cada parte escribe solo lo que su marco alcanza
-  desde las funciones que llama (funciones, structs, statics, data interfaces y parámetros del
-  motor que su código lee, `hlsl_reached`); un data interface que nadie llama se traduce igual por
-  lo que dice del programa (el canal de sus nacimientos). Los canales traducidos guardan las
-  variables del asset en su orden, con los valores de Unreal.
-- **Nacimientos desde un canal de datos.** Cada `SpawnConditional` de los scripts del sistema que
-  nombra al emisor (su `Emitter ID` es el índice de su handle) deja en palabras de `prepare` si
-  corrió, su modo, su operador, sus cuentas y los valores de sus condiciones. `births` da a cada
-  entrada del canal lo más que piden; `GetNDCSpawnData` reparte las partículas por entrada, y las
-  de una entrada que no pasa las condiciones (el valor contra la variable de su nombre) o que
-  pidió menos terminan en `initialize`, antes de su primer paso. Sin `SpawnConditional`, cada
-  entrada inicia lo que pide `SpawnFromNDC`.
-- **Eventos entre emisores.** Mirai no los tiene y no se traducen: un script que escribe un evento
-  (sus `WriteDataSets`) y cada event handler de un emisor son un aviso que nombra el script y el
-  evento y pide llevar lo que el evento lleva a un canal de datos (`DataChannelWrite` donde se
-  genera, `SpawnConditional` y `GetNDCSpawnData` donde se maneja) o leer las partículas del otro
-  emisor con un Particle Attribute Reader.
-- **Render targets de un componente.** Un render target 2D cuyo `RenderTargetUserParameter` nombra
-  un parámetro al que el componente da un `TextureRenderTarget2D` (`InstanceParameterOverrides`)
-  es una grilla con `Particle_World_Texture`: los materiales que el nivel guarda y muestrean esa
-  textura la leen por UV (las texturas del mundo de Vfx), con `texture_read_add`.
-- **Bytecode de la VM.** Un script de CPU o de sistema de un save 5.8 o posterior guarda solo el
-  bytecode de la VectorVM: `niagara_vm.odin` lo decompila al texto que el traductor escribe para la
-  VM y el resto lo toma como el HLSL de un save anterior. Los registros de un data set son las
-  componentes de sus variables (`Attributes`; en un script de sistema, el data set 1 son los
-  parámetros de su instancia), en orden y por tipo de registro; una constante es un byte de su
-  tabla: los structs de parámetros del motor, sus parámetros externos (dos veces, `PREV_`, si el
-  emisor interpola el spawn) y sus literales, que quedan como bits. Una función de un data
-  interface toma la firma que su compilación registró. El spawn decompilado de un emisor que
-  interpola ya corre su update, como en la VM: update no corre sobre sus nacidos de ese paso.
-  Una operación que no conoce rechaza el script con un aviso; lo que no sabe ubicar (eventos de
-  otros emisores, una constante fuera de la tabla) lee cero y se avisa.
+- Each emitter of a system is a `.particle` in `levels/<map>/`, written once per system; an actor
+  (or component) is an entity with a `Particle_Emitter` (`bAutoActivate` is `active`), or a group
+  with one per emitter.
+- **Cascade** (`unreal_cascade.odin`). The modules of the first LOD and their distributions:
+  constant, uniform or curve (its keys), or the values the package baked from it. Centimeters and
+  Z up become meters and Y up; a color above one gives its peak to `intensity`; `EmitterLoops`
+  other than zero is an effect that does not repeat.
+- **Niagara** (`unreal_niagara.odin`). What the editor stores of the modules' inputs
+  (`RapidIterationParameters` of their scripts, by `Module.Input`), the baked curves of their data
+  interfaces and their renderers (sprite, ribbon, mesh and lights). The modes (`Lifetime Mode`,
+  `Sprite Size Mode`, `Shape Primitive`, `Velocity Mode`, `Loop Behavior`...) are static switches:
+  the value of each is in the input pins of its function node in the emitter graph
+  (`unreal.graph_node_pins`), and a `/Niagara` enum gives the name the editor shows
+  (`unreal.user_enum_entries`), which is what selects: the `NewEnumeratorN` are not values. The
+  stored values of the other branches do not count. Only a module whose graph lacks the switch
+  (saved before the module had it) takes the range and warns. What dynamic inputs wire is not read.
+- **Lightweight emitters** (`UNiagaraStatelessEmitter`, `unreal_niagara_stateless.odin`): their
+  cycle, spawns and module properties, without scripts. A distribution is a constant or a range
+  (`Min`, `Max`), or values along the lifetime (`Values` over `ValuesTimeRange`); what the package
+  omits is the module constructor's; one bound to a `User.` parameter takes the value the system
+  stores (`ExposedParameters`). Each module is effect fields; `RotateAroundPoint` runs `Orbit` and
+  `Scale*SizeBySpeed`, `Speed_Size`, and an effect runs a single program: the second is a warning.
+  Those that make no sense in Mirai (offset toward the camera, per-particle material parameters,
+  decals, owner scale) are warned per class with the reason.
+- The emitter's material is the translation of Unreal's (its `BlendMode` gives `blend` and the
+  `Unlit` model, `lit`); what Mirai lacks (modules, renderers, approximated lights) is an emitter
+  warning. The `DynamicMaterialParameter` (and `1` to `3`) stored by the particles of a compiled
+  emitter are the data `render` gives the material of its sprites, the index of each being that of
+  the `DynamicParameter` that reads them; its `MaterialRandom` is the random value `ParticleRandom`
+  reads, 0 if the emitter does not store it, as in Unreal.
+- A mesh data interface (`StaticMesh`, `SkeletalMesh`) that the component points at a level actor
+  (`SoftSourceActor`, also that of a `User.` parameter) is the surface of that actor's entity, by
+  the name of its object with its number (`Statue_2`): the posed skin of a skeleton moved by its
+  `Animation`.
+- Particle lights cast shadows if Unreal's do: in Cascade, the high-quality ones with
+  `bShadowCastingLights`; in Niagara, those MegaLights takes with `bMegaLightsCastShadows`.
+- **Compiled Niagara.** An emitter whose scripts store the HLSL Niagara generated is a Vfx program
+  written in the project's `shaders/`, which the import publishes
+  ([decision](decisions.md#niagara-the-hlsl-unreal-compiled)): `niagara_program.odin` builds the
+  frame and `niagara.slang` is its prelude (Unreal space, random numbers, ids). The system scripts
+  give each emitter's state and its births (`//! births`); each data interface is a body over the
+  Vfx resources (`niagara_interfaces.odin`, `niagara_grids.odin`, `niagara_particles.odin`,
+  `niagara_channels.odin`). What a function does not translate gives zero and a warning that names
+  it. A 2D grid or render target is flat along y, like a world texture: its cell (x, y) is the
+  grid's (x, 0, y), and the bodies and thread of its stages give the script Niagara's order. A
+  `Texture`'s texture is baked into a `.grid` flat along y, one cell per texel as Unreal reads it
+  (up to `NIAGARA_TEXTURE_CELLS` per axis, resampled), from which an effect grid starts:
+  `SampleTexture2D` samples it between texels, repeating (`niagara_textures.odin`). Each part
+  writes only what its frame reaches from the functions it calls (functions, structs, statics, data
+  interfaces and engine parameters its code reads, `hlsl_reached`); a data interface nobody calls
+  is still translated for what it says about the program (the channel of its births). The
+  translated channels keep the asset's variables in its order, with Unreal's values.
+- **Births from a data channel.** Each `SpawnConditional` of the system scripts that names the
+  emitter (its `Emitter ID` is the index of its handle) leaves in `prepare` words whether it ran,
+  its mode, its operator, its counts and the values of its conditions. `births` gives each channel
+  entry the most they ask for; `GetNDCSpawnData` distributes the particles per entry, and those of
+  an entry that fails the conditions (the value against the variable of its name) or that asked for
+  fewer end in `initialize`, before their first step. Without `SpawnConditional`, each entry
+  initiates what `SpawnFromNDC` asks for.
+- **Events between emitters.** Mirai has none and they are not translated: a script that writes an
+  event (its `WriteDataSets`) and each event handler of an emitter are a warning naming the script
+  and event and asking to carry what the event carries through a data channel (`DataChannelWrite`
+  where it is generated, `SpawnConditional` and `GetNDCSpawnData` where it is handled) or to read
+  the other emitter's particles with a Particle Attribute Reader.
+- **Component render targets.** A 2D render target whose `RenderTargetUserParameter` names a
+  parameter to which the component gives a `TextureRenderTarget2D` (`InstanceParameterOverrides`)
+  is a grid with `Particle_World_Texture`: the materials the level stores that sample that texture
+  read it by UV (Vfx's world textures), with `texture_read_add`.
+- **VM bytecode.** A CPU or system script from a 5.8 or later save stores only VectorVM bytecode:
+  `niagara_vm.odin` decompiles it to the text the translator writes for the VM and the rest takes
+  it as the HLSL of an earlier save. The registers of a data set are the components of its
+  variables (`Attributes`; in a system script, data set 1 is its instance's parameters), in order
+  and by register type; a constant is a byte of its table: the engine parameter structs, its
+  external parameters (twice, `PREV_`, if the emitter interpolates the spawn) and its literals,
+  which stay as bits. A data interface function takes the signature its compilation registered. The
+  decompiled spawn of an interpolating emitter already runs its update, as in the VM: update does
+  not run on that step's newborns. An operation it does not know rejects the script with a warning;
+  what it cannot place (events from other emitters, a constant outside the table) reads zero and
+  warns.
 
-## Fluidos (`unreal_fluids`)
+## Fluids (`unreal_fluids`)
 
-No traduce actores: su provider da solo `reads`. Los materiales de salida de FluidNinja
-(`M_NinjaOutput_*` y sus instancias) se importan como programas que leen el fluido: el
-`VelocityDensityBuffer` que sus Blueprints les dan en ejecución es la capa 0 de la grilla
-`fluids.GRID` leída por UV (`fluids_unreal_default`). FluidNinja tiende su simulación a lo largo de
-X e Y de Unreal: `fluid_ninja_buffer` (`shaders/fluid_ninja.slang` del puente) lee la textura
-girada, u a lo largo de la z de Mirai y v de su -x, y da la velocidad en u y v. Con
-`ForceLocalSpace` en 0 el material calcula sus UV desde `TraceMeshPosDouble` y `TraceMeshSize`, el
-área que el Blueprint simula; en 1, son las de la malla. `PressureDivergenceBuffer` y `PaintBuffer`
-no tienen lectura: una textura del mundo es una sola capa.
+It translates no actors: its provider gives only `reads`. FluidNinja's output materials
+(`M_NinjaOutput_*` and their instances) are imported as programs that read the fluid: the
+`VelocityDensityBuffer` that their Blueprints give them at runtime is layer 0 of the `fluids.GRID`
+grid read by UV (`fluids_unreal_default`). FluidNinja lays out its simulation along Unreal's X and
+Y: `fluid_ninja_buffer` (the bridge's `shaders/fluid_ninja.slang`) reads the rotated texture, u
+along Mirai's z and v along its -x, and gives the velocity in u and v. With `ForceLocalSpace` at 0
+the material computes its UV from `TraceMeshPosDouble` and `TraceMeshSize`, the area the Blueprint
+simulates; at 1, those of the mesh. `PressureDivergenceBuffer` and `PaintBuffer` have no read: a
+world texture is a single layer.
 
-## Verificación
+## Verification
 
-- Pruebas de `plugins/unreal_terrain/editor`:
+- Tests of `plugins/unreal_terrain/editor`:
   `a_landscape_becomes_a_heightfield_that_keeps_four_layers_and_folds_the_rest`,
   `the_landscape_of_an_unreal_level_is_a_terrain_of_its_scene`,
-  `a_landscape_maps_the_world_to_its_coordinates_and_its_layers_to_those_of_the_terrain` y
+  `a_landscape_maps_the_world_to_its_coordinates_and_its_layers_to_those_of_the_terrain` and
   `a_landscape_of_unequal_scales_is_a_square_heightfield_on_a_stretched_entity`.
-- Pruebas de `plugins/unreal_foliage/editor`:
+- Tests of `plugins/unreal_foliage/editor`:
   `unreal_foliage_becomes_manual_instances_of_its_cells_with_their_ground`,
   `instanced_components_are_one_type_for_each_mesh_and_materials_with_instances_from_the_origin`,
-  `a_reimported_level_keeps_the_ids_of_the_foliage_it_had` y
+  `a_reimported_level_keeps_the_ids_of_the_foliage_it_had` and
   `unreal_foliage_of_actors_adds_only_its_static_mesh_types`.
-- Pruebas de `plugins/unreal_physics/editor`:
+- Tests of `plugins/unreal_physics/editor`:
   `a_blocking_volume_of_an_unreal_level_is_a_static_box`.
-- Pruebas de `plugins/unreal_fog/editor`:
+- Tests of `plugins/unreal_fog/editor`:
   `the_height_fog_of_an_unreal_level_is_a_fog_of_the_whole_world`.
-- Pruebas de `plugins/unreal_navigation/editor`:
+- Tests of `plugins/unreal_navigation/editor`:
   `the_navigation_actors_of_an_unreal_level_are_bounds_areas_and_links`.
-- Pruebas de `plugins/unreal_vfx/editor`: los nombres que escribe el traductor de Niagara y la
-  decompilación del bytecode de la VM sobre bytecode escrito en la prueba (`niagara_vm_test.odin`:
-  el mapa de parámetros, la tabla de constantes, las llamadas a data interfaces, el rechazo de lo
-  que no lee, el programa de un emisor de CPU y el de uno que nace de un canal de datos con un
-  `SpawnConditional` del sistema, que quedan en `.mirai/tmp/vfx-vm-test` para
-  `mirai shaders check <programa> --project demo`) y la traducción de Cascade y Niagara
-  (`unreal_particles_test.odin`, `niagara_test.odin`).
-- Pruebas de `plugins/unreal_fluids/editor`: un material de salida de FluidNinja lee el fluido por
-  UV.
-- Los traductores corren completos en una sesión del editor: importar un mapa del corpus con los
-  plugins de los puentes que usa, y comprobar el informe de actores por clase.
+- Tests of `plugins/unreal_vfx/editor`: the names the Niagara translator writes and the VM bytecode
+  decompilation over bytecode written in the test (`niagara_vm_test.odin`: the parameter map, the
+  constant table, the data interface calls, the rejection of what it cannot read, the program of a
+  CPU emitter and that of one born from a data channel with a system `SpawnConditional`, which stay
+  in `.mirai/tmp/vfx-vm-test` for `mirai shaders check <program> --project demo`) and the Cascade
+  and Niagara translation (`unreal_particles_test.odin`, `niagara_test.odin`).
+- Tests of `plugins/unreal_fluids/editor`: a FluidNinja output material reads the fluid by UV.
+- The translators run in full in an editor session: import a corpus map with the bridge plugins it
+  uses, and check the per-class actor report.

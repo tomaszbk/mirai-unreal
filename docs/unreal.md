@@ -1,855 +1,822 @@
-# Unreal: paquetes de editor, Kraken, texturas, mallas, materiales y niveles
+# Unreal: editor packages, Kraken, textures, meshes, materials and levels
 
-Los paquetes de `editor/` (importados como `project:plugins/unreal/editor/<paquete>`) leen
-paquetes de editor de Unreal (`.uasset`/`.umap` sin cookear, como los de Fab) sin Unreal
-instalado. Son engine-time: viven en la parte editor del plugin `unreal` y ningún juego los
-contiene. `package` se importa como `unreal`; `foliage` y `scene` se llaman `unreal_foliage` y
-`unreal_scene` (los nombres de paquete son únicos). Solo `material/write` y `scene` escriben
-assets: mallas, esqueletos, animaciones y texturas llegan al editor por el formato `model`
-([modelos](#formato-de-modelos-model)) y los mapas, como [escenas](#niveles-a-escena-scene).
-`fixture` arma los paquetes sintéticos de las pruebas y `fixture/files` los escribe como archivos
-completos. Cómo se importan en el editor: [README](README.md#importar-en-el-editor).
+The packages under `editor/` (imported as `project:plugins/unreal/editor/<package>`) read Unreal
+editor packages (uncooked `.uasset`/`.umap`, such as Fab's) without Unreal installed. They are
+engine-time: they live in the editor part of the `unreal` plugin and no game contains them.
+`package` is imported as `unreal`; `foliage` and `scene` are called `unreal_foliage` and
+`unreal_scene` (package names are unique). Only `material/write` and `scene` write assets:
+meshes, skeletons, animations and textures reach the editor through the `model` format
+([models](#model-format-model)) and maps as [scenes](#levels-to-scene-scene).
+`fixture` builds the synthetic packages of the tests and `fixture/files` writes them as complete
+files. How they are imported in the editor: [README](README.md#importing-in-the-editor).
 
-## Paquetes (`package`)
+## Packages (`package`)
 
-`package_open` es una vista sobre bytes del llamador, que deben vivir hasta `package_destroy`; los
-nombres UTF16 se convierten y son del paquete. `Error` es `{code,offset,field}`, con `field`
-constante (vale aunque falte memoria). `Limits` acota bytes, tablas, textos, propiedades y
-profundidad de outers.
+`package_open` is a view over caller-owned bytes, which must live until `package_destroy`; UTF16
+names are converted and belong to the package. `Error` is `{code,offset,field}`, with a constant
+`field` (valid even when memory runs out). `Limits` bounds bytes, tables, strings, properties and
+outer depth.
 
-- **Versiones.** UE4 desde 214 y UE5 hasta las que conoce el lector, licenciatario cero; en los
-  más nuevos los bits altos del campo de versión legacy guardan el offset de la tabla de offsets.
-  Cada campo sigue las compuertas de versión de Unreal.
-- **Rechazos.** Versión desconocida (`Unsupported_Version`), sin versiones o con
-  `PKG_UnversionedProperties` (`Unversioned`), `PKG_Cooked` (`Cooked`) y compresión de paquete
+- **Versions.** UE4 from 214 and UE5 up to what the reader knows, licensee zero; in the newest ones
+  the high bits of the legacy version field hold the offset of the offsets table. Each field
+  follows Unreal's version gates.
+- **Rejections.** Unknown version (`Unsupported_Version`), no versions or
+  `PKG_UnversionedProperties` (`Unversioned`), `PKG_Cooked` (`Cooked`) and package compression
   (`Compressed`).
-- **Tablas.** Se comprueban límites, solapamientos, referencias y ciclos de outers. `Object_Ref`
-  conserva el índice de Unreal (cero nulo, negativo import, positivo export).
-- **Propiedades.** `property_value` interpreta los tipos comunes; contenedores, FText y structs
-  nativos dan `Unsupported_Value` y se leen con los ayudantes de arrays y structs tagged.
-  `class_default_object` busca el CDO por clase y flag, no por nombre.
-- **Mounts.** `Source_Mount` asocia un prefijo (`/Game`, `/Engine`) a una carpeta `Content`;
-  `source_package_path` y `source_package_name` convierten entre paquete y archivo y rechazan
-  traversal, dispositivos y prefijos ambiguos. Cómo se eligen:
-  [montajes](#formato-de-modelos-model).
+- **Tables.** Limits, overlaps, references and outer cycles are checked. `Object_Ref` keeps
+  Unreal's index (zero null, negative import, positive export).
+- **Properties.** `property_value` interprets the common types; containers, FText and native
+  structs give `Unsupported_Value` and are read with the tagged array and struct helpers.
+  `class_default_object` finds the CDO by class and flag, not by name.
+- **Mounts.** `Source_Mount` maps a prefix (`/Game`, `/Engine`) to a `Content` folder;
+  `source_package_path` and `source_package_name` convert between package and file and reject
+  traversal, devices and ambiguous prefixes. How they are chosen:
+  [mounts](#model-format-model).
 
 ### Payloads
 
-- Solo se leen los payloads locales: `editor_bulk_data` ubica un `FEditorBulkData` en el trailer
-  o en su offset absoluto y `byte_bulk_data`, el bulk data de UE4 inline, al final del archivo o en
-  chunks zlib. Virtualizado, sidecar, workspace, legacy o en un archivo aparte es
+- Only local payloads are read: `editor_bulk_data` locates an `FEditorBulkData` in the trailer or
+  at its absolute offset and `byte_bulk_data` the UE4 bulk data inline, at the end of the file or
+  in zlib chunks. Virtualized, sidecar, workspace, legacy or in a separate file is
   `Unsupported_Value`.
-- `compressed_buffer_decode` admite None, LZ4 (`std/serial`) y Oodle con un `kraken.Decoder`, y
-  compara el resultado con el BLAKE3 del buffer: uno que no coincide es `Malformed`. El tamaño
-  crudo de un payload también lo acotan los `Limits` del paquete.
+- `compressed_buffer_decode` supports None, LZ4 (`std/serial`) and Oodle with a `kraken.Decoder`,
+  and compares the result with the buffer's BLAKE3: a mismatch is `Malformed`. The raw size of a
+  payload is also bounded by the package `Limits`.
 
 ## Kraken (`kraken`)
 
-`decoder_make` reserva una vez lo que un chunk necesita y `decode` decodifica un stream Oodle cuyo
-tamaño crudo es `len(destination)` sin asignar.
+`decoder_make` allocates once what a chunk needs and `decode` decodes an Oodle stream whose raw
+size is `len(destination)` without allocating.
 
-- Compresores: Kraken, Mermaid y Selkie (un mismo formato) y Leviathan, que comparten bloques,
-  quanta y chunks y difieren en el LZ de cada chunk (`lz_decode`, `mermaid_decode`,
-  `leviathan_decode`). Arrays: guardados, tANS, Huffman, RLE, secuencias y multi-arrays (arrays
-  cortados por intervalos de otros, con largos de bits variables leídos desde ambos extremos).
-- `Unsupported`: LZNA, BitKnit y el byte de flag de 0x80 al comienzo de un chunk LZ de Kraken (bytes
-  de exceso), que ninguna descripción abierta del formato lee: esos modos no se leen y ningún
-  corpus los usa.
-- Ningún corpus usa tANS, multi-arrays, Mermaid, Selkie ni Leviathan: los valida solo el encoder de
-  las pruebas, escrito desde la misma descripción del formato
-  ([decisión](decisions.md#formatos-de-oodle-sin-corpus)).
-- Un stream dañado da `Truncated` o `Malformed` sin leer ni escribir fuera de los slices; cada
-  stream (literales, offsets, largos, arrays de intervalos) debe consumirse entero. La corrección
-  se mide con el BLAKE3 de cada `FCompressedBuffer`.
-- Las copias de un match escriben palabras de 8 bytes y pueden pisar hasta 7 bytes después del
-  match dentro del destino: son salida que todavía no se escribió.
+- Compressors: Kraken, Mermaid and Selkie (one format) and Leviathan, which share blocks, quanta
+  and chunks and differ in each chunk's LZ (`lz_decode`, `mermaid_decode`, `leviathan_decode`).
+  Arrays: stored, tANS, Huffman, RLE, sequences and multi-arrays (arrays cut by intervals of
+  others, with variable bit lengths read from both ends).
+- `Unsupported`: LZNA, BitKnit and the 0x80 flag byte at the start of a Kraken LZ chunk (excess
+  bytes), which no open description of the format reads: those modes are not read and no corpus
+  uses them.
+- No corpus uses tANS, multi-arrays, Mermaid, Selkie or Leviathan: only the tests' encoder,
+  written from the same format description, validates them
+  ([decision](decisions.md#oodle-formats-without-a-corpus)).
+- A damaged stream gives `Truncated` or `Malformed` without reading or writing outside the slices;
+  each stream (literals, offsets, lengths, interval arrays) must be fully consumed. Correctness is
+  measured with the BLAKE3 of each `FCompressedBuffer`.
+- Match copies write 8-byte words and may overwrite up to 7 bytes after the match inside the
+  destination: that is output not yet written.
 
-## Texturas (`texture`)
+## Textures (`texture`)
 
-- `texture_kind` reconoce las clases de textura de `/Script/Engine` (2D y sus variantes de lightmap
-  y perfil de luz, cube, arrays y volumen). `texture_read` lee el struct `Source` y ubica el
-  payload (`FEditorBulkData` desde la virtualización de UE5, bulk data antes) con las reglas de
-  carga de Unreal para saves viejos.
-- **Uso.** `TC_Normalmap` es `Normal`; `SRGB` falso, `TC_Masks`, `TC_Alpha` y los HDR son `Data`; el
-  resto, `Color`. `TC_Grayscale`, `TC_Displacementmap`, `TC_HalfFloat`, `TC_SingleFloat` y
-  `TC_HDR_F32` piden `keep_precision`: un origen de 16 bits o float se guarda sin comprimir. Los
-  demás ajustes de compresión de Unreal no cuentan: el formato lo decide el
-  uso (`cook/textures` del motor)
-  ([decisión](decisions.md#texturas-de-unreal-el-uso-decide-el-formato-no-sus-ajustes-de-compresión)).
-- `texture_decode` da todos los bloques, capas, mips y slices, filas desde arriba, en RGBA8,
-  RGBA16 o RGBA32F lineal según el formato de origen, desde None, UEDELTA, PNG, JPEG o UEJPEG.
-  PNG, JPEG y UEJPEG son una sola imagen 2D y, como en Unreal, el formato lo dicen sus bytes y no
-  la compresión que nombra el origen: PNG y JPEG con stb, `OOJPEG` con `uejpeg_decode`. Un origen
-  que se llama PNG y es `BGRA8` guarda los bytes tal cual (Unreal los escribió como RGBA); si la
-  imagen no decodifica y el payload mide lo que el origen sin comprimir, se lee así, como Unreal.
-- **UEJPEG** (`uejpeg.odin`): los coeficientes cuantizados de un JPEG baseline
-  sin Huffman, en bandas horizontales (splits) guardadas o comprimidas con Oodle (se decodifican
-  con `kraken`). Da los píxeles que da Unreal en x64: la IDCT rápida entera como la calcula su
-  camino SSE2, y el upsampling y el YCbCr en punto fijo por SSE2
-  ([decisión](decisions.md#uejpeg-los-píxeles-de-unreal-en-x64)). El origen es `BGRA8`, o `G8`, que
-  guarda el rojo como `ImageCore`; 16 bits o float es `Unsupported_Value`. Se rechaza lo que
-  Unreal no valida y lo haría leer fuera de sus planos o dejar coeficientes sin escribir: bloques
-  fuera de la imagen o un split Oodle vacío.
-- Las normal maps salen en la convención de Mirai (+Y): el verde se invierte salvo que
-  `bFlipGreenChannel` ya lo invirtiera.
-- `check`: con `bGuidIsHash` el `Id` es el BLAKE3 del origen crudo, y `Matches`, `Differs` o
-  `Unknown` comparan contra lo decodificado.
-- `texture_build_input` da a `cook/textures.build` del motor el nivel 0 del primer bloque y capa con
-  su
-  precisión y sus `Build_Options`: 8 bits como están (la curva 2.2 legacy pasa a sRGB), 16 bits
-  lineales que el color lleva a la curva sRGB, y floats como son, HDR por encima de 1 incluido.
-  - Un array conserva sus slices como capas.
-  - Un cubo da sus caras en el orden y los ejes de Mirai: cada texel de una cara de Mirai es el de
-    Unreal que se muestrea con la misma dirección del mundo (`cube_faces`, una permutación exacta).
-    Uno de longitud y latitud (`bLongLatCubemap`, o slices que no son cubos enteros) se vuelve seis
-    caras como lo hace el build de Unreal (`cube_long_lat`): lado la potencia de dos de la mitad
-    del ancho o menos, al menos 32, y cada texel lee la imagen bilineal en su longitud y latitud.
-  - `approximations` dice lo que un `.tex` no guarda: la profundidad de un volumen después de su
-    primer slice, las capas de Unreal (varias imágenes por textura, de las texturas virtuales)
-    después de la primera, los bloques UDIM después del primero y los mips de autor (la cadena la
-    rehace `cook/textures` del motor). Mirai no tiene consumidor de volúmenes, capas ni UDIM.
-- Un paquete con solo texturas se importa como esas texturas
-  ([importación](#formato-de-modelos-model)); el resto llega por los materiales que las leen. Un
-  cubo o un
-  array no se hornea en un mapa de uv (`source_pixels`): solo entra como textura.
+- `texture_kind` recognizes the `/Script/Engine` texture classes (2D and its lightmap and light
+  profile variants, cube, arrays and volume). `texture_read` reads the `Source` struct and locates
+  the payload (`FEditorBulkData` since UE5 virtualization, bulk data before) with Unreal's load
+  rules for old saves.
+- **Usage.** `TC_Normalmap` is `Normal`; false `SRGB`, `TC_Masks`, `TC_Alpha` and HDR are `Data`;
+  the rest, `Color`. `TC_Grayscale`, `TC_Displacementmap`, `TC_HalfFloat`, `TC_SingleFloat` and
+  `TC_HDR_F32` ask for `keep_precision`: a 16-bit or float source is stored uncompressed. Unreal's
+  other compression settings do not count: the usage decides the format (the engine's
+  `cook/textures`)
+  ([decision](decisions.md#unreal-textures-usage-decides-the-format-not-compression-settings)).
+- `texture_decode` gives all blocks, layers, mips and slices, rows from the top, as RGBA8, RGBA16
+  or linear RGBA32F depending on the source format, from None, UEDELTA, PNG, JPEG or UEJPEG. PNG,
+  JPEG and UEJPEG are a single 2D image and, as in Unreal, the format is told by their bytes and
+  not by the compression the source names: PNG and JPEG with stb, `OOJPEG` with `uejpeg_decode`. A
+  source called PNG that is `BGRA8` stores the bytes as they are (Unreal wrote them as RGBA); if
+  the image does not decode and the payload is the size of the uncompressed source, it is read
+  that way, as Unreal does.
+- **UEJPEG** (`uejpeg.odin`): the quantized coefficients of a baseline JPEG without Huffman, in
+  horizontal bands (splits) stored or Oodle-compressed (decoded with `kraken`). It gives the pixels
+  Unreal gives on x64: the integer fast IDCT as its SSE2 path computes it, and fixed-point
+  upsampling and YCbCr via SSE2
+  ([decision](decisions.md#uejpeg-unreals-pixels-on-x64)). The source is `BGRA8`, or `G8`,
+  which stores red as `ImageCore` does; 16 bits or float is `Unsupported_Value`. What Unreal does
+  not validate and would make it read outside its planes or leave coefficients unwritten is
+  rejected: blocks outside the image or an empty Oodle split.
+- Normal maps come out in Mirai's convention (+Y): green is inverted unless `bFlipGreenChannel`
+  already inverted it.
+- `check`: with `bGuidIsHash` the `Id` is the BLAKE3 of the raw source, and `Matches`, `Differs`
+  or `Unknown` compare against the decoded data.
+- `texture_build_input` gives the engine's `cook/textures.build` level 0 of the first block and
+  layer with its precision and its `Build_Options`: 8 bits as they are (the legacy 2.2 curve
+  becomes sRGB), linear 16 bits that color takes to the sRGB curve, and floats as they are, HDR
+  above 1 included.
+  - An array keeps its slices as layers.
+  - A cube gives its faces in Mirai's order and axes: each texel of a Mirai face is the Unreal one
+    sampled with the same world direction (`cube_faces`, an exact permutation). A long-lat cube
+    (`bLongLatCubemap`, or slices that are not whole cubes) becomes six faces as Unreal's build
+    does (`cube_long_lat`): side the power of two of half the width or less, at least 32, and each
+    texel reads the image bilinearly at its longitude and latitude.
+  - `approximations` says what a `.tex` does not store: a volume's depth after its first slice,
+    Unreal layers (several images per texture, from virtual textures) after the first, UDIM blocks
+    after the first and authored mips (the engine's `cook/textures` rebuilds the chain). Mirai has
+    no consumer for volumes, layers or UDIM.
+- A package with only textures is imported as those textures ([import](#model-format-model));
+  the rest arrives through the materials that read them. A cube or an array is not baked into a uv
+  map (`source_pixels`): it only enters as a texture.
 
-## Mallas estáticas (`mesh`)
+## Static meshes (`mesh`)
 
-`mesh_read` lee una `StaticMesh` y ubica el payload de un source model; `mesh_decode` lo construye
-como el build de Unreal: un `Mesh` de esquinas en el espacio de Unreal, con la escala de build. Un
-paquete con mallas se abre con `LIMITS`: el payload de una malla de millones de triángulos supera
-`DEFAULT_LIMITS`.
+`mesh_read` reads a `StaticMesh` and locates a source model's payload; `mesh_decode` builds it as
+Unreal's build does: a corner `Mesh` in Unreal space, with the build scale. A package with meshes
+is opened with `LIMITS`: the payload of a mesh of millions of triangles exceeds `DEFAULT_LIMITS`.
 
-- **Modelo.** `Lod0` (lo que Unreal dibuja sin Nanite) o `Hi_Res` (`HiResSourceModel`, del que se
-  construye Nanite) ([decisión](decisions.md#mallas-de-unreal-lod-0-y-no-el-hi-res-de-nanite)). Los
-  LOD 1+ no se leen: los niveles de Mirai salen de LOD 0.
-- **Payload**, según las versiones del paquete: un `FRawMesh` o un `FMeshDescription` (en el
-  formato de mapa de elementos o en el de arreglos de UE4). Una descripción guardada antes de
-  `MeshDescriptionTriangles` trae solo polígonos: sus triángulos son los que UE5 hace al cargarla,
-  el abanico sobre la segunda esquina, también en un polígono cóncavo
-  ([decisión](decisions.md#polígonos-sin-triángulos-el-abanico-que-dibuja-ue5)).
-- **Lo que hace el build** (`Mesh`):
-  - Las secciones son los grupos de polígonos, con el material que Unreal les da (-1 si ese slot
-    no existe).
-  - Un triángulo degenerado (esquinas a menos de `DEGENERATE_DISTANCE`, exactas sin
-    `bRemoveDegenerates`) o sin área se descarta.
-  - Normales, donde se recomputan, faltan o no son finitas: la suma de las de los triángulos unidos
-    por aristas suaves. Tangentes: las de la fuente salvo que se recomputen; en cero, quien importa
-    hace MikkTSpace.
-  - `BuildScale3D` escala posiciones y tangentes y la inversa a las normales; una escala que refleja
-    da vuelta los triángulos.
-  - Color: los bytes del vertex buffer de Unreal; vacío si todos son blancos.
-  - Triángulos en el orden de Unreal: visto de frente, `cross(c2-c0,c1-c0)` sale de la cara.
-- `Static_Mesh` trae además los slots, `ExtendedBounds` y el `BodySetup`, que `body_read` lee: las
-  formas de su `AggGeom` en el espacio de Unreal y de la malla (los puntos de un convexo con su
-  `Transform` aplicado; los elementos con `CollisionEnabled` en `NoCollision` quedan afuera), el
-  `CollisionTraceFlag` y el perfil de su `DefaultInstance`. Algunos saves de UE4
-  guardan el material de un slot solo al final de la serialización de la malla: se toma de ahí.
+- **Model.** `Lod0` (what Unreal draws without Nanite) or `Hi_Res` (`HiResSourceModel`, from which
+  Nanite is built)
+  ([decision](decisions.md#unreal-meshes-lod-0-not-the-nanite-hi-res)). LOD 1+ are not
+  read: Mirai's levels come from LOD 0.
+- **Payload**, depending on the package versions: an `FRawMesh` or an `FMeshDescription` (in the
+  element-map format or the UE4 array format). A description saved before
+  `MeshDescriptionTriangles` has only polygons: its triangles are the ones UE5 makes on load, a
+  fan on the second corner, also for a concave polygon
+  ([decision](decisions.md#polygons-without-triangles-the-fan-ue5-draws)).
+- **What the build does** (`Mesh`):
+  - Sections are the polygon groups, with the material Unreal gives them (-1 if that slot does
+    not exist).
+  - A degenerate triangle (corners closer than `DEGENERATE_DISTANCE`, exact without
+    `bRemoveDegenerates`) or without area is dropped.
+  - Normals, where recomputed, missing or not finite: the sum of those of the triangles joined by
+    soft edges. Tangents: the source's unless recomputed; zero, and the importer runs MikkTSpace.
+  - `BuildScale3D` scales positions and tangents and its inverse scales normals; a mirroring
+    scale flips the triangles.
+  - Color: the bytes of Unreal's vertex buffer; empty if all are white.
+  - Triangles in Unreal's order: seen from the front, `cross(c2-c0,c1-c0)` points out of the face.
+- `Static_Mesh` also brings the slots, `ExtendedBounds` and the `BodySetup`, which `body_read`
+  reads: the shapes of its `AggGeom` in Unreal and mesh space (a convex's points with its
+  `Transform` applied; elements with `CollisionEnabled` set to `NoCollision` are left out), the
+  `CollisionTraceFlag` and the profile of its `DefaultInstance`. Some UE4 saves store a slot's
+  material only at the end of the mesh serialization: it is taken from there.
 
-## Mallas con esqueleto (`mesh`)
+## Skeletal meshes (`mesh`)
 
-`skeletal_read` lee una `SkeletalMesh` (propiedades, materiales, `FReferenceSkeleton` y dónde está
-LOD 0); `skeletal_decode` da un `Skinned_Mesh`, el `Mesh` de las estáticas con las influencias de
-cada posición y los morph targets de LOD 0. `skeleton_read` da el esqueleto de referencia de un
-`Skeleton` y sus sockets.
+`skeletal_read` reads a `SkeletalMesh` (properties, materials, `FReferenceSkeleton` and where
+LOD 0 is); `skeletal_decode` gives a `Skinned_Mesh`, the static `Mesh` with the influences of each
+position and LOD 0's morph targets. `skeleton_read` gives the reference skeleton of a `Skeleton`
+and its sockets.
 
-- **Esqueleto.** El de referencia de la malla, el de su pose de bind: nombres, padres (siempre un
-  hueso anterior, una sola raíz) y la pose de cada hueso relativa a su padre; `Skeleton` es la ruta
-  de su `USkeleton`, que no se abre.
-- **Sockets**: los `USkeletalMeshSocket` de la malla o del `Skeleton`, con su hueso y su lugar.
-- **Curvas de morph targets** (`Skeleton.morph_curves`): las que la metadata de curvas del
-  `Skeleton` marca con `bMorphtarget`, leídas según la versión; si no se pudo leer la metadata,
-  `curves_known` es falso.
-- **Dónde está LOD 0**: hasta UE 5.3, el `FSkeletalMeshLODModel` que el build guarda con los datos
-  de editor, lo que Unreal dibuja, sin reconstruir nada; después, el `FMeshDescription` del source
-  model con sus `SkinWeights`. Saves anteriores a `SplitModelAndRenderData` o a
-  `IncreaseNormalPrecision` son `Unsupported_Value`: hay que guardarlos de nuevo en Unreal.
-- **Build de una descripción** (`skin.odin`), lo que el build esquelético de Unreal guardaría en
-  el modelo LOD:
-  - Normales como en una malla estática; solo salen los triángulos sin área, porque el build
-    esquelético no quita degenerados (`bRemoveDegenerates` no lo cambia).
-  - Color sin sRGB (`ToFColor(false)`), blanco si ninguna esquina tiene otro color que negro.
-  - Influencias: las primeras que el build guarda, de huesos que existen, ordenadas y
-    renormalizadas como en Unreal (el resto de cada peso pasa al siguiente, con el orden de Unreal
-    en los empates); sin ninguna, la raíz. Cuántas: el
-    `BoneInfluenceLimit` del asset, si no el `DefaultBoneInfluenceLimit` del proyecto, nunca más
-    de doce, y ocho salvo `r.GPUSkin.UnlimitedBoneInfluences` por encima de su umbral. El proyecto
-    sale del `Config/DefaultEngine.ini` del montaje `/Game` (`skin_project_read`); sin él, los
-    defaults del motor. El valor `PerPlatform` del límite no se lee.
-  - Soldadura: en el orden de las caras, una esquina pasa a ser el
-    primer vértice ya hecho en su chunk (el material de su sección) cuya esquina se superpone y
-    es igual dentro de los umbrales de `FSkeletalMeshBuildSettings` (posición, uv, base tangente)
-    con el mismo color e influencias; un triángulo con dos esquinas en un vértice sale
-    (`degenerate`). Se compara la tangente de la fuente; la que la importación hace después con
-    MikkTSpace no está todavía. Las normales de una descripción no son las de
-    `Skeletal_ComputeTangents`, y las influencias de `SK_DinoDragon` y `SKM_Quinn` (ContentExamples
-    5.8) difieren de su modelo LOD guardado (11/10 contra 8): no se compararon con Unreal.
-- **Secciones.** Un índice que sale de su sección es `Malformed`. El material sale de
-  `LODMaterialMap` de LOD 0 (en una descripción, del nombre del grupo como
-  `AdjustImportDataFaceMaterialIndex`); las secciones `bDisabled` quedan afuera (`left_out`) y las
-  de tela se cuentan (`cloth`) y se dibujan con su skin.
-- **Morph targets** (`morphs`, con la fila de deltas de cada esquina): de un modelo LOD, el
-  `FMorphTargetLODModel` de LOD 0 de cada `UMorphTarget`; de una descripción, los atributos
-  `Morph-<nombre>`. Un target cocinado es `Cooked`.
+- **Skeleton.** The mesh's reference skeleton, its bind pose: names, parents (always an earlier
+  bone, a single root) and each bone's pose relative to its parent; `Skeleton` is the path of its
+  `USkeleton`, which is not opened.
+- **Sockets**: the `USkeletalMeshSocket`s of the mesh or of the `Skeleton`, with their bone and
+  placement.
+- **Morph target curves** (`Skeleton.morph_curves`): those the `Skeleton`'s curve metadata marks
+  with `bMorphtarget`, read per version; if the metadata could not be read, `curves_known` is
+  false.
+- **Where LOD 0 is**: up to UE 5.3, the `FSkeletalMeshLODModel` the build saves with the editor
+  data, what Unreal draws, rebuilding nothing; after that, the source model's `FMeshDescription`
+  with its `SkinWeights`. Saves before `SplitModelAndRenderData` or `IncreaseNormalPrecision` are
+  `Unsupported_Value`: they must be saved again in Unreal.
+- **Building a description** (`skin.odin`), what Unreal's skeletal build would store in the LOD
+  model:
+  - Normals as in a static mesh; only triangles without area are dropped, because the skeletal
+    build does not remove degenerates (`bRemoveDegenerates` does not change that).
+  - Color without sRGB (`ToFColor(false)`), white if no corner has a color other than black.
+  - Influences: the first ones the build stores, from bones that exist, sorted and renormalized as
+    in Unreal (the remainder of each weight goes to the next, with Unreal's order on ties); with
+    none, the root. How many: the asset's `BoneInfluenceLimit`, else the project's
+    `DefaultBoneInfluenceLimit`, never more than twelve, and eight unless
+    `r.GPUSkin.UnlimitedBoneInfluences` is above its threshold. The project comes from the
+    `Config/DefaultEngine.ini` of the `/Game` mount (`skin_project_read`); without it, the engine
+    defaults. The limit's `PerPlatform` value is not read.
+  - Welding: in face order, a corner becomes the first vertex already made in its chunk (its
+    section's material) whose corner overlaps and is equal within the `FSkeletalMeshBuildSettings`
+    thresholds (position, uv, tangent basis) with the same color and influences; a triangle with
+    two corners on one vertex is dropped (`degenerate`). The source's tangent is compared; the one
+    the import makes later with MikkTSpace is not there yet. A description's normals are not those
+    of `Skeletal_ComputeTangents`, and the influences of `SK_DinoDragon` and `SKM_Quinn`
+    (ContentExamples 5.8) differ from their saved LOD model (11/10 against 8): not compared with
+    Unreal.
+- **Sections.** An index that leaves its section is `Malformed`. The material comes from LOD 0's
+  `LODMaterialMap` (in a description, from the group name as `AdjustImportDataFaceMaterialIndex`
+  does); `bDisabled` sections are left out (`left_out`) and cloth ones are counted (`cloth`) and
+  drawn with their skin.
+- **Morph targets** (`morphs`, with each corner's delta row): from a LOD model, the
+  `FMorphTargetLODModel` of LOD 0 of each `UMorphTarget`; from a description, the
+  `Morph-<name>` attributes. A cooked target is `Cooked`.
 
-## Animaciones (`mesh`)
+## Animations (`mesh`)
 
-`animation_read` lee una `AnimSequence`: la transform local de cada hueso por clave (sin escalas,
-escala uno), curvas float, marcadores de sync y cómo se reproduce (`RateScale`, `Interpolation`,
-root motion, aditivo, notifies), con claves cada `interval` segundos desde 0 hasta la duración.
+`animation_read` reads an `AnimSequence`: each bone's local transform per key (without scales,
+scale one), float curves, sync markers and how it plays (`RateScale`, `Interpolation`, root
+motion, additive, notifies), with a key every `interval` seconds from 0 to the duration.
 
-- **Dónde está**, según el save (`layout`): `Raw_Tracks` en UE4 (`RawAnimationData` o
-  `SourceRawAnimationData`, con las claves que Unreal corrige al cargarla), `Data_Model` en
-  UE 5.0 y 5.1 (el `AnimDataModel`) y `Sequencer` desde 5.2: cada hueso es un control
-  `<hueso>_CONTROL` del control rig de la sección, cuyos canales se evalúan en cada frame como en
-  Unreal y la rotación por `FQuat::MakeFromEuler`.
-- Una pista de menos claves conserva la última, como Unreal acota la clave que muestrea; las de más
-  se recortan. Las tangentes que no son números son cero.
-- Aproximación: un segmento cúbico con tangentes de peso se evalúa sin el peso (`weighted` cuenta
-  los frames afectados; ninguno en los corpus). Una animación cocinada es `Cooked`.
+- **Where it is**, depending on the save (`layout`): `Raw_Tracks` in UE4 (`RawAnimationData` or
+  `SourceRawAnimationData`, with the keys Unreal fixes on load), `Data_Model` in UE 5.0 and 5.1
+  (the `AnimDataModel`) and `Sequencer` since 5.2: each bone is a `<bone>_CONTROL` control of the
+  section's control rig, whose channels are evaluated at each frame as in Unreal, and rotation by
+  `FQuat::MakeFromEuler`.
+- A track with fewer keys keeps the last one, as Unreal clamps the key it samples; those with more
+  are trimmed. Tangents that are not numbers are zero.
+- Approximation: a cubic segment with weighted tangents is evaluated without the weight
+  (`weighted` counts the affected frames; none in the corpora). A cooked animation is `Cooked`.
 
-## Formato de modelos (`model`)
+## Model format (`model`)
 
-El paquete `model` (`uasset`) es el formato `.uasset` de modelos del editor: importa cada
-`StaticMesh` de un paquete de editor como una malla con su nodo
-([lectura](#mallas-estáticas-mesh)), cada `SkeletalMesh` como una malla con
-esqueleto ([lectura](#mallas-con-esqueleto-mesh)) y cada
-`AnimSequence` como un clip ([lectura](#animaciones-mesh)). Un paquete con solo
-un `Skeleton` es ese esqueleto; uno con solo texturas, cada una un `.tex` con sus capas, sus caras
-y la precisión de su origen ([lectura](#texturas-texture)); uno sin nada de eso
-es `Unsupported`. Lo que el paquete rechaza llega con su causa y su offset.
+The `model` package (`uasset`) is the editor's `.uasset` model format: it imports each
+`StaticMesh` of an editor package as a mesh with its node ([reading](#static-meshes-mesh)), each
+`SkeletalMesh` as a skinned mesh ([reading](#skeletal-meshes-mesh)) and each `AnimSequence` as a
+clip ([reading](#animations-mesh)). A package with only a `Skeleton` is that skeleton; one with
+only textures, each a `.tex` with its layers, faces and the precision of its source
+([reading](#textures-texture)); one with none of that is `Unsupported`. What the package rejects
+arrives with its cause and offset.
 
-- **Espacio.** Centímetros, +Z arriba, +X adelante, +Y derecha y zurdo, con V desde arriba: el +X
-  del motor es el -Y de Unreal, su +Y el +Z y su frente el +X. Es un espejo: los triángulos de
-  Unreal, que corren al revés de sus ejes, entran al builder con las esquinas invertidas y el
-  espejo los vuelve a girar.
-- **Slots.** Uno por slot de `StaticMaterials` que use una sección: su id es el índice del slot
-  más uno (lo que un componente de Unreal sobrescribe por índice) y su etiqueta el nombre del
-  slot; una sección sin material válido va al slot 0, sin material.
-- **Materiales.** `slot_material(&contexto,slot)` hace el material de un slot, uno por ruta de
-  objeto en la importación: lo traduce
-  [`material`](#materiales-material) a través de los montajes
-  (una `Library` y un `write.Builder` por importación, o los de `Options.library` e `images`, que
-  un nivel comparte entre todas sus mallas) y lo agrega con sus imágenes con
-  `write.reader_material`. Un
-
-  material que no se encuentra o no se traduce toma los valores de `.mat` con su nombre y deja
-  una advertencia. Uno que necesita un programa Surface lo escribe en `<root>/shaders`; sin
-  `root`, conserva sus valores del modelo estándar y deja una advertencia: leer una fuente no
-  escribe fuera de una carpeta de proyecto.
-- **Color de vértice.** Unreal solo lo usa si el grafo del material lo lee; el modelo estándar de
-  Mirai lo multiplica siempre y un programa lo lee como dato. Las esquinas llevan el color solo en
-  los slots cuyo material traducido lo multiplica por su color base o cuyo programa lo lee
+- **Space.** Centimeters, +Z up, +X forward, +Y right and left-handed, with V from the top: the
+  engine's +X is Unreal's -Y, its +Y is +Z and its front is +X. It is a mirror: Unreal's
+  triangles, which run opposite to its axes, enter the builder with inverted corners and the
+  mirror turns them again.
+- **Slots.** One per `StaticMaterials` slot that a section uses: its id is the slot index plus one
+  (what an Unreal component overrides by index) and its label the slot name; a section without a
+  valid material goes to slot 0, without material.
+- **Materials.** `slot_material(&context,slot)` makes a slot's material, one per object path in
+  the import: [`material`](#materials-material) translates it through the mounts (a `Library` and
+  a `write.Builder` per import, or those of `Options.library` and `images`, which a level shares
+  among all its meshes) and adds it with its images via `write.reader_material`. A material that
+  is not found or not translated takes the `.mat` values with its name and leaves a warning. One
+  that needs a Surface program writes it to `<root>/shaders`; without `root`, it keeps its
+  standard-model values and leaves a warning: reading a source does not write outside a project
+  folder.
+- **Vertex color.** Unreal only uses it if the material graph reads it; Mirai's standard model
+  always multiplies it and a program reads it as data. Corners carry the color only in slots whose
+  translated material multiplies it by its base color or whose program reads it
   (`Vertex_Colors.Multiply_Base_Color`, `.Program`)
-  ([decisión](decisions.md#color-de-vértice-de-unreal-solo-si-el-material-lo-usa)).
-- **UV.** Las dos primeras; si hay más, una advertencia.
-- **Montajes.** `/Game` es la carpeta `Content` del proyecto del paquete: de las carpetas
-  `Content` que lo contienen, la primera junto a un `.uproject` o, sin ninguna, la más cercana
-  (solo se listan las carpetas que tienen una `Content`). Un paquete fuera de toda carpeta
-  `Content` (un pack copiado sin su proyecto) monta lo que da `source_mount_guess` del nombre que
-  guarda de sí mismo o, si lo renombraron, `source_mount_near` de un paquete que importa;
-  `/Engine`, `Options.engine_content` o,
-  sin él, `UNREAL_ENGINE` (una instalación o su carpeta `Engine`) o la instalación `UE_<versión>`
-  más nueva donde las deja el launcher de Epic. Cada plugin del motor con contenido monta el suyo
-  (`/Niagara` es `Engine/Plugins/FX/Niagara/Content`, `engine_plugin_mounts`). Recorrerlos lee
-  cientos de carpetas: la importación de un paquete suelto los monta recién cuando lee un paquete
-  que solo un plugin puede tener (`library_plugins_mount`); la de un nivel, al empezar.
-- **`/Engine` sin Unreal** (`engine.odin`): un material de `/Engine` que ningún montaje tiene, o uno
-  que lee una textura, función, colección o padre de `/Engine` que falta, es la grilla del motor
-  (`engine_grid`: el modelo estándar con el programa `Grid` de `shaders/materials`, líneas cada
-  metro del mundo y más oscuras cada diez), con una advertencia que nombra la referencia original
-  ([decisión](decisions.md#engine-sin-unreal-sustitutos-propios-del-motor)). Con `/Engine`
-  montado se lee el original.
-- **Modelo.** LOD 0; con `Options.hi_res`, el hi-res de Nanite de las mallas que lo tienen.
-- **Esqueleto.** El de referencia de la malla, con el nombre de su `USkeleton`; la ruta de un hueso
-  son los nombres desde la raíz. Un joint por hueso, cuyo inverse bind es el del hueso en reposo:
-  la pose de bind dibuja la malla como está. Huesos e inverse binds pasan al espacio del motor con
-  la geometría. Sus sockets son los de la malla y los de su `USkeleton` (que se abre por los
-  montajes) que la malla no nombra, como en Unreal; uno de un hueso que el esqueleto
-  no tiene, o de escala cero, queda afuera con una advertencia.
-- **Pesos.** Cada vértice conserva sus ocho influencias mayores, cuantizadas a bytes que suman 255,
-  y una advertencia cuenta los que tenían más; uno sin influencias sigue a la raíz, como en
-  Unreal. Las secciones que Unreal no dibuja quedan afuera y las de tela se pegan a sus huesos, con
-  una advertencia cada una.
-- **Morph targets.** Los de LOD 0, en peso cero, como los morph targets de la
-  malla: los deltas de posición y de normal de la fila de cada esquina; las tangentes que hace
-  MikkTSpace siguen a la forma.
-- **Animaciones.** El clip de una `AnimSequence` lleva su nombre y está en el `.anim` del paquete;
-  importar una malla no pide sus animaciones.
-  - Las pistas se ligan por la ruta de cada hueso en el `USkeleton` de la animación (sin él,
-    `Not_Found`), comparando nombres sin mayúsculas como Unreal; una pista de un hueso que no existe
-    queda afuera con una advertencia.
-  - Una clave por frame, lineal. Con `Interpolation` Step cada clave empieza a la mitad del frame
-    anterior, como Unreal toma el frame más cercano. Sin escalas un hueso es de escala uno, como en
-    Unreal, aunque su reposo sea otra.
-  - Las curvas son tracks `Float` de su nombre y, las que el esqueleto marca de morph target,
-    también de `/@morph/<nombre>`
-    (pesos de morph de `animation`). La interpolación de una
-    clave de Unreal (cómo va a la siguiente) es la de llegada de la siguiente en Mirai: constante es
-    `Step` y cúbica, `Cubic_Spline`. Tangentes de peso y extrapolaciones no constantes son
-    advertencias.
-  - Los marcadores de sync son marcadores. `RateScale` se hornea en tiempos y pendientes; uno que no
-    es positivo se rechaza.
-  - Con root motion o `bForceRootLock`, el hueso raíz es la raíz del clip; un `RootMotionRootLock`
-    que no es la pose de referencia es una advertencia, porque Mirai deja la raíz en su reposo.
-  - Una animación aditiva se rechaza con la razón
-    ([decisión](decisions.md#animaciones-aditivas-de-unreal-se-rechazan)); los notifies son lógica
-    de Unreal: una advertencia.
-- **Colisión.** El `AggGeom` del `BodySetup` (`umesh.body_read`) son los colliders de la malla:
-  cajas, esferas y cápsulas tal cual y cada convexo como un casco de sus puntos; las cápsulas
-  ahusadas y los level sets son una advertencia. Con `CTF_UseComplexAsSimple` no hay colliders de
-  la fuente: la colisión son sus triángulos (la colisión del motor).
+  ([decision](decisions.md#unreal-vertex-color-only-if-the-material-uses-it)).
+- **UV.** The first two; if there are more, a warning.
+- **Mounts.** `/Game` is the `Content` folder of the package's project: of the `Content` folders
+  that contain it, the first next to a `.uproject` or, with none, the closest (only folders that
+  have a `Content` are listed). A package outside any `Content` folder (a pack copied without its
+  project) mounts what `source_mount_guess` gives from the name it stores of itself or, if it was
+  renamed, `source_mount_near` of a package it imports; `/Engine`, `Options.engine_content` or,
+  without it, `UNREAL_ENGINE` (an install or its `Engine` folder) or the newest `UE_<version>`
+  install where Epic's launcher leaves them. Each engine plugin with content mounts its own
+  (`/Niagara` is `Engine/Plugins/FX/Niagara/Content`, `engine_plugin_mounts`). Walking them reads
+  hundreds of folders: importing a single package mounts them only when it reads a package that
+  only a plugin can have (`library_plugins_mount`); importing a level, at the start.
+- **`/Engine` without Unreal** (`engine.odin`): a `/Engine` material that no mount has, or one
+  that reads a missing `/Engine` texture, function, collection or parent, is the engine grid
+  (`engine_grid`: the standard model with the `Grid` program of `shaders/materials`, lines every
+  world meter and darker every ten), with a warning naming the original reference
+  ([decision](decisions.md#engine-without-unreal-engine-substitutes)). With `/Engine`
+  mounted, the original is read.
+- **Model.** LOD 0; with `Options.hi_res`, the Nanite hi-res of the meshes that have it.
+- **Skeleton.** The mesh's reference skeleton, with the name of its `USkeleton`; a bone's path is
+  the names from the root. One joint per bone, whose inverse bind is the bone's at rest: the bind
+  pose draws the mesh as it is. Bones and inverse binds go to engine space with the geometry. Its
+  sockets are the mesh's and those of its `USkeleton` (opened through the mounts) that the mesh
+  does not name, as in Unreal; one on a bone the skeleton lacks, or of zero scale, is left out
+  with a warning.
+- **Weights.** Each vertex keeps its eight largest influences, quantized to bytes that sum to 255,
+  and a warning counts those that had more; one without influences follows the root, as in
+  Unreal. Sections Unreal does not draw are left out and cloth ones are attached to their bones,
+  with one warning each.
+- **Morph targets.** LOD 0's, at weight zero, as the mesh's morph targets: the position and
+  normal deltas of each corner's row; the tangents MikkTSpace makes follow the shape.
+- **Animations.** An `AnimSequence`'s clip carries its name and is in the package's `.anim`;
+  importing a mesh does not ask for its animations.
+  - Tracks are bound by each bone's path in the animation's `USkeleton` (without it,
+    `Not_Found`), comparing names case-insensitively as Unreal does; a track of a bone that does
+    not exist is left out with a warning.
+  - One key per frame, linear. With `Interpolation` Step each key starts halfway through the
+    previous frame, as Unreal takes the nearest frame. Without scales a bone has scale one, as in
+    Unreal, even if its rest differs.
+  - Curves are `Float` tracks of their name and, those the skeleton marks as morph target, also of
+    `/@morph/<name>` (`animation` morph weights). An Unreal key's interpolation (how it goes to
+    the next) is the next key's arrival interpolation in Mirai: constant is `Step` and cubic,
+    `Cubic_Spline`. Weighted tangents and non-constant extrapolations are warnings.
+  - Sync markers are markers. `RateScale` is baked into times and slopes; a non-positive one is
+    rejected.
+  - With root motion or `bForceRootLock`, the root bone is the clip's root; a `RootMotionRootLock`
+    that is not the reference pose is a warning, because Mirai leaves the root at rest.
+  - An additive animation is rejected with the reason
+    ([decision](decisions.md#unreal-additive-animations-are-rejected)); notifies are Unreal
+    logic: a warning.
+- **Collision.** The `BodySetup`'s `AggGeom` (`umesh.body_read`) are the mesh's colliders: boxes,
+  spheres and capsules as they are and each convex as a hull of its points; tapered capsules and
+  level sets are a warning. With `CTF_UseComplexAsSimple` there are no source colliders: the
+  collision is its triangles (the engine's collision).
 
-## Materiales (`material`)
+## Materials (`material`)
 
-`Library` abre una vez cada paquete por nombre, por sus `Source_Mount` o con los bytes de
-`library_add`; `object_find` y `object_resolve` dan un `Object` (un import lleva al export que
-nombra). Todo vive en el arena de la biblioteca.
+`Library` opens each package once by name, through its `Source_Mount`s or with the bytes of
+`library_add`; `object_find` and `object_resolve` give an `Object` (an import leads to the export
+it names). Everything lives in the library's arena.
 
-- `translate` traduce un `Material` o una instancia a un `Translated_Material`; `landscape_layers`
-  da las capas de un material de Landscape. Lo traducido trae el `Material_Info` sin texturas, de
-  qué está hecha la imagen de cada mapa, la tabla de valores, el programa si hace falta, el uso del
-  color de vértice, las expresiones sin traducir por clase y `notes` (lo que se aproximó o quedó
-  afuera, y por qué).
+- `translate` translates a `Material` or an instance into a `Translated_Material`;
+  `landscape_layers` gives the layers of a Landscape material. The result brings the
+  `Material_Info` without textures, what each map's image is made of, the value table, the program
+  if needed, the vertex color usage, the untranslated expressions per class and `notes` (what was
+  approximated or left out, and why).
 
-### Lectura
+### Reading
 
-- **Cadena.** De la instancia al `Material` por `Parent`: valores escalares, vectoriales y de
-  textura, switches y máscaras estáticas con `bOverride` y `BasePropertyOverrides`. Gana la
-  instancia más cercana. Un parámetro es del material o de una capa o blend de su pila de capas
-  (`Layer_Ref`, la asociación e índice de su `ParameterInfo`).
-- **Capas de material** (`MaterialAttributeLayers`): la pila de la instancia más cercana que la
-  cambia, o la del nodo (`DefaultLayers`). Cada capa encendida es su función en un scope con los
-  parámetros de esa capa, la primera sobre la entrada del nodo, y cada siguiente va sobre lo de
-  abajo por su blend (`Bottom` y `Top`, o sus dos primeras entradas de material attributes); sin
-  blend, la cubre. Una función de capa instanciada aporta sus valores a esa capa, detrás de los de
-  las instancias del material.
-- **Entradas.** Las del material o, en UE5, las de su `MaterialEditorOnlyData`, nativas o tagged
-  según la versión; una propiedad que no se guardó vale lo que el constructor de la clase.
-- **Expresiones.** Cada clase es un caso de `expression_build`, con la semántica de
-  `MaterialExpressionsToMIR` de Unreal: el valor entero, y la máscara de la entrada elige los
-  canales. Las funciones se expanden donde se llaman; las colecciones de parámetros dan su default;
-  reroutes y switches de calidad y de nivel de features toman su entrada por defecto, y los de
-  texturas virtuales, la rama sin ellas; los material attributes son filas de atributos, y
-  `SetMaterialAttributes` cambia las suyas sobre las de `Inputs[0]`. Un alfa de `Lerp` de otro
-  ancho que sus extremos vale su primer componente, como en Unreal.
-- **Tabla de valores** (`Graph`): un nodo por operación sobre nodos anteriores, de uno a cuatro
-  componentes; nodos iguales son uno y las constantes se pliegan al agregarse. Los valores del
-  contexto son UV, tiempo, posición y normales del mundo, el marco tangente, colores de vértice, el
-  objeto (centro, radio y esquinas de sus bounds, pivote y ejes con su escala), el punto en la
-  imagen de la vista y su profundidad, y la de la escena detrás: `Transform` entre tangente, objeto
-  (o instancia) y mundo y `TransformPosition` entre objeto y mundo son un programa con ese marco y
-  esos ejes; `LocalPosition` es el punto en el espacio del objeto, `ObjectOrientation` su Z local
-  y `ObjectScale`, el largo de sus ejes;
-  `ObjectBounds`, `Bounds` y `ObjectLocalBounds` salen de las esquinas y los ejes.
-- **El mundo desde su centro.** Un lugar del mundo (`WorldPosition`, el centro y el pivote del
-  objeto, las coordenadas de una Landscape entera) es el relativo al origen del render más el
-  origen (`Origin`), y restar dos lugares quita el origen que comparten
-  ([decisión](decisions.md#materiales-de-unreal-lo-que-el-programa-ve-de-la-pantalla-el-mundo-y-el-hlsl)):
-  no salta cuando el origen se mueve.
-- **Pantalla y profundidad.** `ScreenPosition` (UV de la vista y píxeles), `ViewSize`,
-  `SceneTexelSize`, `PixelDepth`, `SceneDepth` en su punto y `DepthFade`; la escena detrás la ven
-  las pasadas de vidrio y translúcidos.
-- **Lo que solo calcula un programa** (`PROGRAM` del grafo): `Noise` y `VectorNoise`, que llaman a
-  `shaders/include/unreal_noise.slang` (las funciones de ruido de Unreal una vez, con las de tabla
-  sobre gradientes por hash); `TextureProperty`, el tamaño de la textura en la GPU; y `Custom`, su
-  HLSL como función del programa con sus entradas y sus salidas extra. El HLSL que lee lo que un
-  programa no tiene (`View.`, `Primitive.`, `Parameters.`, derivadas, `discard`, includes, una
-  función de los shaders de Unreal que no define ni es de HLSL o de su ruido) queda
-  en el programa como comentario con lo que lee, para que el agente lo porte a Slang; su función da
-  cero y la expresión se cuenta sin traducir.
-- **Lo que no se traduce** deja `NONE`, se cuenta por clase en `untranslated` y la salida que lo
-  usa toma el valor de Unreal sin conectar: lo que un programa de Mirai no ve (cámara, la imagen
-  detrás, partículas, campos de distancia: `SceneColor`, `SceneTexture`, `ViewProperty` y
-  `SceneDepth` con coordenadas propias), sets de UV después del segundo (datos de animación de
-  vértices) y dominios que no son superficies (`Error`). Las salidas que la traducción no lee
-  (posición, tangente, subsurface, profundidad) no se evalúan, y `WorldPositionOffset` tampoco:
-  un material de Mirai no mueve sus vértices (el motor deforma superficies con tres mecanismos
-  fijos).
-- **Aproximaciones** (en `notes`): `ActorPositionWS` es el pivote del objeto; `PerInstanceRandom`
-  es 0,5; `VertexInterpolator` pasa su entrada, calculada por píxel; `TwoSidedSign` es 1 (Mirai da
-  vuelta el marco de una cara de atrás); `Fresnel` vale su reflexión en incidencia normal, y la
-  vista
-  (`CameraVectorWS`, `ReflectionVectorWS`, la dirección a `CameraPositionWS`) es la normal: Mirai
-  refleja por la vista y lo que la imita ve la superficie de frente; `EyeAdaptationInverse` es 1
-  y deja la emisión relativa a la exposición (`Relative`); los modos
-  de mip de una muestra se dejan a Mirai; blend aditivo es una capa que no cubre.
-- **Lo legacy se adapta.** El relieve por la vista (`BumpOffset` y la función
-  `ParallaxOcclusionMapping` de `/Engine`) es la superficie sin relieve: sus UV son las que recibe,
-  sin desplazamiento de profundidad ni sombra propia. `FuzzyShading`, que aclara los bordes de una
-  tela por la vista, es su núcleo como color y sus bordes como `fuzz` de ese color, con
-  `EdgeBrightness` de peso.
+- **Chain.** From the instance to the `Material` through `Parent`: scalar, vector and texture
+  values, static switches and masks with `bOverride` and `BasePropertyOverrides`. The closest
+  instance wins. A parameter belongs to the material or to a layer or blend of its layer stack
+  (`Layer_Ref`, the association and index of its `ParameterInfo`).
+- **Material layers** (`MaterialAttributeLayers`): the stack of the closest instance that changes
+  it, or the node's (`DefaultLayers`). Each enabled layer is its function in a scope with that
+  layer's parameters, the first over the node's input, and each next one over what is below by its
+  blend (`Bottom` and `Top`, or its first two material attributes inputs); without a blend, it
+  covers it. An instanced layer function contributes its values to that layer, behind those of the
+  material's instances.
+- **Inputs.** The material's or, in UE5, those of its `MaterialEditorOnlyData`, native or tagged
+  depending on the version; a property that was not saved has the class constructor's value.
+- **Expressions.** Each class is a case of `expression_build`, with the semantics of Unreal's
+  `MaterialExpressionsToMIR`: the whole value, and the input's mask picks the channels. Functions
+  are expanded where called; parameter collections give their default; reroutes and quality and
+  feature-level switches take their default input, and virtual-texture ones, the branch without
+  them; material attributes are attribute rows, and `SetMaterialAttributes` changes its own over
+  those of `Inputs[0]`. A `Lerp` alpha of a different width than its ends is its first component,
+  as in Unreal.
+- **Value table** (`Graph`): one node per operation over earlier nodes, of one to four components;
+  equal nodes are one and constants are folded when added. The context values are UV, time, world
+  position and normals, the tangent frame, vertex colors, the object (center, radius and corners
+  of its bounds, pivot and axes with their scale), the point in the view image and its depth, and
+  the scene's behind it: `Transform` between tangent, object (or instance) and world and
+  `TransformPosition` between object and world are a program with that frame and those axes;
+  `LocalPosition` is the point in object space, `ObjectOrientation` its local Z and
+  `ObjectScale`, the length of its axes; `ObjectBounds`, `Bounds` and `ObjectLocalBounds` come
+  from the corners and axes.
+- **The world from its center.** A world location (`WorldPosition`, the object's center and pivot,
+  the coordinates of a whole Landscape) is the one relative to the render origin plus the origin
+  (`Origin`), and subtracting two locations removes the origin they share
+  ([decision](decisions.md#unreal-materials-what-the-program-sees-of-screen-world-and-hlsl)):
+  it does not jump when the origin moves.
+- **Screen and depth.** `ScreenPosition` (view UV and pixels), `ViewSize`, `SceneTexelSize`,
+  `PixelDepth`, `SceneDepth` at its point and `DepthFade`; the scene behind is seen by the glass
+  and translucent passes.
+- **What only a program computes** (the graph's `PROGRAM`): `Noise` and `VectorNoise`, which call
+  `shaders/include/unreal_noise.slang` (Unreal's noise functions once, the table-based ones over
+  hashed gradients); `TextureProperty`, the texture size on the GPU; and `Custom`, its HLSL as a
+  program function with its inputs and extra outputs. HLSL that reads what a program does not have
+  (`View.`, `Primitive.`, `Parameters.`, derivatives, `discard`, includes, an Unreal shader
+  function that is neither defined there nor HLSL nor its noise) stays in the program as a comment
+  with what it reads, for the agent to port to Slang; its function gives zero and the expression
+  is counted as untranslated.
+- **What is not translated** leaves `NONE`, is counted per class in `untranslated` and the output
+  that uses it takes Unreal's value unconnected: what a Mirai program does not see (camera, the
+  image behind, particles, distance fields: `SceneColor`, `SceneTexture`, `ViewProperty` and
+  `SceneDepth` with own coordinates), UV sets after the second (vertex animation data) and domains
+  that are not surfaces (`Error`). Outputs the translation does not read (position, tangent,
+  subsurface, depth) are not evaluated, nor is `WorldPositionOffset`: a Mirai material does not
+  move its vertices (the engine deforms surfaces with three fixed mechanisms).
+- **Approximations** (in `notes`): `ActorPositionWS` is the object's pivot; `PerInstanceRandom` is
+  0.5; `VertexInterpolator` passes its input, computed per pixel; `TwoSidedSign` is 1 (Mirai flips
+  a back face's frame); `Fresnel` is its reflectance at normal incidence, and the view
+  (`CameraVectorWS`, `ReflectionVectorWS`, the direction to `CameraPositionWS`) is the normal:
+  Mirai reflects by the view and what imitates it sees the surface head-on;
+  `EyeAdaptationInverse` is 1 and leaves emission relative to exposure (`Relative`); a sample's mip
+  modes are left to Mirai; additive blend is a layer that does not cover.
+- **Legacy is adapted.** View-dependent relief (`BumpOffset` and the `/Engine`
+  `ParallaxOcclusionMapping` function) is the surface without relief: its UVs are the ones it
+  receives, without depth displacement or self-shadow. `FuzzyShading`, which lightens a cloth's
+  edges by the view, is its core as color and its edges as that color's `fuzz`, with
+  `EdgeBrightness` as weight.
 
-### Traducción
+### Translation
 
-- **Modelo estándar.** Cada salida es un factor constante por una parte por texel cuyas muestras
-  leen la misma coordenada, afín en un set de UV
-  ([decisión](decisions.md#materiales-de-unreal-el-modelo-estándar-primero-un-programa-para-lo-demás)):
-  el factor es el valor del material y la parte, la imagen del mapa, con la escala y el
-  desplazamiento de la coordenada. Color y opacidad comparten el mapa de color; roughness (verde),
-  metallic (azul) y oclusión (rojo, si lee las mismas coordenadas) comparten una imagen.
-- **Unidades.** Base color y emisión son lineales; la emisión es luminancia en nits. Specular `s`
-  es F0 = 0,08·s: un IOR desde F0 2 % y, debajo, el IOR de 2 % con `specular_factor`; un specular
-  con textura es el mapa de specular sobre el IOR de F0 0,08.
-- **Normal.** Una normal map leída tal cual o la función por texel horneada; un `lerp` desde la
-  normal plana es `normal_scale`.
-- **Shading models.** Unlit es `unlit` con su emisión; clear coat, un coat de IOR 1,5; cloth, fuzz
-  (`SubsurfaceColor` el color, `ClearCoat` el peso). `TwoSidedFoliage`, y `Subsurface` o
-  `PreintegratedSkin` en un material `TwoSided` (una lámina), son transmisión difusa: Unreal
-  refleja el base color `b` y suma lo que `SubsurfaceColor` `s` deja pasar desde atrás, y Mirai
-  reparte la misma luz con peso `max(s) / (max(s) + max(b))` y los dos colores divididos por su
-  parte, escalados a lo que la superficie recibe si suman más (`diffuse_transmission_split`). Sobre
-  un sólido, `Subsurface` y `PreintegratedSkin` se iluminan opacos con la luz que dispersan sumada
-  al base color (`SUBSURFACE_BACKSCATTER`); `SubsurfaceProfile` se ilumina opaco: el renderer no
-  tiene subsurface. Translúcido con
-  refracción mayor que 1 es vidrio con ese IOR.
-- **Colores de vértice.** Un base color del modelo estándar multiplicado por ellos los saca
-  (`Multiply_Base_Color`), porque ese modelo los multiplica siempre; un programa los lee como dato
-  (`ctx.vertex_color`) con su base color entero (`Program`); `Unused` dice que una malla los puede
-  descartar.
-- **Partículas.** `DynamicParameter` (de índice `ParameterIndex`) lee lo que da la partícula del
-  sprite que dibuja el punto (`ctx.particle_data`), y su `DefaultValue` donde no lo da, como
-  `GetDynamicParameter` de Unreal; el puente `unreal_vfx` lo pasa desde los atributos de Niagara.
-  `ParticleRandom` es el valor al azar de la partícula (`ctx.particle_random`) y `ParticleRadius`
-  la mitad de su sprite (`ctx.particle_radius`).
-  `ParticleColor` es el color de la partícula, que el sprite da a su programa como
-  `ctx.vertex_color` y no multiplica, como Unreal.
-- **Programa.** Si una salida no cabe, el material entero es un programa Surface escrito de la
-  tabla (`slang.odin`): texturas y parámetros de Unreal son sus parámetros (los que pasan del límite
-  quedan constantes), posición y normales pasan a centímetros y Z arriba, las normal maps se
-  desempaquetan y la normal tangente va al mundo con el marco de MikkTSpace. Su nombre es el
-  material base y un hash de lo que calcula: las instancias que solo cambian valores comparten
-  programa.
-- **Texturas que se escriben mientras corre el juego.** Un render target que escribe una grilla, o
-  un parámetro de textura que Unreal llena en ejecución (los buffers de FluidNinja), no tiene
-  imagen: `Options.reads` nombra cada uno por su ruta de objeto o por el nombre del parámetro, con
-  la función que lo lee por UV y su include, que da el plugin que lo escribe
-  (`vfx_world_texture_uv` de su grilla). El programa llama esa función donde Unreal muestrea; la
-  textura no es un parámetro del programa. Sin una lectura, el parámetro vacío no se traduce.
-- **Landscape.** `landscape_layers` evalúa el grafo una vez por capa
-  ([decisión](decisions.md#materiales-de-unreal-el-modelo-estándar-primero-un-programa-para-lo-demás));
-  `LandscapeLayerCoords` es el UV 0 de la Landscape con su escala, giro y desplazamiento, y
-  `LandscapeVisibilityMask` es 1: los agujeros son del terreno. Sin capa, `translate` muestra la
-  primera.
-- **Landscape entero** (`Options.landscape`, un `Landscape_Mapping`): el programa que el terreno
-  muestra con sus capas. Cada capa pesa lo que la capa del terreno que la muestra (`uv0` y `uv1`
-  del terreno, `Layer_Weights`) y una que el terreno no tiene queda afuera, como una que un
-  componente no pinta; `LandscapeLayerBlend` suma las de peso y de altura sobre su suma cuando pasa
-  de 1 y pone encima las de alfa, como Unreal sin
-  `landscape.UseLegacyLayerBlendMaterialExpressionBehavior`. Las coordenadas de la Landscape (todo
-  set de
-  UV) salen de la posición en el mundo por la transformada del actor, y el marco tangente sigue sus
-  ejes sobre la normal, no las tangentes del terreno.
-  Lo que solo lee una capa (su entrada y su altura) se calcula donde la capa está pintada: un nodo
-  `Gate` del grafo, que el programa escribe como una rama sobre el peso que junta todo lo de esa
-  capa. Sin peso, la entrada es cero (o el default de cada atributo) y la altura cero: lo que Unreal
-  suma de una capa sin pintar, salvo el peso mínimo (`0.0001`) de una de altura.
+- **Standard model.** Each output is a constant factor times a per-texel part whose samples read
+  the same coordinate, affine in a UV set
+  ([decision](decisions.md#unreal-materials-standard-model-first-a-program-for-the-rest)):
+  the factor is the material's value and the part, the map's image, with the coordinate's scale
+  and offset. Color and opacity share the color map; roughness (green), metallic (blue) and
+  occlusion (red, if it reads the same coordinates) share one image.
+- **Units.** Base color and emission are linear; emission is luminance in nits. Specular `s` is
+  F0 = 0.08·s: an IOR from F0 2% and, below that, the 2% IOR with `specular_factor`; a textured
+  specular is the specular map over the IOR of F0 0.08.
+- **Normal.** A normal map read as is or the per-texel function baked; a `lerp` from the flat
+  normal is `normal_scale`.
+- **Shading models.** Unlit is `unlit` with its emission; clear coat, a coat of IOR 1.5; cloth,
+  fuzz (`SubsurfaceColor` the color, `ClearCoat` the weight). `TwoSidedFoliage`, and `Subsurface`
+  or `PreintegratedSkin` in a `TwoSided` material (a sheet), are diffuse transmission: Unreal
+  reflects the base color `b` and adds what `SubsurfaceColor` `s` lets through from behind, and
+  Mirai splits the same light with weight `max(s) / (max(s) + max(b))` and both colors divided by
+  their part, scaled to what the surface receives if they sum more (`diffuse_transmission_split`).
+  On a solid, `Subsurface` and `PreintegratedSkin` are lit opaque with the light they scatter
+  added to the base color (`SUBSURFACE_BACKSCATTER`); `SubsurfaceProfile` is lit opaque: the
+  renderer has no subsurface. Translucent with refraction above 1 is glass with that IOR.
+- **Vertex colors.** A standard-model base color multiplied by them drops them
+  (`Multiply_Base_Color`), because that model always multiplies them; a program reads them as data
+  (`ctx.vertex_color`) with its whole base color (`Program`); `Unused` says a mesh may discard
+  them.
+- **Particles.** `DynamicParameter` (of index `ParameterIndex`) reads what the particle of the
+  sprite that draws the point gives (`ctx.particle_data`), and its `DefaultValue` where it does
+  not, like Unreal's `GetDynamicParameter`; the `unreal_vfx` bridge passes it from Niagara
+  attributes. `ParticleRandom` is the particle's random value (`ctx.particle_random`) and
+  `ParticleRadius` half its sprite (`ctx.particle_radius`). `ParticleColor` is the particle's
+  color, which the sprite gives its program as `ctx.vertex_color` and does not multiply, as in
+  Unreal.
+- **Program.** If an output does not fit, the whole material is a Surface program written from the
+  table (`slang.odin`): Unreal textures and parameters are its parameters (those past the limit
+  stay constant), position and normals go to centimeters and Z up, normal maps are unpacked and
+  the tangent normal goes to the world with the MikkTSpace frame. Its name is the base material
+  and a hash of what it computes: instances that only change values share a program.
+- **Textures written while the game runs.** A render target that writes a grid, or a texture
+  parameter Unreal fills at runtime (FluidNinja's buffers), has no image: `Options.reads` names
+  each by its object path or parameter name, with the function that reads it by UV and its
+  include, which the plugin that writes it gives (`vfx_world_texture_uv` of its grid). The program
+  calls that function where Unreal samples; the texture is not a program parameter. Without a
+  read, the empty parameter is not translated.
+- **Landscape.** `landscape_layers` evaluates the graph once per layer
+  ([decision](decisions.md#unreal-materials-standard-model-first-a-program-for-the-rest));
+  `LandscapeLayerCoords` is the Landscape's UV 0 with its scale, rotation and offset, and
+  `LandscapeVisibilityMask` is 1: holes belong to the terrain. Without a layer, `translate` shows
+  the first.
+- **Whole Landscape** (`Options.landscape`, a `Landscape_Mapping`): the program the terrain shows
+  with its layers. Each layer weighs what the terrain layer that shows it does (the terrain's
+  `uv0` and `uv1`, `Layer_Weights`) and one the terrain lacks is left out, like one a component
+  does not paint; `LandscapeLayerBlend` sums the weight and height ones over their sum when it
+  exceeds 1 and puts the alpha ones on top, as Unreal does without
+  `landscape.UseLegacyLayerBlendMaterialExpressionBehavior`. The Landscape's coordinates (every UV
+  set) come from the world position through the actor's transform, and the tangent frame follows
+  its axes over the normal, not the terrain's tangents. What only a layer reads (its input and
+  height) is computed where the layer is painted: a `Gate` graph node, which the program writes as
+  a branch on the weight that gathers everything of that layer. Without weight, the input is zero
+  (or each attribute's default) and the height zero: what Unreal sums from an unpainted layer,
+  except the minimum weight (`0.0001`) of a height one.
 
-### Escritura (`material/write`)
+### Writing (`material/write`)
 
-- `Builder` lee cada textura de Unreal una vez y arma las imágenes por clave: una textura leída tal
-  cual con el uso de su mapa se comparte entre materiales; si no, `image_bake` evalúa la tabla en
-  cada texel al tamaño de la textura más grande que lee, bilineal y repitiendo, y una emisión mayor
-  que 1 pasa al factor. Una imagen horneada lleva el nombre del material que la usa y el corte de
-  alfa de su base color es el del material: lo que escribe un paquete no depende de qué paquete
-  del nivel compartió antes el `Builder`.
-- `reader_material` agrega el material y sus imágenes al `Reader` de un formato (para los slots de
-  una malla); las notas son advertencias del modelo. `materials_write` escribe `.mat` y `.tex` con
-  `importer.import_write`, como una importación de la fuente, y cada programa en `shaders` sin
-  reescribir uno igual.
+- `Builder` reads each Unreal texture once and builds the images by key: a texture read as is with
+  its map's usage is shared among materials; otherwise `image_bake` evaluates the table at each
+  texel at the size of the largest texture it reads, bilinear and repeating, and an emission above
+  1 goes to the factor. A baked image carries the name of the material that uses it and the alpha
+  cutoff of its base color is the material's: what a package writes does not depend on which
+  package of the level shared the `Builder` before.
+- `reader_material` adds the material and its images to a format's `Reader` (for a mesh's slots);
+  the notes are model warnings. `materials_write` writes `.mat` and `.tex` with
+  `importer.import_write`, like a source import, and each program into `shaders` without rewriting
+  an identical one.
 
-## Niveles (`level`)
+## Levels (`level`)
 
-Contrato compartido del importador de niveles: qué hay en un `.umap` y dónde está, en el espacio de
-Mirai. Los nombres de Unreal (clases, propiedades) quedan en los traductores de cada tipo.
+Shared contract of the level importer: what is in a `.umap` and where, in Mirai space. Unreal
+names (classes, properties) stay in each type's translators.
 
-- **Biblioteca.** `Library` abre paquetes por nombre largo a través de `Source_Mount`, una vez; un
-  paquete que falla guarda su error. Hace falta para los arquetipos de Blueprints y los actores
-  externos.
-- **Documento.** `document_open` lee cada `ULevel` (también el array viejo de actores), los actores
-  y los objetos cuyo outer es cada actor, contiguos por actor, con `AttachParent` y
-  `AttachSocketName`. Todo se nombra por índices; un objeto es un `Ref{pkg,object}`.
-- **Actores externos.** Con `bUseExternalActors` (World Partition) se suman los paquetes de
-  `__ExternalActors__/<ruta del mapa>/` cuyo outer es su `PersistentLevel`; sin el mount de su
-  contenido, un error lo pide. Dos paquetes con un actor de la misma ruta (uno que quedó al mover
-  el actor o al copiar contenido encima) son uno solo, como en el registro de assets de Unreal: el
-  que se llama por el hash de esa ruta (MD5 de la ruta en minúsculas, en base 36, partido 1/2/22 o
-  2/2/21) o, si ninguno, el primero por nombre; los demás quedan en `superseded` y la importación
-  lo avisa.
-- **Propiedades por arquetipo.** `property` busca en el objeto y después en sus arquetipos, también
-  de otros paquetes, y dice el origen: `Authored`, `Archetype` o `Native` (los defaults de la clase
-  nativa, que aplica quien lee). Sin template guardado, como en la mayoría de los subobjetos de
-  UE4, el arquetipo es el que busca Unreal
-  ([decisión](decisions.md#niveles-landscapes-y-follaje-de-unreal)): el objeto de su nombre bajo el
-  arquetipo de su outer y, si no, lo que se encuentra subiendo por la clase Blueprint
-  y sus super clases Blueprint: la plantilla del `SCS_Node` de esa variable; si la clase no tiene
-  ese nodo, la que su `InheritableComponentHandler` guarda para un componente heredado que cambia
-  (el registro cuyo `FComponentKey` nombra la variable, o cuya plantilla se llama así); si no, un
-  objeto de ese nombre bajo la clase. Una de esas plantillas heredadas tiene por arquetipo el objeto
-  de su nombre en la super clase más cercana que lo tenga (la de una `DefaultSceneRoot`, sin su
-  prefijo `ICH-`).
-- **Transforms.** `SPACE` es el espacio de Unreal para el importador del motor. `component_relative`
-  da los
-  valores de Unreal con los defaults de `USceneComponent` o del constructor nativo del actor
-  (`NATIVE_RELATIVES`: luces direccionales y spot, decals y la malla de `DefaultPawn`; ninguna otra
-  clase nativa de ContentExamples mueve un subobjeto que no es del editor); `component_local` y
-  `component_world` los dan en Mirai, el segundo compuesto por `AttachParent` con las partes
-  absolutas tal cual.
-- **Sockets** (`sockets.odin`). Un componente con `AttachSocketName` es relativo a donde está ese
-  socket de su padre (`component_socket`, como en Unreal): de una static mesh, su
-  `StaticMeshSocket`; de una skeletal mesh, su socket o el de su esqueleto (primero el de la malla)
-  sobre su hueso, o el hueso de ese nombre, en la pose de bind de la malla; del
-  `SpringArmComponent`,
-  `SpringEndpoint`: el brazo en reposo, sin el retraso ni el barrido de colisión que hace un juego,
-  y con la rotación del actor si sigue la del pawn. Los nombres se comparan sin mayúsculas; uno que
-  el padre no tiene es el padre, como en Unreal. Las mallas y esqueletos se leen una vez por
-  documento; uno que no se lee, un socket de una spline mesh (que se curva con ella) y un brazo que
-  no hereda pitch, yaw o roll son errores del lugar del componente.
-- `resolve` da el export de una referencia, abriendo su paquete si es un import;
-  `actor_native_class`, la clase nativa de la que deriva un actor a través de sus Blueprints.
-- **World Partition** (`partition.odin`). `partition_read` da las celdas de las grillas de un
-  `WorldPartitionRuntimeHashSet` (UE 5.4 en adelante; el `RuntimeSpatialHash` anterior es
-  `Unsupported_Value`): por cada `RuntimePartitionLHGrid`, su tamaño de celda, origen, 2D o 3D,
-  rango de carga y método de la caja; una `RuntimePartitionPersistent` carga con el mapa. Un actor
-  con `bIsSpatiallyLoaded` (por su arquetipo o el default de su clase nativa: luces, `AInfo` y las
-  que lo apagan en su constructor) va a la celda de su grilla (`RuntimeGrid`, o la primera) que
-  tiene el centro de sus bounds, en el nivel de la jerarquía suelta que pide su tamaño, y se
-  nombra como en Unreal
-  (`<grilla>_L<nivel>_X<x>_Y<y>_Z<z>`). La caja de una celda en el nivel 0 es lo que tiene dentro de
-  la celda (o la celda, o lo que tiene, según su grilla); arriba, lo que tiene.
-- Los bounds de un actor son los de sus componentes primitivos que no son del editor: la malla por
-  los bounds que guarda su paquete (`ExtendedBounds`), cada instancia de uno instanciado, un spline
-  mesh por el casco de su curva, un componente de Landscape por su `CachedLocalBox` y las formas
-  por su tamaño; sin ninguno, el punto donde está. Unreal usa los que su editor guardó en el
-  descriptor del actor, que no se lee: un actor junto al borde puede caer en la celda vecina. Los
-  data layers y los conjuntos de actores no separan celdas.
-- Aproximaciones: la composición con escalas negativas se hace por partes; los niveles de streaming
-  son otros mapas.
+- **Library.** `Library` opens packages by long name through `Source_Mount`, once; a package that
+  fails stores its error. Needed for Blueprint archetypes and external actors.
+- **Document.** `document_open` reads each `ULevel` (also the old actor array), the actors and the
+  objects whose outer is each actor, contiguous per actor, with `AttachParent` and
+  `AttachSocketName`. Everything is named by indices; an object is a `Ref{pkg,object}`.
+- **External actors.** With `bUseExternalActors` (World Partition) the packages under
+  `__ExternalActors__/<map path>/` whose outer is its `PersistentLevel` are added; without the
+  mount of their content, an error asks for it. Two packages with an actor of the same path (one
+  left over from moving the actor or copying content on top) are one, as in Unreal's asset
+  registry: the one named by the hash of that path (MD5 of the lowercase path, in base 36, split
+  1/2/22 or 2/2/21) or, if none, the first by name; the others go to `superseded` and the import
+  reports it.
+- **Properties by archetype.** `property` searches the object and then its archetypes, also from
+  other packages, and says the origin: `Authored`, `Archetype` or `Native` (the native class's
+  defaults, which the reader applies). Without a saved template, as in most UE4 subobjects, the
+  archetype is the one Unreal looks for
+  ([decision](decisions.md#unreal-levels-landscapes-and-foliage)): the object of its name under
+  its outer's archetype and, if none, what is found going up the Blueprint class and its Blueprint
+  super classes: the `SCS_Node` template of that variable; if the class has no such node, the one
+  its `InheritableComponentHandler` stores for an inherited component it changes (the record whose
+  `FComponentKey` names the variable, or whose template is so named); otherwise, an object of that
+  name under the class. One of those inherited templates has as archetype the object of its name
+  in the closest super class that has it (that of a `DefaultSceneRoot`, without its `ICH-` prefix).
+- **Transforms.** `SPACE` is Unreal's space for the engine importer. `component_relative` gives
+  Unreal's values with the defaults of `USceneComponent` or of the actor's native constructor
+  (`NATIVE_RELATIVES`: directional and spot lights, decals and `DefaultPawn`'s mesh; no other
+  native ContentExamples class moves a subobject that is not editor-only); `component_local` and
+  `component_world` give them in Mirai, the second composed through `AttachParent` with the
+  absolute parts as they are.
+- **Sockets** (`sockets.odin`). A component with `AttachSocketName` is relative to where that
+  socket of its parent is (`component_socket`, as in Unreal): for a static mesh, its
+  `StaticMeshSocket`; for a skeletal mesh, its socket or its skeleton's (the mesh's first) on its
+  bone, or the bone of that name, in the mesh's bind pose; for the `SpringArmComponent`,
+  `SpringEndpoint`: the arm at rest, without the lag or the collision sweep a game does, and with
+  the actor's rotation if it follows the pawn's. Names are compared case-insensitively; one the
+  parent lacks is the parent, as in Unreal. Meshes and skeletons are read once per document; one
+  that cannot be read, a spline mesh socket (which curves with it) and an arm that does not
+  inherit pitch, yaw or roll are errors of the component's placement.
+- `resolve` gives a reference's export, opening its package if it is an import;
+  `actor_native_class`, the native class an actor derives from through its Blueprints.
+- **World Partition** (`partition.odin`). `partition_read` gives the cells of the grids of a
+  `WorldPartitionRuntimeHashSet` (UE 5.4 onward; the earlier `RuntimeSpatialHash` is
+  `Unsupported_Value`): for each `RuntimePartitionLHGrid`, its cell size, origin, 2D or 3D, loading
+  range and box method; a `RuntimePartitionPersistent` loads with the map. An actor with
+  `bIsSpatiallyLoaded` (by its archetype or its native class default: lights, `AInfo` and those
+  that turn it off in their constructor) goes to the cell of its grid (`RuntimeGrid`, or the
+  first) that holds its bounds' center, at the loose hierarchy level its size asks for, and is
+  named as in Unreal (`<grid>_L<level>_X<x>_Y<y>_Z<z>`). A level 0 cell's box is what it holds
+  inside the cell (or the cell, or what it holds, depending on its grid); above, what it holds.
+- An actor's bounds are those of its non-editor primitive components: the mesh by the bounds its
+  package stores (`ExtendedBounds`), each instance of an instanced one, a spline mesh by its
+  curve's hull, a Landscape component by its `CachedLocalBox` and shapes by their size; with none,
+  the point where it is. Unreal uses the ones its editor stored in the actor descriptor, which is
+  not read: an actor next to an edge may fall in the neighboring cell. Data layers and actor sets
+  do not separate cells.
+- Approximations: composition with negative scales is done by parts; streaming levels are other
+  maps.
 
 ## Landscape (`landscape`)
 
-`landscapes_read` da un `Landscape` por `LandscapeGuid`: los proxies de esa guía y sus componentes,
-en una grilla.
+`landscapes_read` gives a `Landscape` per `LandscapeGuid`: that guid's proxies and their
+components, in a grid.
 
-- **Grilla.** El rectángulo de los `SectionBase`. La x de Mirai corre por la -Y de Unreal y la z por
-  su X, y cada celda de un Heightfield se parte por la misma diagonal que Unreal usa en su quad.
-- **Alturas.** De `HeightmapTexture` (16 bits en R y G) con su offset y sus subsecciones, que
-  repiten los vértices del borde, en metros por la escala Z del actor; una textura compartida se
-  decodifica una vez.
-- **Espaciado.** `spacing` es la escala X del actor (a lo largo de la z de Mirai) y `transform`,
-  el centro de la grilla en el mundo: la grilla es de celdas cuadradas, y una escala Y distinta la
-  estira a lo ancho, en la escala x de `transform` (Y sobre X;
-  [decisión](decisions.md#niveles-landscapes-y-follaje-de-unreal)).
-- **Capas.** El peso de cada `LandscapeLayerInfoObject` por muestra, como Unreal los pinta (sin
-  normalizar), con su cobertura; el nombre es su `LayerName` si la layer info está bajo un mount y,
-  si no, el del objeto.
-- **Agujeros.** La capa de visibilidad no es una capa: un quad es agujero cuando su primer vértice
-  pesa más que el umbral de la colisión de Unreal, y también los del rectángulo sin componente.
-- Rechazos: componentes de tamaños distintos, subsecciones inválidas, heightmap ausente, escalas X o
-  Y nulas o negativas. Las capas de edición se leen ya combinadas, como Unreal las guarda; el
-  material es la ruta de `LandscapeMaterial` del proxy.
-- `landscape_terrain` (plugin `unreal_terrain`) lo convierte a una fuente Heightfield:
-  [terreno](translators.md#terreno-unreal_terrain).
+- **Grid.** The rectangle of the `SectionBase`s. Mirai's x runs along Unreal's -Y and z along its
+  X, and each Heightfield cell is split along the same diagonal Unreal uses in its quad.
+- **Heights.** From `HeightmapTexture` (16 bits in R and G) with its offset and subsections, which
+  repeat the edge vertices, in meters by the actor's Z scale; a shared texture is decoded once.
+- **Spacing.** `spacing` is the actor's X scale (along Mirai's z) and `transform`, the grid's
+  center in the world: the grid is of square cells, and a different Y scale stretches it across,
+  in `transform`'s x scale (Y over X;
+  [decision](decisions.md#unreal-levels-landscapes-and-foliage)).
+- **Layers.** Each `LandscapeLayerInfoObject`'s weight per sample, as Unreal paints them
+  (unnormalized), with its coverage; the name is its `LayerName` if the layer info is under a
+  mount and, otherwise, the object's.
+- **Holes.** The visibility layer is not a layer: a quad is a hole when its first vertex weighs
+  more than Unreal's collision threshold, and so are those of the rectangle without a component.
+- Rejections: components of different sizes, invalid subsections, missing heightmap, null or
+  negative X or Y scales. Edit layers are read already combined, as Unreal stores them; the
+  material is the proxy's `LandscapeMaterial` path.
+- `landscape_terrain` (plugin `unreal_terrain`) converts it to a Heightfield source:
+  [terrain](translators.md#terrain-unreal_terrain).
 
-## Follaje (`foliage`)
+## Foliage (`foliage`)
 
-`foliage_read` da un `Foliage` por `InstancedFoliageActor`: sus tipos y sus instancias en el
-espacio de Mirai.
+`foliage_read` gives a `Foliage` per `InstancedFoliageActor`: its types and their instances in
+Mirai space.
 
-- **Datos nativos.** Los del actor van después de lo que guarda `AActor`, que desde
-  `SerializeActorLabelInCookedBuilds` dice si se cocinó (`level.actor_native_payload`; uno cocinado
-  se rechaza).
-- **Instancias.** Del registro que el editor guarda de cada tipo (`FoliageInfos` o, en versiones
-  viejas, `FoliageMeshes`): transform de mundo, si se puso sobre algo, el componente sobre el que se
-  puso y su altura sobre ese punto (`ZOffset` por su escala, a lo largo de su arriba). Las borradas
-  no salen.
-- **Clases de tipo** (`Foliage_Kind`, el `EFoliageImplType` de cada uno). `Static_Mesh` nombra el
-  componente que lo dibuja. `Actor` (`FoliageType_Actor`) puso en cada instancia un actor de su
-  clase, que el nivel guarda entre sus actores: `Instance.actor` lo nombra (-1 si no está, y el
-  editor de Unreal lo pone de nuevo). `ISM_Actor` (el mismo tipo con `bStaticMeshOnly`) dibuja las
-  static meshes de su clase con componentes instanciados del `InstancedFoliageActor`, uno por malla
-  y ajustes, compartidos por esos tipos: `Foliage.components` son los de sus `DescriptorComponents`.
-  Los tipos de actores se nombran por la clase que ponen.
-- **Comprobación.** Cada instancia de static mesh se compara con la matriz del componente que la
-  dibuja, en el mismo orden (`compared`, `mismatched`, `max_difference`; `uncompared` si el
-  componente no está en el origen o su formato es desconocido).
-- **Tipos.** De `FoliageType_InstancedStaticMesh` o `FoliageType_Actor`, del actor o de otro
-  paquete, con los defaults del constructor de `UFoliageType`. Las bases con `TSoftObjectPtr` se
-  saltan según su versión; sin un corpus que lo use, ese camino no está comprobado, como los tipos
-  de actores y de ISM actors (ContentExamples no los tiene).
-- `foliage_source` (plugin `unreal_foliage`) lo convierte a una fuente `.foliage`:
-  [follaje](translators.md#follaje-unreal_foliage).
+- **Native data.** The actor's comes after what `AActor` stores, which since
+  `SerializeActorLabelInCookedBuilds` says whether it was cooked (`level.actor_native_payload`; a
+  cooked one is rejected).
+- **Instances.** From the record the editor stores per type (`FoliageInfos` or, in old versions,
+  `FoliageMeshes`): world transform, whether it was placed on something, the component it was
+  placed on and its height over that point (`ZOffset` by its scale, along its up). Deleted ones
+  are not output.
+- **Type classes** (`Foliage_Kind`, each one's `EFoliageImplType`). `Static_Mesh` names the
+  component that draws it. `Actor` (`FoliageType_Actor`) placed an actor of its class on each
+  instance, which the level stores among its actors: `Instance.actor` names it (-1 if absent, and
+  Unreal's editor places it again). `ISM_Actor` (the same type with `bStaticMeshOnly`) draws the
+  static meshes of its class with instanced components of the `InstancedFoliageActor`, one per mesh
+  and settings, shared by those types: `Foliage.components` are those of its
+  `DescriptorComponents`. Actor types are named by the class they place.
+- **Check.** Each static mesh instance is compared with the matrix of the component that draws it,
+  in the same order (`compared`, `mismatched`, `max_difference`; `uncompared` if the component is
+  not at the origin or its format is unknown).
+- **Types.** From `FoliageType_InstancedStaticMesh` or `FoliageType_Actor`, from the actor or
+  another package, with the defaults of `UFoliageType`'s constructor. Bases with `TSoftObjectPtr`
+  are skipped depending on their version; with no corpus that uses it, that path is not verified,
+  like actor and ISM actor types (ContentExamples has none).
+- `foliage_source` (plugin `unreal_foliage`) converts it to a `.foliage` source:
+  [foliage](translators.md#foliage-unreal_foliage).
 
-## Niveles a escena (`scene`)
+## Levels to scene (`scene`)
 
-`level_import` (paquete `unreal_scene`) escribe un `.umap` como una escena del proyecto en
-`opciones.root`, que tiene que ser un proyecto (`project.mirai`); `document_import` hace lo mismo
-con un `level.Document` abierto. `Level_Report` trae lo escrito, los actores por clase (cuántos y
-cuántos se tradujeron), las luces con su valor de Unreal y el de Mirai, las cámaras con su entidad,
-las mallas importadas y el tiempo.
+`level_import` (package `unreal_scene`) writes a `.umap` as a project scene in `options.root`,
+which must be a project (`project.mirai`); `document_import` does the same with an open
+`level.Document`. `Level_Report` brings what was written, the actors per class (how many and how
+many were translated), the lights with their Unreal and Mirai values, the cameras with their
+entity, the imported meshes and the time.
 
-- **Montajes.** Los de [`model`](#formato-de-modelos-model): `/Game` del `.uproject` (o del
-  nombre que el mapa guarda de sí mismo), `/Engine` de la instalación de Unreal y los plugins de
-  esa instalación. Sin `/Engine` montado (`engine.odin`), una forma básica de Unreal es la
-  primitiva de Mirai de su `Mesh_Renderer` y un material de `/Engine` que falta, la grilla del
-  motor, escrita con los materiales que el nivel guarda en `levels/<mapa>/`
-  ([decisión](decisions.md#engine-sin-unreal-sustitutos-propios-del-motor)).
-- **Nombres.** Lo que se importa de Unreal se nombra sin el prefijo que sus convenciones dan a cada
-  tipo (`SM_`, `SK_`, `M_`, `MI_`, `T_`, `BP_`…): `asset_name` es el único lugar que los conoce.
-  `SM_Rock.uasset` escribe `Rock.mesh` y `Rock.prefab` en `models/Rock/` (`model_folder`),
-  y un material `MI_Rock`, `Rock.mat`; dos que quedan iguales en una carpeta toman `(2)`. Lo que
-  se busca dentro de un paquete sigue usando el nombre de Unreal.
-- **Archivos.** La escena en `levels/<mapa>.scene` de los assets; cada `StaticMesh` que el nivel
-  nombra es la importación de su paquete, como la da el formato `model` (malla, materiales de sus
-  slots, texturas y prefab, en `models/<paquete sin prefijo>/`); los materiales que un componente
-  sobrescribe, la importación de su paquete en `materials/`; lo que escriben los plugins, en
-  `levels/<mapa>/`. Una sola `material.Library` y un solo `write.Builder` sirven a todo el nivel:
-  cada paquete se abre y cada textura se decodifica una vez, mientras la memoria alcance. Los
-  paquetes de las mallas y los materiales sobrescritos se leen adelantados
-  ([lectura adelantada](#lectura-adelantada)).
-- **Identidad.** La escena es la raíz de la importación del mapa (`importer.output_root`) y las
-  secciones y lo que escriben los plugins, sus partes por nombre (`importer.output_part`). Las
-  secciones toman archivo e id al escribirse, solo las que tienen algo y todas a la vez
-  (`importer.output_parts`): cada una encuentra primero la anterior de su nombre. El id de
-  cada entidad es el hash de la ruta de su actor en el mapa (con su paquete si es externo: dos
-  paquetes de World Partition pueden tener actores del mismo nombre) y del nombre de su
-  componente, que Unreal conserva aunque cambie el label: reimportar da la misma escena con los
-  mismos ids ([decisión](decisions.md#niveles-de-unreal-a-escenas-de-mirai)).
-- **Secciones.** Un mapa de World Partition es la escena del mapa y una escena por celda
-  ([partición](#niveles-level)) en `levels/<mapa>/<celda>.scene`, cada una referenciada
-  desde la escena del mapa por una entidad con el nombre de la celda, en el centro de su caja, con
-  un `Scene_Reference` `Spatial` de esa caja: el plugin `streaming` la carga por dónde están los
-  jugadores. Lo que está en la raíz de una sección está donde está desde ese centro. Lo que carga
-  con el mapa, lo que el nivel da una vez (cielo, exposición) y lo de los traductores con `root`
-  (el terreno, que carga sus páginas solo) queda en la escena del mapa; una celda que no da nada no
-  se escribe. El rango de carga de cada grilla es un aviso: Mirai carga las secciones dentro de las
-  distancias de `Streaming_Settings` del proyecto
-  ([decisión](decisions.md#world-partition-una-sección-por-celda)).
-- **Entidades.** Un actor que muestra algo es una entidad con su label donde está su
-  `RootComponent`, y lo que muestra cada componente, una entidad hija con su lugar relativo al actor
-  (`transform_relative`, exacto para la composición de Mirai). Un actor de un solo componente es
-  esa entidad, sin un grupo encima. Los actores van a la raíz de la escena.
-- **Blueprints.** Los actores de una clase Blueprint son instancias de un prefab de la clase en
-  `levels/<mapa>/`, hecho de las entidades del primero con la raíz en el origen y el nombre de la
-  clase. Lo que cada actor muestra distinto (lo que eligió su construction script, sus
-  transforms, su label) son overrides de su instancia, y editar el prefab cambia todos. Un actor
-  cuyos componentes no son los del primero queda aparte, con una advertencia.
-- **Mallas.** `StaticMeshComponent` es `Mesh_Renderer` con la malla importada y, por fila de slot,
-  el material de `OverrideMaterials[índice]` (el id del slot es el índice de Unreal más uno); uno
-  igual al de la malla, o de un slot que la malla no dibuja, no cuenta.
-  Un material que el nivel guarda dentro de un actor (la `MaterialInstanceDynamic` de un
-  construction script) se traduce de su `.umap`, se nombra por los objetos que lo contienen y va a
-  `levels/<mapa>/`, junto con los demás del nivel en una sola importación al terminarlo, después
-  de los traductores: lee por UV las texturas que ellos agregaron (`texture_read_add`, el render
-  target que un componente de Niagara da a su sistema). Las escrituras de un mismo paquete en una
-  importación numeran sus materiales a continuación de las anteriores (`material_index`): el
-  importador empareja por índice un material que no reconoce por nombre.
-  Los componentes instanciados (`InstancedStaticMeshComponent`, el jerárquico y el de follaje, y
-  los que hornean PCG y los packed level actors) nunca son una entidad por instancia: los toma el
-  traductor con `instanced` de su escena, el de `foliage`, como lotes de follaje
-  ([follaje](translators.md#follaje-unreal_foliage)); sin él, su
-  actor es un aviso que dice cómo importarlo. Los ocultos en el juego quedan afuera, con un aviso.
-  Las matrices de sus instancias salen del arreglo `PerInstanceSMData` de su payload nativo, que va
-  después de lo que guarda `UStaticMeshComponent` (LODs y vértices pintados, de largo variable
-  según el save): se lo encuentra por el tamaño, la cantidad y una primera matriz de vectores fila
-  (`level.instances_read`, que también usa la comprobación del follaje). Un
-  `SplineMeshComponent` no se traduce: es un aviso
-  ([decisión](decisions.md#world-partition-una-sección-por-celda)).
-  `SkeletalMeshComponent` (de un `SkeletalMeshActor` o de cualquier Blueprint, como un personaje)
-  es lo mismo con la malla con skin (`SkeletalMesh`, que gana como en Unreal, o `SkinnedAsset`),
-  dibujada en su pose de bind como la dibuja
-  el prefab de su importación. En
-  `AnimationSingleNode` reproduce el clip de la `AnimSequence` de su `AnimationData` (la
-  importación de su paquete en `models/<paquete>/`): `Animation` con `bSavedLooping`,
-  `bSavedPlaying`, `SavedPlayRate` como `speed` y `bUpdateAnimationInEditor` como `preview`, y
-  `SavedPosition` como su `Animation_Progress` (sobre el `RateScale` que tienen los tiempos del
-  clip). La instancia de un solo nodo no saca root motion de una secuencia: una que fuerza su
-  `bForceRootLock` queda en el lugar (`In_Place`). Un Animation Blueprint (`AnimClass`) es lógica:
-  una advertencia y la pose de bind. `bVisible` falso o `bHiddenInGame` son `Hidden`; `bHidden`
-  del actor, `Hidden` en su entidad.
-- **Luces** (`lights.odin`). Unreal alumbra con una
-  intensidad por 100²; Mirai guarda candelas en una puntual o spot, la luminancia de la cara en un
-  rectángulo y lux en el sol, y divide por π donde su renderer lo pide:
-  - candelas tal cual; lúmenes de una puntual sobre 4π y de una spot sobre su cono, 2π(1−cos θ),
-    con θ el medio ángulo exterior acotado como en Unreal; sin unidad, ×16/100²; EV100,
-    2^EV; nits de una puntual por el área de su cápsula (`SourceRadius`, `SourceLength`);
-  - un rectángulo: nits tal cual y lo demás sobre su área (`SourceWidth`×`SourceHeight`), que es
-    la escala de su entidad; un rectángulo guardado con EV antes de
-    `RectLightFixedEVUnitConversion` conserva la cuenta vieja de Unreal;
-  - el color es `LightColor` en lineal por `ColorTemperatureToLinear` con `bUseTemperature`; un
-    canal mayor que uno pasa a la intensidad. `AttenuationRadius` es `range` y `SourceRadius`,
-    `radius`. Unreal alumbra hacia +X del componente y Mirai hacia -Z: la entidad gira media
-    vuelta en Y y tiene escala uno. `bAffectsWorld` falso deja el componente apagado.
-  - Se avisa, con cantidad: sin caída cuadrática (las candelas que dan lo mismo a la mitad del
-    radio), `SourceLength`, IES, light functions, sin sombras y conos fuera de 1° a 89°.
-  - Mirai alumbra con un sol: con varios direccionales queda encendido el más brillante.
-- **Cámaras.** `CameraComponent` y `CineCameraComponent` son `Camera` en una entidad con el label
-  del actor (`Camera_Note.entity` es lo que toma `mirai capture --camera-entity`). Fov vertical:
-  de una cine, el de la altura del sensor (`Filmback`) y `CurrentFocalLength`; de otra, el de
-  `FieldOfView` horizontal y `AspectRatio`. `active` si el actor se activa para un jugador. Lo que
-  sus `PostProcessSettings` sobrescriben de exposición es su `Exposure`.
-- **Cielo y exposición.** El nivel da una entidad `Sky`. Sin `SkyLight` no alumbra, como en Unreal;
-  con uno, alumbra por su `Intensity` y su color con la proporción entre cielo y sol del `Sky` de
-  Mirai, tomada del sol más brillante del nivel, y un aviso: lo que Unreal captura de la escena no
-  tiene equivalente. Con `SLS_SpecifiedCubemap`, la imagen del `Sky` es su `Cubemap` vuelto en la
-  importación una imagen de longitud y latitud (`sky_of_cube`, un `.tex` junto a los materiales,
-  importación del paquete del cubo), y su entidad gira por `SourceCubemapAngle` alrededor de
-  arriba, como Unreal gira el cubo. Detrás de la escena se ve el cielo si el nivel lo dibuja
-  (`SkyAtmosphere`, `AtmosphericFog` o la esfera de cielo del motor), y si no, negro; con una
-  atmósfera, el `Sky` es el aire que alumbra el sol (`atmosphere`), salvo que el `SkyLight` nombre
-  un cubo: el `Sky` de Mirai dibuja la imagen o el aire, y gana el cubo, con un aviso. `VolumetricCloud` es un aviso: Mirai no dibuja nubes.
-  Un `PostProcessVolume` sin límites (el de más prioridad) da la exposición del `Sky`: método
-  (manual o automático), compensación, velocidad de adaptación, la cámara física (f, obturador e
-  ISO) y el brillo mínimo y máximo, que Unreal lleva a blanco y Mirai a gris medio: el EV100 que da
-  blanco esa luminancia
-  (EV100 de Unreal sobre `LuminanceMax` si el proyecto extiende el rango, luminancia como UE4 si
-  no). El resto de lo que sobrescribe y un volumen con límites son avisos; las `ReflectionCapture`,
-  que la GI reemplaza, lo que solo usa el editor de Unreal, el HLOD de World Partition (el de Mirai
-  se hace por celda), los minimapas, `GPULightmass`, los volúmenes de texturas virtuales (sus capas
-  son las del terreno), los componentes Nanite y proxy de un Landscape, el grafo de PCG y el nivel
-  de un packed level actor (sus instancias lo muestran) se omiten sin aviso.
-- **Textos.** `TextRenderComponent` es un `World_Widget` fijo en la entidad del componente, que
-  mira hacia donde mira el texto en Unreal (su +X, el +Z de Mirai), con un `.ui` propio en
-  `levels/<mapa>/`: una línea mide `WorldSize` por `YScale`, en su color, alineado como lo alinea
-  Unreal y con `<br>` como salto de línea; los textos iguales comparten el `.ui`. `TextProperty`
-  se lee como el texto que muestra en la cultura de origen (historias `None` y `Base`).
-- **Traductores de plugins.** Un `Translator` toma los actores de sus clases nativas, una escena
-  a la vez, y lo da un plugin puente `unreal_*` ([traductores](translators.md)): terreno, follaje,
-  física, niebla, partículas, navegación y las texturas de los fluidos. Sin el puente de una
-  clase, sus actores son avisos que dicen qué plugin activar, y las mallas quedan sin colisión.
-- **Lo que no se traduce** es un aviso por clase con su cantidad: sonidos, BSP,
-  Blueprints que no muestran nada que Mirai traduzca, y los componentes sin traducción de actores
-  traducidos. Los avisos repetidos por las importaciones
-  de las mallas se dan una vez.
+- **Mounts.** Those of [`model`](#model-format-model): `/Game` of the `.uproject` (or of the name
+  the map stores of itself), `/Engine` of the Unreal install and that install's plugins. Without
+  `/Engine` mounted (`engine.odin`), an Unreal basic shape is the Mirai primitive of its
+  `Mesh_Renderer` and a missing `/Engine` material, the engine grid, written with the materials
+  the level stores in `levels/<map>/`
+  ([decision](decisions.md#engine-without-unreal-engine-substitutes)).
+- **Names.** What is imported from Unreal is named without the prefix its conventions give each
+  type (`SM_`, `SK_`, `M_`, `MI_`, `T_`, `BP_`...): `asset_name` is the only place that knows them.
+  `SM_Rock.uasset` writes `Rock.mesh` and `Rock.prefab` in `models/Rock/` (`model_folder`), and a
+  material `MI_Rock`, `Rock.mat`; two that end up equal in a folder take `(2)`. What is looked up
+  inside a package keeps using the Unreal name.
+- **Files.** The scene in the assets' `levels/<map>.scene`; each `StaticMesh` the level names is
+  its package's import, as the `model` format gives it (mesh, slot materials, textures and prefab,
+  in `models/<package without prefix>/`); materials a component overrides, its package's import in
+  `materials/`; what plugins write, in `levels/<map>/`. A single `material.Library` and a single
+  `write.Builder` serve the whole level: each package is opened and each texture decoded once,
+  while memory allows. The packages of meshes and overridden materials are read ahead
+  ([read-ahead](#read-ahead)).
+- **Identity.** The scene is the root of the map's import (`importer.output_root`) and the sections
+  and what plugins write, its parts by name (`importer.output_part`). Sections take file and id
+  when written, only those with something and all at once (`importer.output_parts`): each first
+  finds the previous one of its name. Each entity's id is the hash of its actor's path in the map
+  (with its package if external: two World Partition packages can have actors of the same name)
+  and of its component's name, which Unreal keeps even if the label changes: reimporting gives the
+  same scene with the same ids ([decision](decisions.md#unreal-levels-to-mirai-scenes)).
+- **Sections.** A World Partition map is the map's scene and one scene per cell
+  ([partition](#levels-level)) in `levels/<map>/<cell>.scene`, each referenced from the map's scene
+  by an entity named after the cell, at the center of its box, with a `Spatial` `Scene_Reference`
+  of that box: the `streaming` plugin loads it by where the players are. What is at a section's
+  root is where it is from that center. What loads with the map, what the level gives once (sky,
+  exposure) and what translators with `root` write (terrain, which loads its pages itself) stays
+  in the map's scene; a cell that gives nothing is not written. Each grid's loading range is a
+  warning: Mirai loads sections within the project's `Streaming_Settings` distances
+  ([decision](decisions.md#world-partition-one-section-per-cell)).
+- **Entities.** An actor that shows something is an entity with its label where its
+  `RootComponent` is, and what each component shows, a child entity with its placement relative to
+  the actor (`transform_relative`, exact for Mirai's composition). A single-component actor is
+  that entity, without a group on top. Actors go to the scene root.
+- **Blueprints.** Actors of a Blueprint class are instances of a class prefab in `levels/<map>/`,
+  made of the first one's entities with the root at the origin and the class name. What each actor
+  shows differently (what its construction script chose, its transforms, its label) are overrides
+  of its instance, and editing the prefab changes all. An actor whose components differ from the
+  first's stays apart, with a warning.
+- **Meshes.** `StaticMeshComponent` is `Mesh_Renderer` with the imported mesh and, per slot row,
+  the material of `OverrideMaterials[index]` (the slot id is Unreal's index plus one); one equal to
+  the mesh's, or of a slot the mesh does not draw, does not count. A material the level stores
+  inside an actor (a construction script's `MaterialInstanceDynamic`) is translated from its
+  `.umap`, named by the objects that contain it and goes to `levels/<map>/`, together with the
+  level's others in a single import at the end, after the translators: it reads by UV the textures
+  they added (`texture_read_add`, the render target a Niagara component gives its system). Writes
+  of one package in an import number their materials after the previous ones (`material_index`):
+  the importer pairs by index a material it does not recognize by name.
+  Instanced components (`InstancedStaticMeshComponent`, the hierarchical one and the foliage one,
+  and those PCG and packed level actors bake) are never one entity per instance: the translator
+  with `instanced` in its scene takes them, the `foliage` one, as foliage batches
+  ([foliage](translators.md#foliage-unreal_foliage)); without it, their actor is a warning saying
+  how to import it. Those hidden in game are left out, with a warning. Their instance matrices
+  come from the `PerInstanceSMData` array of their native payload, which follows what
+  `UStaticMeshComponent` stores (LODs and painted vertices, of variable length depending on the
+  save): it is found by size, count and a first matrix of row vectors (`level.instances_read`,
+  which the foliage check also uses). A `SplineMeshComponent` is not translated: it is a warning
+  ([decision](decisions.md#world-partition-one-section-per-cell)).
+  `SkeletalMeshComponent` (of a `SkeletalMeshActor` or any Blueprint, such as a character) is the
+  same with the skinned mesh (`SkeletalMesh`, which wins as in Unreal, or `SkinnedAsset`), drawn in
+  its bind pose as its import's prefab draws it. In `AnimationSingleNode` it plays the clip of the
+  `AnimSequence` of its `AnimationData` (its package's import in `models/<package>/`): `Animation`
+  with `bSavedLooping`, `bSavedPlaying`, `SavedPlayRate` as `speed` and `bUpdateAnimationInEditor`
+  as `preview`, and `SavedPosition` as its `Animation_Progress` (over the `RateScale` the clip's
+  times have). The single-node instance takes no root motion from a sequence: one that forces its
+  `bForceRootLock` stays in place (`In_Place`). An Animation Blueprint (`AnimClass`) is logic: a
+  warning and the bind pose. False `bVisible` or `bHiddenInGame` are `Hidden`; the actor's
+  `bHidden`, `Hidden` on its entity.
+- **Lights** (`lights.odin`). Unreal lights with an intensity times 100²; Mirai stores candelas in
+  a point or spot light, the face's luminance in a rectangle and lux in the sun, and divides by π
+  where its renderer asks:
+  - candelas as they are; lumens of a point light over 4π and of a spot over its cone,
+    2π(1−cos θ), with θ the outer half angle clamped as in Unreal; no unit, ×16/100²; EV100, 2^EV;
+    nits of a point light by the area of its capsule (`SourceRadius`, `SourceLength`);
+  - a rectangle: nits as they are and the rest over its area (`SourceWidth`×`SourceHeight`), which
+    is its entity's scale; a rectangle saved with EV before `RectLightFixedEVUnitConversion` keeps
+    Unreal's old computation;
+  - the color is linear `LightColor` times `ColorTemperatureToLinear` with `bUseTemperature`; a
+    channel above one goes to the intensity. `AttenuationRadius` is `range` and `SourceRadius`,
+    `radius`. Unreal lights toward the component's +X and Mirai toward -Z: the entity turns half a
+    turn in Y and has scale one. False `bAffectsWorld` leaves the component off.
+  - Warned, with count: no inverse-square falloff (candelas that give the same at half the radius),
+    `SourceLength`, IES, light functions, no shadows and cones outside 1° to 89°.
+  - Mirai lights with one sun: with several directionals the brightest stays on.
+- **Cameras.** `CameraComponent` and `CineCameraComponent` are `Camera` on an entity with the
+  actor's label (`Camera_Note.entity` is what `mirai capture --camera-entity` takes). Vertical fov:
+  for a cine camera, from the sensor height (`Filmback`) and `CurrentFocalLength`; for another,
+  from horizontal `FieldOfView` and `AspectRatio`. `active` if the actor is activated for a
+  player. What its `PostProcessSettings` override of exposure is its `Exposure`.
+- **Sky and exposure.** The level gives a `Sky` entity. Without a `SkyLight` it does not light, as
+  in Unreal; with one, it lights by its `Intensity` and color with the sky-to-sun ratio of Mirai's
+  `Sky`, taken from the level's brightest sun, and a warning: what Unreal captures from the scene
+  has no equivalent. With `SLS_SpecifiedCubemap`, the `Sky`'s image is its `Cubemap` turned on
+  import into a long-lat image (`sky_of_cube`, a `.tex` next to the materials, import of the cube's
+  package), and its entity rotates by `SourceCubemapAngle` around up, as Unreal rotates the cube.
+  Behind the scene the sky shows if the level draws it (`SkyAtmosphere`, `AtmosphericFog` or the
+  engine's sky sphere), and otherwise black; with an atmosphere, the `Sky` is the air the sun lights
+  (`atmosphere`), unless the `SkyLight` names a cube: Mirai's `Sky` draws the image or the air, and
+  the cube wins, with a warning. `VolumetricCloud` is a warning: Mirai draws no clouds.
+  An unbounded `PostProcessVolume` (the highest priority) gives the `Sky`'s exposure: method
+  (manual or automatic), compensation, adaptation speed, the physical camera (f, shutter and ISO)
+  and the minimum and maximum brightness, which Unreal takes to white and Mirai to mid gray: the
+  EV100 that makes that luminance white (Unreal's EV100 over `LuminanceMax` if the project extends
+  the range, luminance as UE4 if not). The rest of what it overrides and a bounded volume are
+  warnings; `ReflectionCapture`s, which GI replaces, what only Unreal's editor uses, World
+  Partition's HLOD (Mirai's is per cell), minimaps, `GPULightmass`, virtual texture volumes (their
+  layers are the terrain's), a Landscape's Nanite and proxy components, the PCG graph and a packed
+  level actor's level (its instances show it) are omitted without a warning.
+- **Texts.** `TextRenderComponent` is a fixed `World_Widget` on the component's entity, facing
+  where the text faces in Unreal (its +X, Mirai's +Z), with its own `.ui` in `levels/<map>/`: a
+  line measures `WorldSize` times `YScale`, in its color, aligned as Unreal aligns it and with
+  `<br>` as line break; equal texts share the `.ui`. `TextProperty` is read as the text it shows
+  in the source culture (`None` and `Base` histories).
+- **Plugin translators.** A `Translator` takes the actors of its native classes, one scene at a
+  time, and is provided by an `unreal_*` bridge plugin ([translators](translators.md)): terrain,
+  foliage, physics, fog, particles, navigation and the fluids' textures. Without a class's bridge,
+  its actors are warnings saying which plugin to enable, and the meshes have no collision.
+- **What is not translated** is a warning per class with its count: sounds, BSP, Blueprints that
+  show nothing Mirai translates, and the untranslated components of translated actors. Warnings
+  repeated by the meshes' imports are given once.
 
-### Lectura adelantada
+### Read-ahead
 
-Con un job system en `Import_Options.worker`, los paquetes de las mallas que el nivel nombra
-(`reads.odin`) se leen y se construyen (`importer.model_cook`) en jobs mientras el nivel se traduce,
-en el orden en que la traducción los pide: de cada escena, las mallas de sus actores y después los
-componentes instanciados, si un traductor los toma. Tras la malla de un componente van los
-materiales de otros paquetes que sobrescribe: un job los traduce y arma sus imágenes en el
-`Builder` del nivel, donde la traducción encuentra sus texturas decodificadas. La traducción
-escribe cada uno, con sus ids, cuando llega a él, uno tras otro: lo escrito es lo mismo que sin leer
-adelantado.
+With a job system in `Import_Options.worker`, the packages of the meshes the level names
+(`reads.odin`) are read and built (`importer.model_cook`) in jobs while the level is translated,
+in the order the translation asks for them: of each scene, its actors' meshes and then the
+instanced components, if a translator takes them. After a component's mesh go the materials from
+other packages that it overrides: a job translates them and builds their images in the level's
+`Builder`, where the translation finds their textures decoded. The translation writes each one,
+with its ids, when it reaches it, one after another: what is written is the same as without
+read-ahead.
 
-- **Piso de memoria.** La importación de un nivel deja libre `MEMORY_FLOOR` de la memoria de la
-  máquina, medida al momento (`base.memory_stats`). Una lectura empieza si la memoria disponible,
-  menos lo que se estima que tomarán todavía las que corren (`READ_COST` bytes por byte de
-  paquete), queda sobre el piso, y no corren más que workers; un paquete que no empieza lo lee la
-  traducción cuando llega a él, después de escribir y soltar los anteriores y, bajo el piso,
-  después de soltar las imágenes y de que terminen las lecturas que corren. Con la memoria bajo
-  el piso, el `Builder` suelta sus imágenes antes de armar materiales si nadie está afuera
-  (`builder_room`), y el nivel, entre importaciones, después de los jobs que decodifican
-  (`builder_settle`); las texturas se decodifican de nuevo, de a una mientras falte memoria. Nunca
-  falla por memoria: va más lento. Si el sistema no dice cuánta hay, no hay piso.
-- Un paquete pedido antes de su turno se lee en el acto. Los empezados antes del pedido, que la
-  traducción pasó de largo, dejan de ocupar un worker: si no, la lectura adelantada se para. No se
-  leen los paquetes de lo que la traducción no pide (actores silenciosos o solo de editor,
-  instanciados ocultos).
-- La traducción espera un paquete sin correr otros jobs: uno largo la demoraría.
-- `c.lib` y `c.images` son de todos: quien los usa toma `c.library_lock`, nunca mientras espera un
-  job. Los traductores tienen su propio decodificador de Oodle (`decoder(c)`).
-- Una textura se decodifica sin el lock: el `Builder` lo suelta mientras la decodifica con el
-  decodificador y la memoria de quien la pide, y lo toma de nuevo para guardar sus píxeles; quien
-  pide una que otro decodifica espera por ella, y cada textura se decodifica una vez; lo que el
-  `Builder` dice de una textura se lo dice a cada material que la usa. Mientras `builder_settle`
-  espera, las texturas se decodifican con el lock. Sin lock (la importación de un paquete solo)
-  decodifica igual, sin soltar nada.
+- **Memory floor.** A level import leaves `MEMORY_FLOOR` of the machine's memory free, measured at
+  that moment (`base.memory_stats`). A read starts if the available memory, minus what the running
+  ones are estimated to still take (`READ_COST` bytes per package byte), stays above the floor, and
+  no more run than workers; a package that does not start is read by the translation when it
+  reaches it, after writing and releasing the previous ones and, under the floor, after releasing
+  the images and after the running reads finish. With memory under the floor, the `Builder`
+  releases its images before building materials if nobody is outside (`builder_room`), and the
+  level, between imports, after the decoding jobs (`builder_settle`); textures are decoded again,
+  one at a time while memory is short. It never fails for memory: it goes slower. If the system
+  does not say how much there is, there is no floor.
+- A package requested before its turn is read at once. Those started before the request, which the
+  translation passed over, stop occupying a worker: otherwise read-ahead stalls. Packages of what
+  the translation does not ask for (silent or editor-only actors, hidden instanced ones) are not
+  read.
+- The translation waits for a package without running other jobs: a long one would delay it.
+- `c.lib` and `c.images` are shared: whoever uses them takes `c.library_lock`, never while waiting
+  for a job. Translators have their own Oodle decoder (`decoder(c)`).
+- A texture is decoded without the lock: the `Builder` releases it while decoding with the
+  requester's decoder and memory, and takes it again to store the pixels; whoever asks for one
+  another decodes waits for it, and each texture is decoded once; what the `Builder` says about a
+  texture it says to each material that uses it. While `builder_settle` waits, textures are decoded
+  with the lock. Without a lock (importing a single package) it decodes the same, releasing
+  nothing.
 
-## Diagnóstico (`inspect`)
+## Diagnostics (`inspect`)
 
-El método de API `unreal.inspect` (plugin `unreal`, `api.odin`; paquete `inspect`) recorre
-`.uasset` y `.umap` o una carpeta de ellos sin escribir assets y deja su informe en
-`.mirai/tmp/unreal-inspect.txt` del proyecto. Sus parámetros están en `engine.describe`.
+The API method `unreal.inspect` (plugin `unreal`, `api.odin`; package `inspect`) walks `.uasset`
+and `.umap` files or a folder of them without writing assets and leaves its report in the
+project's `.mirai/tmp/unreal-inspect.txt`. Its parameters are in `engine.describe`.
 
-- `Summary`: versiones, tablas y exports; `Objects`, propiedades y cola nativa; `Payloads`, los
-  payloads comprobados con BLAKE3.
-- `Textures`, `Meshes`, `Skeletal`, `Anims` y `Materials` leen o construyen cada objeto de su tipo,
-  con una línea por objeto y un resumen de aproximaciones y fallos por causa, y comparan lo que se
-  puede comprobar: bounds contra `ExtendedBounds` o `ImportedBounds` (que el importador FBX de UE4
-  guardaba agrandados), la descripción de una malla contra su modelo LOD, el `Id` de una textura.
-  `out` (bajo `.mirai/tmp/`) recibe las PNG de `Textures` y los programas Slang de `Materials`,
-  para `mirai shaders check`.
-- `mounts` (`/Prefijo=carpeta`, varios): sin uno de `/Game` se deduce el más votado de los primeros
-  paquetes, y sin uno de `/Engine`, la instalación que encuentra el importador
-  (`engine_content_find`), para expandir sus funciones como él.
-- `Level`: por cada `.umap`, actores y componentes por clase, transforms que fallan, de dónde sale
-  cada `RelativeLocation`, la partición de World Partition (grillas, celdas por nivel, lo que carga
-  con el mapa por clase y, por celda, sus actores, componentes instanciados, instancias y tipos de
-  follaje por malla y materiales, sin el HLOD de Unreal), cada landscape y cada follaje con su
-  comparación.
-- `hi_res`: en `Meshes`, el modelo de alta resolución en lugar de LOD 0.
+- `Summary`: versions, tables and exports; `Objects`, properties and native tail; `Payloads`, the
+  payloads checked with BLAKE3.
+- `Textures`, `Meshes`, `Skeletal`, `Anims` and `Materials` read or build each object of their
+  type, with one line per object and a summary of approximations and failures by cause, and
+  compare what can be checked: bounds against `ExtendedBounds` or `ImportedBounds` (which UE4's
+  FBX importer stored enlarged), a mesh's description against its LOD model, a texture's `Id`.
+  `out` (under `.mirai/tmp/`) receives the PNGs of `Textures` and the Slang programs of
+  `Materials`, for `mirai shaders check`.
+- `mounts` (`/Prefix=folder`, several): without a `/Game` one, the most voted of the first
+  packages is deduced, and without a `/Engine` one, the install the importer finds
+  (`engine_content_find`), to expand its functions like it does.
+- `Level`: per `.umap`, actors and components by class, failing transforms, where each
+  `RelativeLocation` comes from, the World Partition partition (grids, cells per level, what loads
+  with the map by class and, per cell, its actors, instanced components, instances and foliage
+  types by mesh and materials, without Unreal's HLOD), each landscape and each foliage with its
+  comparison.
+- `hi_res`: in `Meshes`, the high-resolution model instead of LOD 0.
 
-`ok` falso dice que algo falló; el informe dice qué.
+False `ok` says something failed; the report says what.
 
-## Verificación
+## Verification
 
-Todas con `mirai test` sobre la carpeta del paquete dentro de un proyecto con el plugin
-instalado.
+All with `mirai test` on the package folder inside a project with the plugin installed.
 
-- `editor/package`, `kraken` y `texture`: paquetes UE4/UE5 sintéticos, trailer, bulk
-  data, zlib, un encoder mínimo de cada formato de Oodle (`kraken_test.odin`,
-  `formats_test.odin`) y texturas UE4; el daño recorta y cambia bytes y cada intento decodifica o
-  se rechaza.
-- `editor/mesh`: los tres lugares del source model con secciones, materiales,
-  colores, UV, normales por aristas suaves y duras, escala de build y daño; polígonos sin
-  triángulos
+- `editor/package`, `kraken` and `texture`: synthetic UE4/UE5 packages, trailer, bulk data, zlib,
+  a minimal encoder of each Oodle format (`kraken_test.odin`, `formats_test.odin`) and UE4
+  textures; damage trims and changes bytes and each attempt decodes or is rejected.
+- `editor/mesh`: the three places of the source model with sections, materials, colors, UVs,
+  normals by soft and hard edges, build scale and damage; polygons without triangles
   (`a_description_saved_before_triangles_takes_the_triangles_unreal_5_makes_of_its_polygons`);
-  influencias y soldadura de una descripción con esqueleto
+  influences and welding of a description with skeleton
   (`a_description_keeps_the_influences_the_build_and_the_project_allow`,
-  `a_description_welds_corners_within_the_thresholds_of_its_build`); mallas con esqueleto
-  de cada layout (`skeletal_meshes_of_every_layout_read_their_skeleton_materials_and_lod_0`,
+  `a_description_welds_corners_within_the_thresholds_of_its_build`); skeletal meshes of every
+  layout (`skeletal_meshes_of_every_layout_read_their_skeleton_materials_and_lod_0`,
   `a_skeleton_reads_its_reference_skeleton_and_sockets`,
-  `damaged_skeletal_meshes_are_read_or_refused`); animaciones de cada layout
+  `damaged_skeletal_meshes_are_read_or_refused`); animations of every layout
   (`animations_of_every_layout_read_their_bone_tracks_curves_and_markers`,
   `additive_and_rate_scaled_animations_say_so`, `damaged_animations_are_read_or_refused`).
-- `editor/model`: espacio, slots, materiales, montajes, esqueletos e inverse binds,
-  morph targets y sockets, colisión de la fuente, el `/Engine` sin Unreal y clips de cada formato
-  muestreados contra su fuente, `RateScale` y aditivos.
-- `editor/material` y `material/write`: paquetes UE4 sintéticos
-  (`material/fixture`) con un grafo estándar, entradas tagged, instancias con switches
-  estáticos, funciones, capas de Landscape y de material, un programa, pantalla, profundidad,
-  bounds, el mundo con su origen, `Custom`, ruido, clases sin traducir y bytes dañados; la
-  escritura lee de vuelta `.mat` y `.tex` y reimporta sobre un parámetro cambiado.
-- `editor/level`, `landscape` y `foliage`: espacio de Unreal
-  contra `FRotationMatrix`, arquetipos de otro paquete y por SCS, plantillas heredadas
-  (`an_inherited_component_a_blueprint_changes_takes_its_override_template`),
-  defaults de constructores nativos, sockets (`sockets_test.odin`: de una static mesh, de una
-  skeletal mesh y su esqueleto o un hueso, el fin de un spring arm), celdas de una grilla suelta
+- `editor/model`: space, slots, materials, mounts, skeletons and inverse binds, morph targets and
+  sockets, source collision, `/Engine` without Unreal and clips of each format sampled against
+  their source, `RateScale` and additives.
+- `editor/material` and `material/write`: synthetic UE4 packages (`material/fixture`) with a
+  standard graph, tagged inputs, instances with static switches, functions, Landscape and material
+  layers, a program, screen, depth, bounds, the world with its origin, `Custom`, noise,
+  untranslated classes and damaged bytes; writing reads back `.mat` and `.tex` and reimports over a
+  changed parameter.
+- `editor/level`, `landscape` and `foliage`: Unreal space against `FRotationMatrix`, archetypes
+  from another package and by SCS, inherited templates
+  (`an_inherited_component_a_blueprint_changes_takes_its_override_template`), native constructor
+  defaults, sockets (`sockets_test.odin`: of a static mesh, of a skeletal mesh and its skeleton or
+  a bone, a spring arm's end), cells of a loose grid
   (`an_actor_goes_to_the_cell_of_its_center_at_the_level_its_size_asks`,
-  `a_map_of_world_partition_is_the_cells_of_its_grid_and_what_loads_with_it`), actores externos
-  repetidos (`of_two_external_packages_with_the_same_actor_one_is_read`), grilla,
-  subsecciones, capas, agujeros, escalas X e Y distintas
-  (`a_landscape_scaled_differently_along_x_and_y_is_its_grid_stretched_across`), bases, tipos,
-  follaje de actores y de ISM actors
-  (`foliage_of_actors_and_of_ism_actors_names_the_actors_and_components_that_show_it`) y
-  comparación del follaje.
-- `editor/scene`: mapas sintéticos (`fixture/files.level_begin`) con malla y
-  override, spot en lúmenes, cine camera, niebla de plugin, sonido, `Character` y
-  `SkeletalMeshActor`
-  (`a_skeletal_mesh_of_a_level_is_the_skinned_mesh_of_its_import_with_its_overrides`) y uno de World
-  Partition (`a_map_of_world_partition_is_a_scene_that_references_a_section_for_each_cell`): la
-  escena escrita, sus secciones, un traductor de prueba con los componentes instanciados de cada
-  escena, reimportar con los mismos ids y las conversiones de luz.
-- `editor`: la integración con el editor, con los formatos del plugin como los
-  halla el editor (`Unreal_Format`, `Unreal_Maps`): una static mesh y una skeletal mesh como sus
-  assets y prefab, paquetes dañados importados o rechazados, un mapa como escena del proyecto
-  (`an_unreal_map_imports_as_a_scene_of_its_project`) y los programas Surface que una importación
-  publica. Los traductores de los puentes: [traductores](translators.md#verificación).
-- Corpus, sobre los proyectos de prueba: `unreal.inspect` con `Meshes`, `Skeletal` y `Anims` sin
-  fallos salvo lo cocinado o lo que no dibuja nada y con los bounds coincidiendo; con `Skeletal`,
-  cada descripción contra el modelo LOD que guardó (triángulos, bounds e influencias; un modelo LOD
-  guardado en un proyecto con otros ajustes de influencias difiere en ellas); `Materials` con `out`
-  y `mirai shaders check` de cada programa sin errores ni avisos; `Textures` con una build
-  `-o:speed`, sin fallos ni `Differs` inesperados, comparando las PNG de `out` contra una
-  exportación PNG de Unreal con `mirai image diff` (con el verde invertido de las normal maps);
-  `Level` sin fallas de transforms, de la partición ni instancias de follaje distintas de su
-  componente.
-- Contra la verdad, Unreal en modo comando (`UnrealEditor-Cmd -run=pythonscript`) sobre una copia
-  del proyecto exporta transforms, alturas e instancias; nunca es un camino de importación.
-- `MIRAI_UNREAL_MAP` y `MIRAI_UNREAL_PROJECT` hacen que
-  `an_unreal_map_of_the_environment_imports` (`editor`, con `--release`) importe un
-  mapa del corpus con el importador de mapas, sin traductores; sin ellas no corre. Los traductores
-  de los puentes se prueban sobre el corpus en una sesión del editor.
-- Ningún asset real entra al repositorio; las fixtures son sintéticas.
+  `a_map_of_world_partition_is_the_cells_of_its_grid_and_what_loads_with_it`), repeated external
+  actors (`of_two_external_packages_with_the_same_actor_one_is_read`), grid, subsections, layers,
+  holes, different X and Y scales
+  (`a_landscape_scaled_differently_along_x_and_y_is_its_grid_stretched_across`), bases, types,
+  foliage of actors and of ISM actors
+  (`foliage_of_actors_and_of_ism_actors_names_the_actors_and_components_that_show_it`) and the
+  foliage check.
+- `editor/scene`: synthetic maps (`fixture/files.level_begin`) with mesh and override, spot in
+  lumens, cine camera, plugin fog, sound, `Character` and `SkeletalMeshActor`
+  (`a_skeletal_mesh_of_a_level_is_the_skinned_mesh_of_its_import_with_its_overrides`) and a World
+  Partition one (`a_map_of_world_partition_is_a_scene_that_references_a_section_for_each_cell`):
+  the written scene, its sections, a test translator with each scene's instanced components,
+  reimporting with the same ids and light conversions.
+- `editor`: the editor integration, with the plugin's formats as the editor finds them
+  (`Unreal_Format`, `Unreal_Maps`): a static mesh and a skeletal mesh as their assets and prefab,
+  damaged packages imported or rejected, a map as a project scene
+  (`an_unreal_map_imports_as_a_scene_of_its_project`) and the Surface programs an import
+  publishes. The bridges' translators: [translators](translators.md#verification).
+- Corpus, on the test projects: `unreal.inspect` with `Meshes`, `Skeletal` and `Anims` without
+  failures except cooked ones or ones that draw nothing and with matching bounds; with `Skeletal`,
+  each description against the LOD model it stored (triangles, bounds and influences; a LOD model
+  saved in a project with other influence settings differs in them); `Materials` with `out` and
+  `mirai shaders check` of each program without errors or warnings; `Textures` with an `-o:speed`
+  build, without failures or unexpected `Differs`, comparing the `out` PNGs against an Unreal PNG
+  export with `mirai image diff` (with normal maps' green inverted); `Level` without transform or
+  partition failures nor foliage instances different from their component.
+- Against the ground truth, Unreal in command mode (`UnrealEditor-Cmd -run=pythonscript`) on a
+  copy of the project exports transforms, heights and instances; it is never an import path.
+- `MIRAI_UNREAL_MAP` and `MIRAI_UNREAL_PROJECT` make
+  `an_unreal_map_of_the_environment_imports` (`editor`, with `--release`) import a corpus map with
+  the map importer, without translators; without them it does not run. The bridges' translators
+  are tested on the corpus in an editor session.
+- No real asset enters the repository; fixtures are synthetic.

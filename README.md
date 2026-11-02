@@ -23,8 +23,7 @@ when the project also has the plugin each one bridges.
 
 ## Documentation
 
-[`docs/`](docs/README.md) describes what the importer reads and how it maps it to Mirai (in
-Spanish).
+[`docs/`](docs/README.md) describes what the importer reads and how it maps it to Mirai.
 
 ## License
 
