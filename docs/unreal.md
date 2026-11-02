@@ -412,8 +412,8 @@ nombra). Todo vive en el arena de la biblioteca.
   `GetDynamicParameter` de Unreal; el puente `unreal_vfx` lo pasa desde los atributos de Niagara.
   `ParticleRandom` es el valor al azar de la partícula (`ctx.particle_random`) y `ParticleRadius`
   la mitad de su sprite (`ctx.particle_radius`).
-  `ParticleColor` es blanco: el sprite multiplica lo que da el material por el color de su
-  partícula.
+  `ParticleColor` es el color de la partícula, que el sprite da a su programa como
+  `ctx.vertex_color` y no multiplica, como Unreal.
 - **Programa.** Si una salida no cabe, el material entero es un programa Surface escrito de la
   tabla (`slang.odin`): texturas y parámetros de Unreal son sus parámetros (los que pasan del límite
   quedan constantes), posición y normales pasan a centímetros y Z arriba, las normal maps se

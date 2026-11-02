@@ -162,9 +162,10 @@ niagara_neighbors_body :: proc(w:^Niagara_Writer,di:^Niagara_Di,base,specifier:s
     return strings.to_string(b),true
 }
 
-// The queries of the scene of CollisionQuery: the depth of the view, and the
-// distance field from traced rays (niagara.slang). Each takes its values out
-// of locals, so an out bool or int of the script takes them alike.
+// The queries of the scene of CollisionQuery: the depth of the view, the
+// distance field from traced rays (niagara.slang), and the traces of the CPU
+// as a ray through the traced scene, answered in the same frame. Each takes
+// its values out of locals, so an out bool or int of the script takes them alike.
 @(private)
 niagara_collision_body :: proc(base:string,params:[]Hlsl_Field) -> (body:string,ok:bool) {
     ins,outs:=niagara_split(params)
@@ -182,6 +183,30 @@ niagara_collision_body :: proc(base:string,params:[]Hlsl_Field) -> (body:string,
         fmt.sbprintf(&b,"    float distance; float3 gradient; bool valid;\n    niagara_query_distance(%s, distance, gradient, valid);\n",ins[0].name)
         values:=[3]string{"distance","gradient","valid"}
         for v,i in values {fmt.sbprintf(&b,"    %s = (%s)(%s);\n",outs[i].name,out_type(outs[i]),v)}
+    case "PerformCollisionQuerySyncCPU","PerformCollisionQueryAsyncCPU":
+        named :: proc(fields:[]Hlsl_Field,name:string) -> string {
+            for f in fields {if f.name==name {return f.name}}
+            return ""
+        }
+        start,end,skip:=named(ins,"In_TraceStartWorld"),named(ins,"In_TraceEndWorld"),named(ins,"In_SkipTrace")
+        if start=="" || end=="" {return}
+        fmt.sbprintf(&b,"    float3 from = mirai_point(%s);\n    float3 along = mirai_point(%s) - from;\n    Mirai_Vfx_Hit h = (Mirai_Vfx_Hit)0;\n",start,end)
+        fmt.sbprintf(&b,"    if (%s) h = mirai_vfx_trace(niagara_ctx, from, along, length(along));\n",skip=="" ? "true" : fmt.tprintf("!bool(%s)",skip))
+        // The friction and restitution of Unreal's default physical material:
+        // Mirai's surfaces keep none of their own.
+        VALUES :: [?][2]string{
+            {"Out_CollisionValid","h.hit"},{"Out_IsTraceInsideMesh","h.hit && h.inside"},
+            {"Out_CollisionPosWorld","niagara_point(from + normalize(along) * h.distance)"},{"Out_CollisionNormal","niagara_direction(h.normal)"},
+            {"Out_CollisionMaterialFriction","0.7"},{"Out_CollisionMaterialRestitution","0.3"},
+        }
+        outer: for o in outs {
+            for v in VALUES {
+                if o.name!=v[0] {continue}
+                fmt.sbprintf(&b,"    %s = (%s)(%s);\n",o.name,out_type(o),v[1])
+                continue outer
+            }
+            fmt.sbprintf(&b,"    %s = (%s)0;\n",o.name,out_type(o))
+        }
     case:
         return
     }

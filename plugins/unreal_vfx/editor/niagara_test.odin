@@ -107,3 +107,28 @@ niagara_event_handlers_say_what_to_use_instead :: proc(t:^testing.T) {
         testing.expectf(t,strings.contains(problems[0],part),"the problem names %s: %s",part,problems[0])
     }
 }
+
+// A trace of the CPU of CollisionQuery is a ray through the traced scene from
+// its start to its end, which a skipped trace does not cast; what the scene
+// does not keep (the query of the next frame, the material) is zero.
+@(test)
+niagara_traces_of_the_cpu_are_rays_through_the_scene :: proc(t:^testing.T) {
+    params:=[]Hlsl_Field{
+        {"int","In_InstanceData"},{"int","In_PreviousFrameQueryID"},{"float3","In_TraceStartWorld"},{"float3","In_TraceEndWorld"},
+        {"int","In_TraceChannel"},{"bool","In_SkipTrace"},{"out int","Out_NextFrameQueryID"},{"out int","Out_CollisionValid"},
+        {"out bool","Out_IsTraceInsideMesh"},{"out float3","Out_CollisionPosWorld"},{"out float3","Out_CollisionNormal"},
+        {"out float","Out_CollisionMaterialFriction"},{"out float","Out_CollisionMaterialRestitution"},{"out int","Out_CollisionMaterialIndex"},
+    }
+    body,ok:=niagara_collision_body("PerformCollisionQueryAsyncCPU",params)
+    if !testing.expect(t,ok) {return}
+    for line in ([]string{
+        "float3 along = mirai_point(In_TraceEndWorld) - from;",
+        "if (!bool(In_SkipTrace)) h = mirai_vfx_trace(niagara_ctx, from, along, length(along));",
+        "Out_CollisionValid = (int)(h.hit);",
+        "Out_CollisionPosWorld = (float3)(niagara_point(from + normalize(along) * h.distance));",
+        "Out_NextFrameQueryID = (int)0;",
+        "Out_CollisionMaterialIndex = (int)0;",
+    }) {
+        testing.expectf(t,strings.contains(body,line),"the trace has %q:\n%s",line,body)
+    }
+}

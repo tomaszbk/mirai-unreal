@@ -988,8 +988,8 @@ translate_one :: proc(t:^testing.T,lib:^Library,path:string) -> (translated:Tran
 
 // Where the point is in the image and how deep, the opaque scene behind it,
 // the size of the box around the object and the data a particle gives (its
-// Dynamic Parameter, or the default where it gives none), its random value and
-// its radius are seen by a program.
+// Dynamic Parameter, or the default where it gives none), its random value, its
+// radius and its color are seen by a program.
 @(test)
 the_screen_the_depth_and_the_bounds_are_seen_by_a_program :: proc(t:^testing.T) {
     b:=material_begin("M_Screen")
@@ -998,7 +998,10 @@ the_screen_the_depth_and_the_bounds_are_seen_by_a_program :: proc(t:^testing.T) 
     w=fx.writer(&b.p)
     depth:=expression(&b,"PixelDepth","Depth",&w)
     w=fx.writer(&b.p)
+    tint:=expression(&b,"ParticleColor","Tint",&w)
+    w=fx.writer(&b.p)
     fx.float_put(&w,"FadeDistanceDefault",50)
+    fx.input_put(&w,"InOpacity","ExpressionInput",{expression=tint,mask={false,false,false,true}})
     fade:=expression(&b,"DepthFade","Fade",&w)
     w=fx.writer(&b.p)
     bounds:=expression(&b,"ObjectBounds","Bounds",&w)
@@ -1029,7 +1032,7 @@ the_screen_the_depth_and_the_bounds_are_seen_by_a_program :: proc(t:^testing.T) 
     testing.expect_value(t,len(translated.untranslated),0)
     if !testing.expect(t,!translated_is_standard(&translated)) {return}
     source:=translated.program.source
-    for code in ([]string{"ctx.screen","ctx.screen_size","ctx.depth*100.0","ctx.scene_depth*100.0","unreal_object_bounds(ctx,1)","unreal_object_axis(ctx,2)","((ctx.particle_given>>2u)&1u)!=0u?ctx.particle_data[2]:float4(0.25,0.5,0.75,1","ctx.particle_random","ctx.particle_radius*100.0"}) {
+    for code in ([]string{"ctx.screen","ctx.screen_size","ctx.depth*100.0","ctx.scene_depth*100.0","unreal_object_bounds(ctx,1)","unreal_object_axis(ctx,2)","((ctx.particle_given>>2u)&1u)!=0u?ctx.particle_data[2]:float4(0.25,0.5,0.75,1","ctx.particle_random","ctx.particle_radius*100.0","ctx.vertex_color"}) {
         testing.expectf(t,strings.contains(source,code),"the program reads %s",code)
     }
 }

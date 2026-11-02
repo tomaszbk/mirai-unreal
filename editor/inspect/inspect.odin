@@ -3,6 +3,7 @@ package inspect
 import "core:fmt"
 import "core:io"
 import "core:math/linalg"
+import vmem "core:mem/virtual"
 import "core:os"
 import "core:path/filepath"
 import "core:slice"
@@ -41,8 +42,17 @@ Options :: struct {
 
 run :: proc(w:io.Writer,o:Options) -> bool {
     target,mode,out,mounts,hi_res:=o.target,o.mode,o.out,o.mounts,o.hi_res
+    // The packages work in an arena of their own, emptied after each: what the
+    // caller keeps in its temporary allocator (the report, the options) stays.
+    scratch:vmem.Arena
+    defer vmem.arena_destroy(&scratch)
+    context.temp_allocator=vmem.arena_allocator(&scratch)
     if out!="" && os.make_directory_all(out)!=nil && !os.is_dir(out) {fmt.wprintfln(w,"unreal.inspect: cannot create '%s'",out);return false}
     files:[dynamic]string
+    defer {
+        for file in files {delete(file)}
+        delete(files)
+    }
     if os.is_dir(target) {
         walker:=os.walker_create(target)
         defer os.walker_destroy(&walker)
@@ -51,7 +61,7 @@ run :: proc(w:io.Writer,o:Options) -> bool {
         }
         slice.sort(files[:])
     } else if os.exists(target) {
-        append(&files,target)
+        append(&files,strings.clone(target))
     } else {
         fmt.wprintfln(w,"unreal.inspect: '%s' does not exist",target)
         return false

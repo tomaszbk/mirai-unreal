@@ -677,10 +677,8 @@ expression_build :: proc(e:^Evaluator,o:Object,output:i32,scope:i32) -> Value {
         case 3:return nodes(high)
         }
         return nodes(binary(g,.Mul,size,scalar(g,0.5)))
-    case "ParticleColor":
-        // The particles of an effect multiply what the material gives by their own color.
-        note(e,"ParticleColor is taken as white: the particles of an effect tint the material with their color")
-        return nodes(constant(g,{1,1,1,1},4))
+    // The color of the particle: a sprite gives its program as the color of its vertices.
+    case "ParticleColor":return nodes(context_value(g,.Vertex_Color,4))
     // What the particle gives the material as its program says (Mirai_Vfx_Visual.data), the
     // default where it gives none; RGB and RGBA after its four components.
     case "DynamicParameter":
