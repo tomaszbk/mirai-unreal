@@ -31,7 +31,6 @@ The `editor/` packages are imported as `project:plugins/unreal/editor/<package>`
   Landscape, foliage and maps as scenes: [unreal.md](unreal.md).
 - What each bridge plugin translates (terrain, foliage, physics, fog, navigation, particles) and
   the translator contract: [translators.md](translators.md).
-- Why it was decided this way and what was discarded: [decisions.md](decisions.md).
 
 ## Importing in the editor
 
@@ -70,8 +69,7 @@ library:
 - **The same bytes give the same assets.** Imported ids come from the actor and component path,
   not from a numbering, and reimporting keeps what the previous import wrote.
 - **Without Unreal installed.** What a package names from `/Engine` is read if an installation is
-  mounted and otherwise replaced by something from the engine with a warning
-  ([decision](decisions.md#engine-without-unreal-engine-substitutes)).
+  mounted and otherwise replaced by something from the engine with a warning.
 - **No real asset enters the repository.** Tests use synthetic packages (`fixture`); the real
   corpus lives in separate projects.
 

@@ -568,8 +568,7 @@ void niagara_query_scene_depth(float3 at, out float depth, out float3 camera, ou
 }
 
 // The distance to the nearest surface of the scene and its gradient, as the
-// global distance field gives them, from rays traced every way (decisions of
-// mirai-imports): the nearest hit is the distance, its normal the gradient,
+// global distance field gives them, from rays traced every way: the nearest hit is the distance, its normal the gradient,
 // negative inside a closed mesh. Beyond NIAGARA_FIELD_REACH it is that far.
 #define NIAGARA_FIELD_REACH 4.0
 #define NIAGARA_FIELD_RAYS 14

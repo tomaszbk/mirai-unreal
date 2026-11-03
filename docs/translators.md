@@ -5,7 +5,7 @@ with what Mirai translates itself (meshes, lights, cameras, sky, text;
 [levels to scenes](unreal.md#levels-to-scene-scene)) and leaves the actors of optional domains to
 the translators of `unreal_*` bridge plugins. Each bridge is automatic (`automatic: true`),
 editor-only, and depends on `unreal` and on the plugin it translates to: a project that has both
-gets it without declaring it ([decision](decisions.md#unreal-levels-to-mirai-scenes)).
+gets it without declaring it.
 
 ## The contract
 
@@ -95,8 +95,7 @@ in the space of an entity at the scene origin.
   `foliage_ids_keep` gives each type the id of the equal one or of the one with its name, mesh,
   prefab and materials, and each manual instance the id of the nearest of its type in its cell
   within `KEEP_DISTANCE`, `KEEP_TURN` and `KEEP_SCALE`, one to one; the rest take ids the previous
-  file never gave, so a save with tombstones does not bring back others
-  ([decision](decisions.md#unreal-foliage-reimporting-keeps-ids)). If the previous file
+  file never gave, so a save with tombstones does not bring back others. If the previous file
   cannot be read, the import warns and numbers from 1.
 - With different X and Y scales an instance takes their geometric mean (`averaged`); a zero,
   negative or out-of-range scale drops it (`dropped`). A material the level stores inside an actor
@@ -120,8 +119,7 @@ in the space of an entity at the scene origin.
     the mesh.
   - With a convex, the entity collides with the colliders stored by the imported mesh: the convex's
     `Hull` when it is the only shape; if there are more, the hulls of all as triangles (`Mesh`), or
-    the `Hull` of all in a simulating body
-    ([decision](decisions.md#unreal-convexes-as-hull-or-mesh-triangles)).
+    the `Hull` of all in a simulating body.
   - Without simple shapes, or with `CTF_UseComplexAsSimple`: the triangles (`Hull` if it simulates).
   - `bSimulatePhysics` gives a dynamic `Rigid_Body`.
 
@@ -191,8 +189,7 @@ which uses `shaders/unreal_noise.slang`.
 - Particle lights cast shadows if Unreal's do: in Cascade, the high-quality ones with
   `bShadowCastingLights`; in Niagara, those MegaLights takes with `bMegaLightsCastShadows`.
 - **Compiled Niagara.** An emitter whose scripts store the HLSL Niagara generated is a Vfx program
-  written in the project's `shaders/`, which the import publishes
-  ([decision](decisions.md#niagara-the-hlsl-unreal-compiled)): `niagara_program.odin` builds the
+  written in the project's `shaders/`, which the import publishes: `niagara_program.odin` builds the
   frame and `niagara.slang` is its prelude (Unreal space, random numbers, ids). The system scripts
   give each emitter's state and its births (`//! births`); each data interface is a body over the
   Vfx resources (`niagara_interfaces.odin`, `niagara_grids.odin`, `niagara_particles.odin`,
@@ -201,11 +198,11 @@ which uses `shaders/unreal_noise.slang`.
   grid's (x, 0, y), and the bodies and thread of its stages give the script Niagara's order. A
   `Texture`'s texture is baked into a `.grid` flat along y, one cell per texel as Unreal reads it
   (up to `NIAGARA_TEXTURE_CELLS` per axis, resampled), from which an effect grid starts:
-  `SampleTexture2D` samples it between texels, repeating (`niagara_textures.odin`). Each part
-  writes only what its frame reaches from the functions it calls (functions, structs, statics, data
-  interfaces and engine parameters its code reads, `hlsl_reached`); a data interface nobody calls
-  is still translated for what it says about the program (the channel of its births). The
-  translated channels keep the asset's variables in its order, with Unreal's values.
+  `SampleTexture2D` samples it between texels, repeating (`niagara_textures.odin`). Each part writes
+  only what its frame reaches from the functions it calls (functions, structs, statics, data
+  interfaces and engine parameters its code reads, `hlsl_reached`); a data interface nobody calls is
+  still translated for what it says about the program (the channel of its births). The translated
+  channels keep the asset's variables in its order, with Unreal's values.
 - **Births from a data channel.** Each `SpawnConditional` of the system scripts that names the
   emitter (its `Emitter ID` is the index of its handle) leaves in `prepare` words whether it ran,
   its mode, its operator, its counts and the values of its conditions. `births` gives each channel

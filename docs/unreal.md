@@ -56,8 +56,7 @@ size is `len(destination)` without allocating.
   bytes), which no open description of the format reads: those modes are not read and no corpus
   uses them.
 - No corpus uses tANS, multi-arrays, Mermaid, Selkie or Leviathan: only the tests' encoder,
-  written from the same format description, validates them
-  ([decision](decisions.md#oodle-formats-without-a-corpus)).
+  written from the same format description, validates them.
 - A damaged stream gives `Truncated` or `Malformed` without reading or writing outside the slices;
   each stream (literals, offsets, lengths, interval arrays) must be fully consumed. Correctness is
   measured with the BLAKE3 of each `FCompressedBuffer`.
@@ -74,8 +73,7 @@ size is `len(destination)` without allocating.
   the rest, `Color`. `TC_Grayscale`, `TC_Displacementmap`, `TC_HalfFloat`, `TC_SingleFloat` and
   `TC_HDR_F32` ask for `keep_precision`: a 16-bit or float source is stored uncompressed. Unreal's
   other compression settings do not count: the usage decides the format (the engine's
-  `cook/textures`)
-  ([decision](decisions.md#unreal-textures-usage-decides-the-format-not-compression-settings)).
+  `cook/textures`).
 - `texture_decode` gives all blocks, layers, mips and slices, rows from the top, as RGBA8, RGBA16
   or linear RGBA32F depending on the source format, from None, UEDELTA, PNG, JPEG or UEJPEG. PNG,
   JPEG and UEJPEG are a single 2D image and, as in Unreal, the format is told by their bytes and
@@ -86,8 +84,7 @@ size is `len(destination)` without allocating.
 - **UEJPEG** (`uejpeg.odin`): the quantized coefficients of a baseline JPEG without Huffman, in
   horizontal bands (splits) stored or Oodle-compressed (decoded with `kraken`). It gives the pixels
   Unreal gives on x64: the integer fast IDCT as its SSE2 path computes it, and fixed-point
-  upsampling and YCbCr via SSE2
-  ([decision](decisions.md#uejpeg-unreals-pixels-on-x64)). The source is `BGRA8`, or `G8`,
+  upsampling and YCbCr via SSE2. The source is `BGRA8`, or `G8`,
   which stores red as `ImageCore` does; 16 bits or float is `Unsupported_Value`. What Unreal does
   not validate and would make it read outside its planes or leave coefficients unwritten is
   rejected: blocks outside the image or an empty Oodle split.
@@ -120,14 +117,12 @@ Unreal's build does: a corner `Mesh` in Unreal space, with the build scale. A pa
 is opened with `LIMITS`: the payload of a mesh of millions of triangles exceeds `DEFAULT_LIMITS`.
 
 - **Model.** `Lod0` (what Unreal draws without Nanite) or `Hi_Res` (`HiResSourceModel`, from which
-  Nanite is built)
-  ([decision](decisions.md#unreal-meshes-lod-0-not-the-nanite-hi-res)). LOD 1+ are not
+  Nanite is built). LOD 1+ are not
   read: Mirai's levels come from LOD 0.
 - **Payload**, depending on the package versions: an `FRawMesh` or an `FMeshDescription` (in the
   element-map format or the UE4 array format). A description saved before
   `MeshDescriptionTriangles` has only polygons: its triangles are the ones UE5 makes on load, a
-  fan on the second corner, also for a concave polygon
-  ([decision](decisions.md#polygons-without-triangles-the-fan-ue5-draws)).
+  fan on the second corner, also for a concave polygon.
 - **What the build does** (`Mesh`):
   - Sections are the polygon groups, with the material Unreal gives them (-1 if that slot does
     not exist).
@@ -236,8 +231,7 @@ arrives with its cause and offset.
 - **Vertex color.** Unreal only uses it if the material graph reads it; Mirai's standard model
   always multiplies it and a program reads it as data. Corners carry the color only in slots whose
   translated material multiplies it by its base color or whose program reads it
-  (`Vertex_Colors.Multiply_Base_Color`, `.Program`)
-  ([decision](decisions.md#unreal-vertex-color-only-if-the-material-uses-it)).
+  (`Vertex_Colors.Multiply_Base_Color`, `.Program`).
 - **UV.** The first two; if there are more, a warning.
 - **Mounts.** `/Game` is the `Content` folder of the package's project: of the `Content` folders
   that contain it, the first next to a `.uproject` or, with none, the closest (only folders that
@@ -252,8 +246,7 @@ arrives with its cause and offset.
 - **`/Engine` without Unreal** (`engine.odin`): a `/Engine` material that no mount has, or one
   that reads a missing `/Engine` texture, function, collection or parent, is the engine grid
   (`engine_grid`: the standard model with the `Grid` program of `shaders/materials`, lines every
-  world meter and darker every ten), with a warning naming the original reference
-  ([decision](decisions.md#engine-without-unreal-engine-substitutes)). With `/Engine`
+  world meter and darker every ten), with a warning naming the original reference. With `/Engine`
   mounted, the original is read.
 - **Model.** LOD 0; with `Options.hi_res`, the Nanite hi-res of the meshes that have it.
 - **Skeleton.** The mesh's reference skeleton, with the name of its `USkeleton`; a bone's path is
@@ -284,8 +277,7 @@ arrives with its cause and offset.
     rejected.
   - With root motion or `bForceRootLock`, the root bone is the clip's root; a `RootMotionRootLock`
     that is not the reference pose is a warning, because Mirai leaves the root at rest.
-  - An additive animation is rejected with the reason
-    ([decision](decisions.md#unreal-additive-animations-are-rejected)); notifies are Unreal
+  - An additive animation is rejected with the reason; notifies are Unreal
     logic: a warning.
 - **Collision.** The `BodySetup`'s `AggGeom` (`umesh.body_read`) are the mesh's colliders: boxes,
   spheres and capsules as they are and each convex as a hull of its points; tapered capsules and
@@ -336,8 +328,7 @@ it names). Everything lives in the library's arena.
   from the corners and axes.
 - **The world from its center.** A world location (`WorldPosition`, the object's center and pivot,
   the coordinates of a whole Landscape) is the one relative to the render origin plus the origin
-  (`Origin`), and subtracting two locations removes the origin they share
-  ([decision](decisions.md#unreal-materials-what-the-program-sees-of-screen-world-and-hlsl)):
+  (`Origin`), and subtracting two locations removes the origin they share:
   it does not jump when the origin moves.
 - **Screen and depth.** `ScreenPosition` (view UV and pixels), `ViewSize`, `SceneTexelSize`,
   `PixelDepth`, `SceneDepth` at its point and `DepthFade`; the scene behind is seen by the glass
@@ -373,8 +364,7 @@ it names). Everything lives in the library's arena.
 ### Translation
 
 - **Standard model.** Each output is a constant factor times a per-texel part whose samples read
-  the same coordinate, affine in a UV set
-  ([decision](decisions.md#unreal-materials-standard-model-first-a-program-for-the-rest)):
+  the same coordinate, affine in a UV set:
   the factor is the material's value and the part, the map's image, with the coordinate's scale
   and offset. Color and opacity share the color map; roughness (green), metallic (blue) and
   occlusion (red, if it reads the same coordinates) share one image.
@@ -414,8 +404,7 @@ it names). Everything lives in the library's arena.
   include, which the plugin that writes it gives (`vfx_world_texture_uv` of its grid). The program
   calls that function where Unreal samples; the texture is not a program parameter. Without a
   read, the empty parameter is not translated.
-- **Landscape.** `landscape_layers` evaluates the graph once per layer
-  ([decision](decisions.md#unreal-materials-standard-model-first-a-program-for-the-rest));
+- **Landscape.** `landscape_layers` evaluates the graph once per layer;
   `LandscapeLayerCoords` is the Landscape's UV 0 with its scale, rotation and offset, and
   `LandscapeVisibilityMask` is 1: holes belong to the terrain. Without a layer, `translate` shows
   the first.
@@ -465,8 +454,7 @@ names (classes, properties) stay in each type's translators.
 - **Properties by archetype.** `property` searches the object and then its archetypes, also from
   other packages, and says the origin: `Authored`, `Archetype` or `Native` (the native class's
   defaults, which the reader applies). Without a saved template, as in most UE4 subobjects, the
-  archetype is the one Unreal looks for
-  ([decision](decisions.md#unreal-levels-landscapes-and-foliage)): the object of its name under
+  archetype is the one Unreal looks for: the object of its name under
   its outer's archetype and, if none, what is found going up the Blueprint class and its Blueprint
   super classes: the `SCS_Node` template of that variable; if the class has no such node, the one
   its `InheritableComponentHandler` stores for an inherited component it changes (the record whose
@@ -519,8 +507,7 @@ components, in a grid.
   repeat the edge vertices, in meters by the actor's Z scale; a shared texture is decoded once.
 - **Spacing.** `spacing` is the actor's X scale (along Mirai's z) and `transform`, the grid's
   center in the world: the grid is of square cells, and a different Y scale stretches it across,
-  in `transform`'s x scale (Y over X;
-  [decision](decisions.md#unreal-levels-landscapes-and-foliage)).
+  in `transform`'s x scale (Y over X).
 - **Layers.** Each `LandscapeLayerInfoObject`'s weight per sample, as Unreal paints them
   (unnormalized), with its coverage; the name is its `LayerName` if the layer info is under a
   mount and, otherwise, the object's.
@@ -573,8 +560,7 @@ entity, the imported meshes and the time.
   the map stores of itself), `/Engine` of the Unreal install and that install's plugins. Without
   `/Engine` mounted (`engine.odin`), an Unreal basic shape is the Mirai primitive of its
   `Mesh_Renderer` and a missing `/Engine` material, the engine grid, written with the materials
-  the level stores in `levels/<map>/`
-  ([decision](decisions.md#engine-without-unreal-engine-substitutes)).
+  the level stores in `levels/<map>/`.
 - **Names.** What is imported from Unreal is named without the prefix its conventions give each
   type (`SM_`, `SK_`, `M_`, `MI_`, `T_`, `BP_`...): `asset_name` is the only place that knows them.
   `SM_Rock.uasset` writes `Rock.mesh` and `Rock.prefab` in `models/Rock/` (`model_folder`), and a
@@ -593,7 +579,7 @@ entity, the imported meshes and the time.
   finds the previous one of its name. Each entity's id is the hash of its actor's path in the map
   (with its package if external: two World Partition packages can have actors of the same name)
   and of its component's name, which Unreal keeps even if the label changes: reimporting gives the
-  same scene with the same ids ([decision](decisions.md#unreal-levels-to-mirai-scenes)).
+  same scene with the same ids.
 - **Sections.** A World Partition map is the map's scene and one scene per cell
   ([partition](#levels-level)) in `levels/<map>/<cell>.scene`, each referenced from the map's scene
   by an entity named after the cell, at the center of its box, with a `Spatial` `Scene_Reference`
@@ -601,8 +587,7 @@ entity, the imported meshes and the time.
   root is where it is from that center. What loads with the map, what the level gives once (sky,
   exposure) and what translators with `root` write (terrain, which loads its pages itself) stays
   in the map's scene; a cell that gives nothing is not written. Each grid's loading range is a
-  warning: Mirai loads sections within the project's `Streaming_Settings` distances
-  ([decision](decisions.md#world-partition-one-section-per-cell)).
+  warning: Mirai loads sections within the project's `Streaming_Settings` distances.
 - **Entities.** An actor that shows something is an entity with its label where its
   `RootComponent` is, and what each component shows, a child entity with its placement relative to
   the actor (`transform_relative`, exact for Mirai's composition). A single-component actor is
@@ -629,8 +614,7 @@ entity, the imported meshes and the time.
   come from the `PerInstanceSMData` array of their native payload, which follows what
   `UStaticMeshComponent` stores (LODs and painted vertices, of variable length depending on the
   save): it is found by size, count and a first matrix of row vectors (`level.instances_read`,
-  which the foliage check also uses). A `SplineMeshComponent` is not translated: it is a warning
-  ([decision](decisions.md#world-partition-one-section-per-cell)).
+  which the foliage check also uses). A `SplineMeshComponent` is not translated: it is a warning.
   `SkeletalMeshComponent` (of a `SkeletalMeshActor` or any Blueprint, such as a character) is the
   same with the skinned mesh (`SkeletalMesh`, which wins as in Unreal, or `SkinnedAsset`), drawn in
   its bind pose as its import's prefab draws it. In `AnimationSingleNode` it plays the clip of the

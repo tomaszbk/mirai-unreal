@@ -6,8 +6,7 @@ import "core:strings"
 import "project:plugins/unreal/editor/level"
 import unreal_scene "project:plugins/unreal/editor/scene"
 
-// A Vfx program from the HLSL of Niagara's translator (decisions of
-// mirai-imports): the code of the modules of an emitter's scripts stays as
+// A Vfx program from the HLSL of Niagara's translator: the code of the modules of an emitter's scripts stays as
 // Niagara generated it, each stage in a namespace of its own, and the frame
 // around it is the contract of Vfx programs. The scripts compute in the space
 // of Unreal (niagara.slang); the particle of Mirai keeps the position and
