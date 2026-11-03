@@ -1,7 +1,7 @@
 package unreal_fluids_editor
 
 import unreal_scene "project:plugins/unreal/editor/scene"
-import fluids "plugins:fluids/runtime"
+import fluids "project:plugins/fluids/runtime"
 
 // The output materials of FluidNinja read the buffers of its simulation,
 // which its Blueprints give them as they run. The one of velocity and density

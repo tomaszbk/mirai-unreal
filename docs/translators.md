@@ -236,15 +236,16 @@ which uses `shaders/unreal_noise.slang`.
 
 ## Fluids (`unreal_fluids`)
 
-It translates no actors: its provider gives only `reads`. FluidNinja's output materials
-(`M_NinjaOutput_*` and their instances) are imported as programs that read the fluid: the
-`VelocityDensityBuffer` that their Blueprints give them at runtime is layer 0 of the `fluids.GRID`
-grid read by UV (`fluids_unreal_default`). FluidNinja lays out its simulation along Unreal's X and
-Y: `fluid_ninja_buffer` (the bridge's `shaders/fluid_ninja.slang`) reads the rotated texture, u
-along Mirai's z and v along its -x, and gives the velocity in u and v. With `ForceLocalSpace` at 0
-the material computes its UV from `TraceMeshPosDouble` and `TraceMeshSize`, the area the Blueprint
-simulates; at 1, those of the mesh. `PressureDivergenceBuffer` and `PaintBuffer` have no read: a
-world texture is a single layer.
+It bridges `unreal` with the `fluids` plugin of the catalog, which the project installs apart
+(`project:plugins/fluids`). It translates no actors: its provider gives only `reads`. FluidNinja's
+output materials (`M_NinjaOutput_*` and their instances) are imported as programs that read the
+fluid: the `VelocityDensityBuffer` that their Blueprints give them at runtime is layer 0 of the
+`fluids.GRID` grid read by UV (`fluids_unreal_default`). FluidNinja lays out its simulation along
+Unreal's X and Y: `fluid_ninja_buffer` (the bridge's `shaders/fluid_ninja.slang`) reads the rotated
+texture, u along Mirai's z and v along its -x, and gives the velocity in u and v. With
+`ForceLocalSpace` at 0 the material computes its UV from `TraceMeshPosDouble` and `TraceMeshSize`,
+the area the Blueprint simulates; at 1, those of the mesh. `PressureDivergenceBuffer` and
+`PaintBuffer` have no read: a world texture is a single layer.
 
 ## Verification
 

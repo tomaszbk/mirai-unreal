@@ -19,7 +19,8 @@ mirai plugin add unreal
 or from the Catalog of the Plugins page in the project settings of the editor. The companion
 plugins in `plugins/` (`unreal_terrain`, `unreal_foliage`, `unreal_physics`, `unreal_fog`,
 `unreal_navigation`, `unreal_vfx`, `unreal_fluids`) install with it and turn on by themselves
-when the project also has the plugin each one bridges.
+when the project also has the plugin each one bridges. The plugin that `unreal_fluids` bridges,
+`fluids`, is not in the engine: it installs from the catalog too (`mirai plugin add fluids`).
 
 ## Documentation
 

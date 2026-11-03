@@ -4,7 +4,7 @@ import "core:strings"
 import "core:testing"
 import material "project:plugins/unreal/editor/material"
 import fx "project:plugins/unreal/editor/material/fixture"
-import fluids "plugins:fluids/runtime"
+import fluids "project:plugins/fluids/runtime"
 
 // An output material of FluidNinja samples VelocityDensityBuffer, which its
 // Blueprints fill as the game runs: with the reads of the plugin its program
