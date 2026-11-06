@@ -285,7 +285,12 @@ offsets_unpack :: proc(d:^Decoder,src:[]u8,at,offset_count,scale,length_count:in
         }
     }
     if scale>1 {
-        for i in 0..<offset_count {d.offsets[i]=i32(scale)*d.offsets[i]-i32(d.offset_low[i])}
+        for i in 0..<offset_count {
+            // Within 32 bits: a larger distance is past any window.
+            value:=i64(scale)*i64(d.offsets[i])-i64(d.offset_low[i])
+            if value< -i64(max(i32)) || value>i64(max(i32)) {return .Malformed}
+            d.offsets[i]=i32(value)
+        }
     }
     long:[512]u32
     for i in 0..<long_count {
@@ -399,7 +404,7 @@ runs_decode :: proc(d:^Decoder,mode:int,dst:[]u8,first,end,literal_count,command
         recent[pick+1]=recent[pick]
         recent[3]=offset
         last=int(offset)
-        if offset>=0 || int(-offset)>o {return .Malformed}
+        if offset>=0 || -int(offset)>o {return .Malformed}
         match_length:int
         if match_code!=15 {
             match_length=match_code+2

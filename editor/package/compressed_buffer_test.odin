@@ -3,7 +3,6 @@ package unreal
 import "core:hash"
 import "core:testing"
 import "project:plugins/unreal/editor/kraken"
-import "mirai:std/serial"
 
 @(private="file")
 compressed_test_be :: proc(bytes:[]u8,value:u64) {for i in 0..<len(bytes) {bytes[i]=u8(value>>u64((len(bytes)-i-1)*8))}}
@@ -20,13 +19,36 @@ compressed_fixture :: proc(source:[]u8,method:Compressed_Method) -> []u8 {
     length:=64+len(source)
     if method==.None {copy(bytes[64:],source)} else {
         bytes[11]=16
-        size,_:=serial.lz4_compress(source,bytes[68:])
+        size:=lz4_fixture(source,bytes[68:])
         compressed_test_be(bytes[64:68],u64(size))
         length=68+size
     }
     compressed_test_be(bytes[24:32],u64(length))
     compressed_test_be(bytes[4:8],u64(hash.crc32(bytes[8:method==.None?64:68])))
     return bytes[:length]
+}
+
+// An LZ4 block of a source that repeats every 7 bytes: its first 7 as
+// literals, one match of the rest but 5, and those 5 as literals.
+@(private="file")
+lz4_fixture :: proc(source,out:[]u8) -> int {
+    if len(source)<15 {
+        out[0]=u8(len(source))<<4
+        copy(out[1:],source)
+        return 1+len(source)
+    }
+    at:=0
+    put :: proc(out:[]u8,at:^int,value:u8) {out[at^]=value;at^+=1}
+    match:=len(source)-12-4
+    put(out,&at,0x7f)
+    for value in source[:7] {put(out,&at,value)}
+    put(out,&at,7);put(out,&at,0)
+    rest:=match-15
+    for ;rest>=255;rest-=255 {put(out,&at,255)}
+    put(out,&at,u8(rest))
+    put(out,&at,0x50)
+    for value in source[len(source)-5:] {put(out,&at,value)}
+    return at
 }
 
 @(test)

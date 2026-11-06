@@ -114,7 +114,7 @@ leviathan_runs :: proc(d:^Decoder,literal_mode:Literal_Mode,dst:[]u8,start,first
         for j:=pick;j>0;j-=1 {recent[j]=recent[j-1]}
         recent[0]=offset
         last=int(offset)
-        if offset>=0 || int(-offset)>o {return .Malformed}
+        if offset>=0 || -int(offset)>o {return .Malformed}
         match_length:=(command&7)+2
         if match_length==9 {
             if back<=front {return .Malformed}

@@ -39,7 +39,8 @@ outer depth.
   at its absolute offset and `byte_bulk_data` the UE4 bulk data inline, at the end of the file or
   in zlib chunks. Virtualized, sidecar, workspace, legacy or in a separate file is
   `Unsupported_Value`.
-- `compressed_buffer_decode` supports None, LZ4 (`std/serial`) and Oodle with a `kraken.Decoder`,
+- `compressed_buffer_decode` supports None, LZ4 (its own block decoder) and Oodle with a
+  `kraken.Decoder`,
   and compares the result with the buffer's BLAKE3: a mismatch is `Malformed`. The raw size of a
   payload is also bounded by the package `Limits`.
 

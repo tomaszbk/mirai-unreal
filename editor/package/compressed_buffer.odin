@@ -2,7 +2,6 @@ package unreal
 
 import "core:hash"
 import "project:plugins/unreal/editor/kraken"
-import "mirai:std/serial"
 
 Compressed_Method :: enum u8 {None=0,Oodle=3,LZ4=4}
 Compressed_Buffer :: struct {
@@ -70,7 +69,7 @@ compressed_buffer_decode :: proc(buffer:Compressed_Buffer,destination:[]u8,decod
             if size==raw_size {copy(target,source)} else {
                 switch checked.method {
                 case .LZ4:
-                    written,ok:=serial.lz4_decompress(source,target)
+                    written,ok:=lz4_decode(source,target)
                     if !ok || written!=raw_size {return {.Malformed,i64(source_at),"LZ4 compressed buffer block"}}
                 case .Oodle:
                     if decoder==nil {return {.Compressed,i64(source_at),"Oodle blocks need a kraken.Decoder"}}
@@ -89,3 +88,44 @@ compressed_buffer_decode :: proc(buffer:Compressed_Buffer,destination:[]u8,decod
     if blake3(destination)!=checked.raw_hash {return {.Malformed,32,"decoded payload does not match its BLAKE3 hash"}}
     return {}
 }
+
+// An LZ4 block (lz4.org, block format) into dst; the bytes it wrote, and false
+// for a block that is malformed or does not fit dst.
+@(private="file")
+lz4_decode :: proc(src,dst:[]u8) -> (written:int,ok:bool) {
+    length :: proc(src:[]u8,at:^int,value:int) -> (int,bool) {
+        value:=value
+        if value!=15 {return value,true}
+        for {
+            if at^>=len(src) {return 0,false}
+            extra:=int(src[at^])
+            at^+=1
+            value+=extra
+            if value>len(src)+len(src)*255 {return 0,false}
+            if extra!=255 {return value,true}
+        }
+    }
+    at,out:=0,0
+    for at<len(src) {
+        token:=int(src[at])
+        at+=1
+        literals,literals_ok:=length(src,&at,token>>4)
+        if !literals_ok || literals>len(src)-at || literals>len(dst)-out {return out,false}
+        copy(dst[out:],src[at:][:literals])
+        at+=literals
+        out+=literals
+        if at==len(src) {return out,true}
+        if len(src)-at<2 {return out,false}
+        offset:=int(src[at])|int(src[at+1])<<8
+        at+=2
+        match,match_ok:=length(src,&at,token&15)
+        match+=4
+        if !match_ok || offset==0 || offset>out || match>len(dst)-out {return out,false}
+        if offset>=match {copy(dst[out:][:match],dst[out-offset:][:match])} else {
+            for i in 0..<match {dst[out+i]=dst[out-offset+i]}
+        }
+        out+=match
+    }
+    return out,false
+}
+
