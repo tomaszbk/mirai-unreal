@@ -81,6 +81,7 @@ Animation :: struct {
     reference:string,     // RefPoseSeq: object path of the animation of the base
     notifies:int,         // AnimNotify events: logic of Unreal, not read
     weighted:int,         // cubic segments of the channels of a sequencer whose tangents have weights, evaluated without them
+    rest_first:bool,      // a pose asset whose frame 0 is the reference pose of its skeleton, which the importer puts
     arena:^mem.Dynamic_Arena,
     allocator:mem.Allocator,
 }

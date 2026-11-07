@@ -15,7 +15,7 @@ import "mirai:cook/textures"
 import "project:plugins/unreal/editor/kraken"
 import material "project:plugins/unreal/editor/material"
 import unreal "project:plugins/unreal/editor/package"
-import "project:plugins/unreal/editor/texture"
+import texture "project:plugins/unreal/editor/texture"
 import "mirai:std/base"
 import "mirai:std/jobs"
 

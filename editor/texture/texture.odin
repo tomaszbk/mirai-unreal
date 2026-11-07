@@ -1,4 +1,4 @@
-package texture
+package unreal_texture
 
 import "core:mem"
 import "core:strings"

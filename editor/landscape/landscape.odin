@@ -6,7 +6,7 @@ import "core:strings"
 import "project:plugins/unreal/editor/kraken"
 import level "project:plugins/unreal/editor/level"
 import unreal "project:plugins/unreal/editor/package"
-import "project:plugins/unreal/editor/texture"
+import texture "project:plugins/unreal/editor/texture"
 import mm "mirai:std/math"
 
 // The landscapes of a level as a grid of heights in Mirai's space: Unreal's

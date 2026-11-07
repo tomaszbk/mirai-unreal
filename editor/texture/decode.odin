@@ -1,4 +1,4 @@
-package texture
+package unreal_texture
 
 import "base:intrinsics"
 import "core:c"

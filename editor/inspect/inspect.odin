@@ -13,7 +13,7 @@ import "mirai:cook/textures"
 import "project:plugins/unreal/editor/kraken"
 import unreal_mesh "project:plugins/unreal/editor/mesh"
 import unreal "project:plugins/unreal/editor/package"
-import "project:plugins/unreal/editor/texture"
+import texture "project:plugins/unreal/editor/texture"
 import "mirai:std/serial"
 
 // Reads uncooked Unreal packages without Unreal, for unreal.inspect, and

@@ -1,4 +1,4 @@
-package texture
+package unreal_texture
 
 import "core:encoding/endian"
 import "core:mem"

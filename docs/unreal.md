@@ -3,9 +3,10 @@
 The packages under `editor/` (imported as `project:plugins/unreal/editor/<package>`) read Unreal
 editor packages (uncooked `.uasset`/`.umap`, such as Fab's) without Unreal installed. They are
 engine-time: they live in the editor part of the `unreal` plugin and no game contains them.
-`package` is imported as `unreal`; `foliage` and `scene` are called `unreal_foliage` and
-`unreal_scene` (package names are unique). Only `material/write` and `scene` write assets:
-meshes, skeletons, animations and textures reach the editor through the `model` format
+`package` is imported as `unreal`; `foliage`, `scene` and `texture` are called `unreal_foliage`,
+`unreal_scene` and `unreal_texture` (package names are unique, also against the engine's). Only
+`material/write` and `scene` write assets: meshes, skeletons, animations and textures reach the
+editor through the `model` format
 ([models](#model-format-model)) and maps as [scenes](#levels-to-scene-scene).
 `fixture` builds the synthetic packages of the tests and `fixture/files` writes them as complete
 files. How they are imported in the editor: [README](README.md#importing-in-the-editor).
@@ -204,6 +205,22 @@ motion, additive, notifies), with a key every `interval` seconds from 0 to the d
 - Approximation: a cubic segment with weighted tangents is evaluated without the weight
   (`weighted` counts the affected frames; none in the corpora). A cooked animation is `Cooked`.
 
+## Pose assets (`mesh`)
+
+`pose_asset_read` reads a `PoseAsset` as an animation of a key per frame that holds each key, which
+the editor turns into the curve poses and drives of a `.pose` (`pose.profile.poses` without a
+list).
+
+- Frame 0 is the base: the pose `BasePoseIndex` names in an additive asset; in another, or one
+  without a base, the reference pose of its skeleton, which the importer puts (`rest_first`).
+  Frame `k+1` is pose `k`, marked by a sync marker of its name, every `POSE_ASSET_INTERVAL`.
+- The poses are the source ones (`SourceLocalSpacePose`), whole, which Unreal keeps with the
+  editor data before making them additive: measured from the base they are its additive poses. A
+  save without them is `Unsupported_Value`.
+- Names come from `PoseFNames` or from the `FSmartName`s of `PoseNames`; each curve of `Curves` is
+  a float curve with the value of each pose (`SourceCurveData`) at its frame and zero at the base.
+- A count of poses, bones or curve values that does not match is `Malformed`.
+
 ## Model format (`model`)
 
 The `model` package (`uasset`) is the editor's `.uasset` model format: it imports each
@@ -211,7 +228,8 @@ The `model` package (`uasset`) is the editor's `.uasset` model format: it import
 `SkeletalMesh` as a skinned mesh ([reading](#skeletal-meshes-mesh)) and each `AnimSequence` as a
 clip ([reading](#animations-mesh)). A package with only a `Skeleton` is that skeleton; one with
 only textures, each a `.tex` with its layers, faces and the precision of its source
-([reading](#textures-texture)); one with none of that is `Unsupported`. What the package rejects
+([reading](#textures-texture)); each `PoseAsset`, a clip of a frame per pose
+([reading](#pose-assets-mesh)); one with none of that is `Unsupported`. What the package rejects
 arrives with its cause and offset.
 
 - **Space.** Centimeters, +Z up, +X forward, +Y right and left-handed, with V from the top: the
@@ -757,7 +775,9 @@ All with `mirai test` on the package folder inside a project with the plugin ins
   `a_skeleton_reads_its_reference_skeleton_and_sockets`,
   `damaged_skeletal_meshes_are_read_or_refused`); animations of every layout
   (`animations_of_every_layout_read_their_bone_tracks_curves_and_markers`,
-  `additive_and_rate_scaled_animations_say_so`, `damaged_animations_are_read_or_refused`).
+  `additive_and_rate_scaled_animations_say_so`, `damaged_animations_are_read_or_refused`); pose
+  assets (`a_pose_asset_is_a_frame_per_pose_after_its_base_with_its_names_and_curves`,
+  `pose_assets_that_do_not_add_up_or_are_damaged_are_refused`).
 - `editor/model`: space, slots, materials, mounts, skeletons and inverse binds, morph targets and
   sockets, source collision, `/Engine` without Unreal and clips of each format sampled against
   their source, `RateScale` and additives.

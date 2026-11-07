@@ -146,7 +146,7 @@ enum_name :: proc(p:^unreal.Package,property:^unreal.Property) -> string {
     return text
 }
 
-@(private="file")
+@(private)
 quaternion_of :: proc(p:^unreal.Package,list:^unreal.Property_List,name:string,error:^unreal.Error) -> quaternion128 {
     property:=unreal.property_find(p,list,name)
     if property==nil || error.code!=.None {return 1}

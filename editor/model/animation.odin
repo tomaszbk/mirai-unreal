@@ -9,7 +9,8 @@ import umesh "project:plugins/unreal/editor/mesh"
 import anim "mirai:std/anim"
 import mm "mirai:std/math"
 
-// An AnimSequence: a clip of the .anim of its package, named after it. Each
+// An AnimSequence, or a PoseAsset read as one (a frame per pose): a clip of
+// the .anim of its package, named after it. Each
 // bone track of its USkeleton is a track of the path of that bone, as the
 // skeletons of the import name them, keyed at every frame and in Unreal's
 // space (the import turns them with the bones); a track that never changes
@@ -52,6 +53,11 @@ animation_add :: proc(c:^Context,name:string,a:^umesh.Animation) -> bool {
             continue
         }
         target:=importer.own(r,paths[bone])
+        // The base of a pose asset that has none of its own is the pose of its skeleton at rest.
+        if a.rest_first && len(track.positions)>0 && len(track.rotations)>0 && len(track.scales)>0 {
+            rest:=skeleton.bones[bone]
+            track.positions[0],track.rotations[0],track.scales[0]=rest.translation,rest.rotation,rest.scale
+        }
         positions:=make([]mm.Vec4,len(track.positions),context.temp_allocator)
         for p,i in track.positions {positions[i]={p.x,p.y,p.z,0}}
         rotations:=make([]mm.Vec4,len(track.rotations),context.temp_allocator)

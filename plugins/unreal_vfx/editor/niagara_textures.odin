@@ -5,7 +5,7 @@ import "core:strings"
 import "mirai:cook/textures"
 import "project:plugins/unreal/editor/level"
 import unreal_scene "project:plugins/unreal/editor/scene"
-import "project:plugins/unreal/editor/texture"
+import texture "project:plugins/unreal/editor/texture"
 import "mirai:std/base"
 import "plugins:vfx/runtime/gridfile"
 

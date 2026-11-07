@@ -154,6 +154,15 @@ read :: proc(r:^importer.Reader,bytes:[]u8) -> bool {
             if !animation_add(&c,name,&a) {return false}
             continue
         }
+        if umesh.pose_asset_is(&p,index) {
+            found+=1
+            name:=upackage.asset_name(upackage.name_text(&p,p.exports[index].object_name,context.temp_allocator))
+            a,error:=umesh.pose_asset_read(&p,index,context.temp_allocator)
+            if error.code!=.None {return failure(r,error,name)}
+            defer umesh.animation_destroy(&a)
+            if !animation_add(&c,name,&a) {return false}
+            continue
+        }
         skeletal:=umesh.skeletal_mesh_is(&p,index)
         if !skeletal && !umesh.static_mesh_is(&p,index) {continue}
         found+=1
@@ -198,7 +207,7 @@ read :: proc(r:^importer.Reader,bytes:[]u8) -> bool {
             if !texture_add(&c,index,name) {return false}
         }
         if len(textures)>0 {return true}
-        return importer.fail(r,.Unsupported,"%s has no StaticMesh, SkeletalMesh, Skeleton, AnimSequence or texture: the Unreal format reads the meshes, skeletons, animations and textures of a package",r.file_name)
+        return importer.fail(r,.Unsupported,"%s has no StaticMesh, SkeletalMesh, Skeleton, AnimSequence, PoseAsset or texture: the Unreal format reads the meshes, skeletons, animations, pose assets and textures of a package",r.file_name)
     }
     return true
 }
