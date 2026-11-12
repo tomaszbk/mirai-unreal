@@ -42,7 +42,7 @@ landscape_grass_is_a_generated_type_on_its_layer_over_the_cells_where_it_is_pain
     testing.expect_value(t,g.density,f32(1.5))
     testing.expect(t,g.rule.enabled && g.rule.layers=={0={1,1}} && g.rule.weight==0.3 && g.rule.slope=={0,1},"it grows on Meadow up to the slope of its input, as dense as Meadow weighs from 0.3")
     testing.expect(t,g.scale=={0.8,1.2} && abs(g.height[0]-0.8/1.2)<1e-6 && abs(g.height[1]-1.3/0.8)<1e-6)
-    testing.expect(t,g.yaw>0 && g.align==1 && g.cull_distance==100 && g.fade_distance==1 && g.casts_shadow && !g.ray_visible)
+    testing.expect(t,g.yaw>0 && g.align==1 && g.cull_distance==100 && g.fade_distance==100 && g.casts_shadow && !g.ray_visible)
     // Meadow spans x -4 to 16 from the origin, z 30 to 70: cells -1 and 0 across, 0 to 2 down.
     testing.expect_value(t,result.cells,6)
     for z in i32(0)..=2 {for x in i32(-1)..=2 {

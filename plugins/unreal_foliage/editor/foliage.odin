@@ -27,6 +27,9 @@ import foliage "plugins:foliage/runtime"
 // - An instance placed on something is INSTANCE_GROUNDED with its height
 //   over that point as `ground`.
 // - Unreal moves foliage with its materials, not its types: wind is 0.
+// - Unreal fades an instance between its start and end cull distances only
+//   in a material that reads PerInstanceFadeAmount: it draws whole up to the
+//   end and is gone there, so the fade starts at the cull distance.
 // - Collision is a box of the size of the mesh's bounds, standing on the instance.
 
 Foliage_Options :: struct {
@@ -112,7 +115,7 @@ type_from :: proc(t:^foliage.Foliage_Type,ut:ufoliage.Foliage_Type) {
     t.tilt=ut.random_pitch
     t.align=ut.align_to_normal?1:0
     t.fade_distance,t.cull_distance=0,0
-    if ut.cull[1]>0 {t.fade_distance,t.cull_distance=min(ut.cull[0],ut.cull[1]),ut.cull[1]}
+    if ut.cull[1]>0 {t.fade_distance,t.cull_distance=ut.cull[1],ut.cull[1]}
     t.wind=0
     t.casts_shadow=ut.casts_shadow
     t.ray_visible=ut.ray_visible
@@ -131,7 +134,7 @@ Instanced_Type :: struct {
     name:string,
     mesh:base.Asset_Id,
     materials:[render.MATERIAL_SLOTS]base.Asset_Id, // those its slots override; none: the mesh's
-    fade_distance,cull_distance:f32, // metres; 0 never culled
+    cull_distance:f32, // metres; 0 never culled
     casts_shadow,ray_visible:bool,
     size:[3]f32,       // of the box of its mesh, when it collides; zero for none
 }
@@ -159,7 +162,7 @@ instanced_add :: proc(s:^foliage.Source,batches:[]Instanced_Batch,origin:[3]f32,
             t.density=0
             t.scale,t.height={1,1},{1,1}
             t.yaw,t.tilt,t.align,t.wind=0,0,0,0
-            t.fade_distance,t.cull_distance=b.type.fade_distance,b.type.cull_distance
+            t.fade_distance,t.cull_distance=b.type.cull_distance,b.type.cull_distance
             t.casts_shadow,t.ray_visible=b.type.casts_shadow,b.type.ray_visible
             t.collision=b.type.size=={}?foliage.Foliage_Collision.None:foliage.Foliage_Collision.Box
             t.size=b.type.size
@@ -423,9 +426,8 @@ instanced_batches :: proc(c:^unreal_scene.Context) -> []Instanced_Batch {
         path:=level.path_of(d,ref,"StaticMesh")
         _,object:=unreal_scene.object_split(path)
         t:=Instanced_Type{name=unreal.asset_name(object),mesh=shown.mesh,materials=shown.materials}
-        start,_:=level.real_of(d,ref,"InstanceStartCullDistance",0)
         end,_:=level.real_of(d,ref,"InstanceEndCullDistance",0)
-        if end>0 {t.fade_distance,t.cull_distance=f32(clamp(start,0,end))/100,f32(end)/100}
+        if end>0 {t.cull_distance=f32(end)/100}
         t.casts_shadow,_=level.bool_of(d,ref,"CastShadow",true)
         t.ray_visible,_=level.bool_of(d,ref,"bVisibleInRayTracing",true)
         if profile,enabled,_:=level.component_collision(d,ref);level.profile_collides(profile,enabled) {

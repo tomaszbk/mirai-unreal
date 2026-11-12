@@ -91,9 +91,12 @@ in the space of an entity at the scene origin.
   (`Foliage.components`) are batches like those below.
 - **Instanced components** (`instanced_add`): `InstancedStaticMeshComponent`, the hierarchical one
   and the foliage one, also those baked by PCG and by packed level actors. One type per mesh,
-  materials of its slots, cull distances (`InstanceStart/EndCullDistance`), shadows, rays and
-  collision: a box of the mesh bounds if the component collides, nothing if not. No generator or
-  wind; instances are manual, where they are.
+  materials of its slots, cull distance (`InstanceEndCullDistance`), shadows, rays and collision:
+  a box of the mesh bounds if the component collides, nothing if not. No generator or wind;
+  instances are manual, where they are.
+- **Cull distances.** Unreal fades an instance between its start and end cull distances only in
+  a material that reads `PerInstanceFadeAmount`; otherwise it draws whole up to the end and is
+  gone there. Every type of foliage starts its fade at its cull distance.
 - **Reimporting** keeps the ids: the translator reads the `.foliage` it replaces and
   `foliage_ids_keep` gives each type the id of the equal one or of the one with its name, mesh,
   prefab and materials, and each manual instance the id of the nearest of its type in its cell
