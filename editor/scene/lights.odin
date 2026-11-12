@@ -158,7 +158,6 @@ unreal_light :: proc(c:^Context,component:int,kind:Light_Kind) -> (u:Unreal_Ligh
     return
 }
 
-// FortniteMainBranchObjectVersion::RectLightFixedEVUnitConversion.
 @(private)
 RECT_LIGHT_FIXED_EV :: 203
 

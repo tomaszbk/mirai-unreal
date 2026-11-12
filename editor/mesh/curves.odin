@@ -9,15 +9,15 @@ import unreal "project:plugins/unreal/editor/package"
 // AnimCurveMetaData since.
 
 @(private) ANIM_PHYS_GUID :: [4]u32{0x29E575DD,0xE0A34627,0x9D10D276,0x232CDCEA}
-@(private) UE4_SMART_NAMES :: 388                  // VER_UE4_SKELETON_ADD_SMARTNAMES
-@(private) UE5_SOFT_PATH_NAMES :: 1007             // FSOFTOBJECTPATH_REMOVE_ASSET_PATH_FNAMES
-@(private) UE5_SOFT_PATH_LIST :: 1008              // ADD_SOFTOBJECTPATH_LIST
-@(private) FRAMEWORK_SMART_NAME_REFACTOR :: 7      // FrameworkObjectVersion::SmartNameRefactor
-@(private) FRAMEWORK_CURVE_TYPES_ON_SKELETON :: 15 // FrameworkObjectVersion::MoveCurveTypesToSkeleton
-@(private) ANIM_PHYS_DETERMINISTIC_NAMES :: 10     // AnimPhysObjectVersion::SmartNameRefactorForDeterministicCooking
-@(private) ANIM_PHYS_CURVE_LOD :: 12               // AnimPhysObjectVersion::AddLODToCurveMetaData
-@(private) ANIM_PHYS_SOFT_RETARGET_MESH :: 15      // AnimPhysObjectVersion::ChangeRetargetSourceReferenceToSoftObjectPtr
-@(private) RELEASE_SMART_NAMES_REMOVED :: 64       // UE5ReleaseStreamObjectVersion::RemovedSmartNameContainerPayload
+@(private) UE4_SMART_NAMES :: 388
+@(private) UE5_SOFT_PATH_NAMES :: 1007
+@(private) UE5_SOFT_PATH_LIST :: 1008
+@(private) FRAMEWORK_SMART_NAME_REFACTOR :: 7
+@(private) FRAMEWORK_CURVE_TYPES_ON_SKELETON :: 15
+@(private) ANIM_PHYS_DETERMINISTIC_NAMES :: 10
+@(private) ANIM_PHYS_CURVE_LOD :: 12
+@(private) ANIM_PHYS_SOFT_RETARGET_MESH :: 15
+@(private) RELEASE_SMART_NAMES_REMOVED :: 64
 
 // The morph target curves of a skeleton, from the rest of its native tail
 // after the reference skeleton, or from its AnimCurveMetaData. ok is false

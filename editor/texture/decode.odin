@@ -135,7 +135,7 @@ texture_decode :: proc(p:^unreal.Package,texture:^Texture,decoder:^kraken.Decode
     }
     defer if raw_data(source)!=raw_data(raw) {delete(source)}
     if texture.id_is_hash && raw_data(source)==raw_data(raw) && (texture.compression==.None || texture.compression==.UEDELTA) {
-        // Without UEDELTA the source is the payload as it was hashed.
+        // Without a row delta the source is the payload as it was hashed.
         hash,known:=payload_hash.?
         digest:=hash if known && texture.compression==.None else unreal.blake3(source)
         decoded.check=.Matches if string(digest[:16])==string(texture.id[:]) else .Differs

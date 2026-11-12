@@ -145,8 +145,8 @@ skeletal_mesh_is :: proc(p:^unreal.Package,index:int) -> bool {return export_is(
 // Whether an export is a Skeleton of /Script/Engine.
 skeleton_is :: proc(p:^unreal.Package,index:int) -> bool {return export_is(p,index,"Skeleton")}
 
-// SkeletalMeshCustomVersion::SplitModelAndRenderData: the oldest skeletal
-// mesh read; before it the LOD model kept render buffers of an older format.
+// The oldest skeletal mesh read; before it the LOD model kept render buffers of an older
+// format.
 @(private) SKELETAL_SPLIT_MODEL :: 12
 @(private) SKELETAL_REMOVE_TRIANGLE_SORTING :: 13
 @(private) SKELETAL_REMOVE_DUPLICATED_CLOTHING :: 14
@@ -158,7 +158,7 @@ skeleton_is :: proc(p:^unreal.Package,index:int) -> bool {return export_is(p,ind
 @(private) UE4_MOVE_SKELETALMESH_SHADOWCASTING :: 302
 @(private) UE4_REFERENCE_SKELETON_REFACTOR :: 310
 @(private) UE4_FIXUP_ROOTBONE_PARENT :: 312
-@(private) UE4_EIGHT_BONE_INFLUENCES :: 332  // VER_UE4_SUPPORT_8_BONE_INFLUENCES_SKELETAL_MESHES
+@(private) UE4_EIGHT_BONE_INFLUENCES :: 332
 @(private) UE4_STORE_BONE_EXPORT_NAMES :: 370
 @(private) ANIM_BONE_INDEX_LIMIT_PER_CHUNK :: 4 // bone indices of 16 bits
 @(private) ANIM_UNLIMITED_BONE_INFLUENCES :: 5
@@ -166,19 +166,19 @@ skeleton_is :: proc(p:^unreal.Package,index:int) -> bool {return export_is(p,ind
 @(private) RENDERING_INCREASE_NORMAL_PRECISION :: 26
 @(private) EDITOR_REFACTOR_MESH_EDITOR_MATERIALS :: 8
 @(private) EDITOR_SKELETAL_MESH_BUILD_REFACTOR :: 37
-@(private) EDITOR_SKELETAL_SOURCE_DATA_PRIVATE_ASSET :: 38 // SkeletalMeshMoveEditorSourceDataToPrivateAsset
+@(private) EDITOR_SKELETAL_SOURCE_DATA_PRIVATE_ASSET :: 38
 @(private) CORE_SKELETAL_MATERIAL_EDITOR_DATA_STRIPPING :: 3
-@(private) RELEASE_SECTION_DISABLE :: 12      // AddSkeletalMeshSectionDisable
-@(private) MAIN_RAY_TRACING_SECTION_FLAG :: 54 // SkelMeshSectionVisibleInRayTracingFlagAdded
+@(private) RELEASE_SECTION_DISABLE :: 12
+@(private) MAIN_RAY_TRACING_SECTION_FLAG :: 54
 @(private) MAIN_LOD_MODEL_MESH_INFO :: 58
-@(private) MAIN_SKIN_WEIGHT_PRECISION :: 90   // IncreasedSkinWeightPrecision: weights of 16 bits
-@(private) MAIN_RELEASE_CLOTH_LOD_BIAS :: 15  // AddClothMappingLODBias
-@(private) MAIN_RELEASE_REMOVE_LOD_BULK_DATA :: 22 // RemoveSkeletalMeshLODModelBulkDatas
-@(private) FORTNITE_NEW_SKELETAL_IMPORTER :: 14 // NewSkeletalMeshImporterWorkflow
-@(private) FORTNITE_REDUCE_BASE_LOD :: 22     // AllowSkeletalMeshToReduceTheBaseLOD
-@(private) FORTNITE_SKELETAL_DESCRIPTION :: 133 // MeshDescriptionForSkeletalMesh
-@(private) FORTNITE_OVERLAY_MATERIAL :: 196   // MeshMaterialSlotOverlayMaterialAdded
-@(private) FORTNITE_POLYGON_WIREFRAME :: 273  // SkeletalMeshPolygonWireframe
+@(private) MAIN_SKIN_WEIGHT_PRECISION :: 90  // weights of 16 bits
+@(private) MAIN_RELEASE_CLOTH_LOD_BIAS :: 15
+@(private) MAIN_RELEASE_REMOVE_LOD_BULK_DATA :: 22
+@(private) FORTNITE_NEW_SKELETAL_IMPORTER :: 14
+@(private) FORTNITE_REDUCE_BASE_LOD :: 22
+@(private) FORTNITE_SKELETAL_DESCRIPTION :: 133
+@(private) FORTNITE_OVERLAY_MATERIAL :: 196
+@(private) FORTNITE_POLYGON_WIREFRAME :: 273
 @(private) RECOMPUTE_TANGENT_RUNTIME :: 1
 @(private) RECOMPUTE_TANGENT_VERTEX_MASK :: 2
 @(private) OVERLAPPING_DETECT :: 1

@@ -7,7 +7,7 @@ import unreal "project:plugins/unreal/editor/package"
 // RawMesh, the source model of saves before MeshDescription: arrays by face,
 // by vertex and by wedge (a corner of a face), with smoothing groups.
 
-@(private) RAW_MESH_COMPACTED :: 1 // RAW_MESH_VER_REMOVE_ZERO_TRIANGLE_SECTIONS
+@(private) RAW_MESH_COMPACTED :: 1
 
 @(private)
 Raw_Array :: struct {count:int,data:[]u8}

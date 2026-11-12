@@ -17,12 +17,12 @@ Morph_Target :: struct {
     normals:[][3]f32, // none when the target turns no normal
 }
 
-@(private) UE4_MORPH_TANGENT_Z_DELTA :: 348 // VER_UE4_MORPHTARGET_CPU_TANGENTZDELTA_FORMATCHANGE
-@(private) EDITOR_MORPH_SECTION_INDICES :: 23 // EditorObjectVersion::AddedMorphTargetSectionIndices
-@(private) FORTNITE_MORPH_GENERATED_BY_ENGINE :: 6 // FortniteMainBranchObjectVersion::SaveGeneratedMorphTargetByEngine
-@(private) FORTNITE_MORPH_CUSTOM_IMPORT :: 158 // FortniteMainBranchObjectVersion::MorphTargetCustomImport
-@(private) FORTNITE_MORPH_COOKED_COMPRESSED :: 211 // FortniteMainBranchObjectVersion::MorphTargetCookedCPUDataCompressed
-@(private) SPECIAL_MORPH_STRIP_SOURCE :: 8 // UE5SpecialProjectStreamObjectVersion::StripMorphTargetSourceDataForCookedBuilds
+@(private) UE4_MORPH_TANGENT_Z_DELTA :: 348
+@(private) EDITOR_MORPH_SECTION_INDICES :: 23
+@(private) FORTNITE_MORPH_GENERATED_BY_ENGINE :: 6
+@(private) FORTNITE_MORPH_CUSTOM_IMPORT :: 158
+@(private) FORTNITE_MORPH_COOKED_COMPRESSED :: 211
+@(private) SPECIAL_MORPH_STRIP_SOURCE :: 8
 // MorphTargetDelta: PositionDelta and TangentZDelta of three floats and SourceIdx; before
 // UE4_MORPH_TANGENT_Z_DELTA the tangent was an DeprecatedSerializedPackedNormal of four bytes.
 @(private) MORPH_DELTA_BYTES :: 12+12+4

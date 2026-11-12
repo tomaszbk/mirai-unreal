@@ -21,11 +21,11 @@ Input :: struct {
     name:string, // InputName: of an input of a function call, the name of the input of the function
 }
 
-// CoreObjectVersion::MaterialInputNativeSerialize: inputs are saved natively; before, as tagged structs.
+// Inputs are saved natively; before, as tagged structs.
 @(private) CORE_MATERIAL_INPUT_NATIVE :: 1
-// FrameworkObjectVersion::PinsStoreFName: InputName is a Name.
+// InputName is a Name.
 @(private) FRAMEWORK_PINS_STORE_FNAME :: 31
-// FortniteMainBranchObjectVersion::MaterialInputUsesLinearColor: the constant of a color input is a LinearColor, before a Color.
+// The constant of a color input is a LinearColor, before a Color.
 @(private) FORTNITE_MATERIAL_INPUT_LINEAR_COLOR :: 171
 
 // The tagged properties of o; nil when they cannot be read, which gives

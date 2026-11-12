@@ -87,7 +87,7 @@ Found :: struct {
 @(private) LEVEL_ACTORS_ARRAY :: 3
 @(private) UE4_TEMPLATE_INDEX :: 508
 @(private) OUTER_DEPTH :: 64
-@(private) ACTOR_LABEL_IN_COOKED :: 4 // UE5SpecialProjectStreamObjectVersion::SerializeActorLabelInCookedBuilds
+@(private) ACTOR_LABEL_IN_COOKED :: 4
 @(private) RF_CLASS_DEFAULT_OBJECT :: 0x10
 @(private) RF_INHERITABLE_COMPONENT_TEMPLATE :: 0x400000
 @(private) ICH_SCENE_ROOT_PREFIX :: "ICH-" // the name prefix of an overridden default scene root

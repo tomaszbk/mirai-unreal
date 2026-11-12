@@ -64,7 +64,7 @@ static_mesh_package :: proc(f:Mesh_Fixture,allocator:=context.temp_allocator) ->
     switch f.layout {
     case .Raw_Mesh:versions={{EDITOR,17},{RENDERING,15}}
     case .Legacy_Description:
-        // EditorObjectVersion::MeshDescriptionTriangles is 35.
+        // The editor version that added mesh description triangles is 35.
         editor:=i32(len(f.polygon_sizes)>0?34:40)
         versions={{EDITOR,editor},{RELEASE,43},{ENTERPRISE,10},{RENDERING,45},{FORTNITE,47}}
     case .Description:ue5=1008;versions={{EDITOR,40},{RELEASE,44},{MAIN,88},{ENTERPRISE,10},{RENDERING,45},{FORTNITE,fortnite}}

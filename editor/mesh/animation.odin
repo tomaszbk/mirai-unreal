@@ -98,14 +98,14 @@ animation_destroy :: proc(a:^Animation) {
 animation_is :: proc(p:^unreal.Package,index:int) -> bool {return export_is(p,index,"AnimSequence")}
 
 @(private) SEQUENCER_GUID :: [4]u32{0x7B5AE74C,0xD2704C10,0xA9585798,0x0B212A5A}
-@(private) UE4_NONUNIFORM_SCALE_ANIMATION :: 335 // VER_UE4_ANIM_SUPPORT_NONUNIFORM_SCALE_ANIMATION
-@(private) UE4_SKELETON_GUID :: 338              // VER_UE4_SKELETON_GUID_SERIALIZATION
-@(private) UE4_RICH_CURVE_KEY :: 366             // VER_UE4_SERIALIZE_RICH_CURVE_KEY
-@(private) UE4_TRACK_CURVES :: 417               // VER_UE4_ANIMATION_ADD_TRACKCURVES
-@(private) MAIN_REMOVE_SOURCE_ANIMATION :: 3     // UE5MainStreamObjectVersion::RemovingSourceAnimationData
-@(private) RELEASE_RAW_TRACK_SERIALIZER :: 39   // UE5ReleaseStreamObjectVersion::RawAnimSequenceTrackSerializer
-@(private) SEQUENCER_FLOAT_CHANNEL :: 12         // SequencerObjectVersion::SerializeFloatChannelCompletely
-@(private) FORTNITE_CHANNEL_SHOW_CURVE :: 53     // FortniteMainBranchObjectVersion::SerializeFloatChannelShowCurve
+@(private) UE4_NONUNIFORM_SCALE_ANIMATION :: 335
+@(private) UE4_SKELETON_GUID :: 338
+@(private) UE4_RICH_CURVE_KEY :: 366
+@(private) UE4_TRACK_CURVES :: 417
+@(private) MAIN_REMOVE_SOURCE_ANIMATION :: 3
+@(private) RELEASE_RAW_TRACK_SERIALIZER :: 39
+@(private) SEQUENCER_FLOAT_CHANNEL :: 12
+@(private) FORTNITE_CHANNEL_SHOW_CURVE :: 53
 
 // EAnimAssetCurveFlags::AACF_DriveMorphTarget_DEPRECATED: the curve drives a morph target.
 @(private) AACF_DRIVE_MORPH_TARGET :: 1
