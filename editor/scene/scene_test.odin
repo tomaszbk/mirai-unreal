@@ -911,3 +911,37 @@ the_packages_of_a_map_follow_its_soft_references_but_not_its_build_data :: proc(
     }
     testing.expectf(t,soft && numbered && !built,"the soft reference, the package of a numbered name and not the build data: %v",files)
 }
+
+// Components that only their number tells apart, as those a construction
+// script adds, are entities of their own with ids of their own.
+@(test)
+components_of_one_name_and_another_number_are_entities_apart :: proc(t:^testing.T) {
+    f:=folders_make("numbers")
+    defer folders_remove(f)
+    l:=fixture.level_begin("/Game/Maps/Map")
+    w:=&l.w
+    mesh:=fixture.package_object(w,"/Game/Meshes/SM_Fixture","/Script/Engine","StaticMesh","SM_Fixture")
+    mesh_class:=fixture.engine_class(w,"StaticMeshComponent")
+    actor:=fixture.actor_add(&l,fixture.engine_class(w,"Actor"),"Actor_0","Pieces")
+    root:Maybe(i32)
+    for name,i in ([2]string{"Piece_1","Piece_2"}) {
+        props:=fixture.bytes_make()
+        fixture.object_property(&props,w,"StaticMesh",mesh)
+        fixture.vector_property(&props,w,"RelativeLocation",{f64(i)*100,0,0})
+        added:=fixture.component_add(&l,actor,mesh_class,name,props)
+        if root==nil {root=added}
+    }
+    fixture.actor_set(&l,actor,root.?)
+    _=os.write_entire_file(f.map_path,fixture.level_bytes(&l))
+    report,error:=level_import(f.map_path,{root=f.mirai},engine_content="-")
+    if !testing.expectf(t,error.code==.None,"%s",error.message) {return}
+    defer level_report_destroy(&report)
+    testing.expect(t,!has_warning(&report,"same entity id"),"no two components give one id")
+    types:asset.Types;asset.types_init(&types);defer asset.types_destroy(&types)
+    scene:asset.Scene
+    if !testing.expect_value(t,asset.scene_load(&scene,&types,report.scene_path),asset.Error.None) {return}
+    defer asset.scene_destroy(&scene)
+    first,_,first_found:=entity_named(&scene,"Piece_1")
+    second,_,second_found:=entity_named(&scene,"Piece_2")
+    testing.expect(t,first_found && second_found && first!=second,"each keeps its name and an id of its own")
+}

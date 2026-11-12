@@ -111,13 +111,13 @@ put_name :: proc(b:^Bytes,w:^Writer,text:string) {
     put_u32(b,name(w,plain));put_u32(b,number)
 }
 
-// A package path as Unreal keeps it in a name table: "/Game/M/SM_Wall_10"
-// is "/Game/M/SM_Wall" with number 11, a suffix without leading zeros its
-// number less one; any other name is as it is, with number 0.
+// A name as Unreal keeps it in a name table: "SM_Wall_10" is "SM_Wall" with
+// number 11, a suffix without leading zeros its number less one; a name
+// without such a suffix is as it is, with number 0.
 name_split :: proc(text:string) -> (plain:string,number:u32) {
     under:=strings.last_index_byte(text,'_')
     digits:=text[under+1:]
-    if len(text)==0 || text[0]!='/' || under<0 || len(digits)==0 || len(digits)>9 || len(digits)>1 && digits[0]=='0' {return text,0}
+    if under<=0 || len(digits)==0 || len(digits)>9 || len(digits)>1 && digits[0]=='0' {return text,0}
     value:u32
     for c in digits {
         if c<'0' || c>'9' {return text,0}

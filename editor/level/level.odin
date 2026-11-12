@@ -175,7 +175,7 @@ actors_add :: proc(d:^Document,level,package_index:int,refs:[]unreal.Object_Ref,
         ref:=Ref{i32(package_index),object}
         item:=p.exports[int(object)-1]
         actor:=Actor{ref=ref,level=level,class=class_of(p,item.class),root=-1,external=external}
-        actor.label=unreal.name_plain(p,item.object_name)
+        actor.label=named(d,p,item.object_name)
         if found,error:=property(d,ref,"ActorLabel");error.code==.None && found.origin==.Authored {
             value,value_error:=unreal.property_value(found.pkg,found.property,d.allocator)
             if value_error.code==.None && value.kind==.String {
@@ -197,7 +197,7 @@ actors_add :: proc(d:^Document,level,package_index:int,refs:[]unreal.Object_Ref,
         actor:=&d.actors[actor_index]
         slot:=actor.first_component+actor.component_count
         actor.component_count+=1
-        component:=Component{ref={i32(package_index),unreal.Object_Ref(index+1)},actor=actor_index,class=class_of(p,item.class),name=unreal.name_plain(p,item.object_name),parent=-1}
+        component:=Component{ref={i32(package_index),unreal.Object_Ref(index+1)},actor=actor_index,class=class_of(p,item.class),name=named(d,p,item.object_name),parent=-1}
         d.components[slot]=component
         d.by_ref[component.ref]=slot
     }
@@ -209,6 +209,16 @@ actors_add :: proc(d:^Document,level,package_index:int,refs:[]unreal.Object_Ref,
         }
     }
     return {}
+}
+
+// A name of p with its number, as Unreal tells objects apart ("Mesh_3"),
+// held by d.
+@(private)
+named :: proc(d:^Document,p:^unreal.Package,name:unreal.Name_Ref) -> string {
+    if name.number<=0 {return unreal.name_plain(p,name)}
+    text:=unreal.name_text(p,name,d.allocator)
+    append(&d.texts,transmute([]u8)text)
+    return text
 }
 
 // The AttachParent and socket of every component, once all are known.
@@ -506,33 +516,36 @@ super_class :: proc(d:^Document,class:Ref) -> (super:Ref,blueprint:bool,error:un
 // class_default, the default object of the class it names.
 @(private)
 import_target :: proc(d:^Document,p:^unreal.Package,ref:unreal.Object_Ref,class_default:bool) -> (next:Ref,native:bool,error:unreal.Error) {
-    chain:[OUTER_DEPTH]string
+    // A name of the chain with its number: objects of one name tell apart by it ("Sky_0", "Sky_1").
+    Link :: struct {plain:string,number:i32}
+    same :: proc(q:^unreal.Package,name:unreal.Name_Ref,link:Link) -> bool {return name.number==link.number && unreal.name_plain(q,name)==link.plain}
+    chain:[OUTER_DEPTH]Link
     depth:=0
     current:=ref
     package_name:=""
     for current<0 {
         item:=p.imports[int(-i64(current)-1)]
-        if item.outer==0 {package_name=unreal.name_plain(p,item.object_name);break}
+        if item.outer==0 {package_name=unreal.name_text(p,item.object_name,context.temp_allocator);break}
         if depth>=len(chain) {return {},false,{.Limit,0,"archetype outer depth"}}
-        chain[depth]=unreal.name_plain(p,item.object_name)
+        chain[depth]={unreal.name_plain(p,item.object_name),item.object_name.number}
         depth+=1
         current=item.outer
     }
     if package_name=="" || depth==0 {return {},false,{.Invalid_Reference,0,"archetype import has no package"}}
     if strings.has_prefix(package_name,"/Script/") {return {},true,{}}
-    if class_default {chain[0]=strings.concatenate({"Default__",chain[0]},context.temp_allocator)}
+    if class_default {chain[0].plain=strings.concatenate({"Default__",chain[0].plain},context.temp_allocator)}
     index:int
     index,error=library_find(d.library,package_name)
     if error.code!=.None {return}
     q:=library_package(d.library,index)
     for candidate,i in q.exports {
-        if unreal.name_plain(q,candidate.object_name)!=chain[0] || candidate.object_name.number!=0 {continue}
+        if !same(q,candidate.object_name,chain[0]) {continue}
         outer:=candidate.outer
         matched:=true
         for level in 1..<depth {
             if outer<=0 {matched=false;break}
             o:=q.exports[int(outer)-1]
-            if unreal.name_plain(q,o.object_name)!=chain[level] {matched=false;break}
+            if !same(q,o.object_name,chain[level]) {matched=false;break}
             outer=o.outer
         }
         if matched && outer==0 {return {i32(index),unreal.Object_Ref(i+1)},false,{}}

@@ -27,6 +27,7 @@ package_bytes :: proc(w:^Writer) -> []u8 {
         for text in ([3]string{item.class_package,item.class_name,item.name}) {plain,_:=name_split(text);name(w,plain)}
     }
     for text in w.soft_packages {plain,_:=name_split(text);name(w,plain)}
+    for item in w.exports {plain,_:=name_split(item.name);name(w,plain)}
     names_at:=len(b.data);put_u32(&b,0);put_u32(&b,0)
     if ue5>=1008 {put_zeros(&b,8)}
     put_u32(&b,0)
