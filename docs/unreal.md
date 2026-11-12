@@ -26,7 +26,7 @@ outer depth.
   (`Compressed`).
 - **Tables.** Limits, overlaps, references and outer cycles are checked. `Object_Ref` keeps
   Unreal's index (zero null, negative import, positive export).
-- **Properties.** `property_value` interprets the common types; containers, FText and native
+- **Properties.** `property_value` interprets the common types; containers, `Text` and native
   structs give `Unsupported_Value` and are read with the tagged array and struct helpers.
   `class_default_object` finds the CDO by class and flag, not by name.
 - **Mounts.** `Source_Mount` maps a prefix (`/Game`, `/Engine`) to a `Content` folder;
@@ -36,7 +36,7 @@ outer depth.
 
 ### Payloads
 
-- Only local payloads are read: `editor_bulk_data` locates an `FEditorBulkData` in the trailer or
+- Only local payloads are read: `editor_bulk_data` locates an `EditorBulkData` in the trailer or
   at its absolute offset and `byte_bulk_data` the UE4 bulk data inline, at the end of the file or
   in zlib chunks. Virtualized, sidecar, workspace, legacy or in a separate file is
   `Unsupported_Value`.
@@ -61,7 +61,7 @@ size is `len(destination)` without allocating.
   written from the same format description, validates them.
 - A damaged stream gives `Truncated` or `Malformed` without reading or writing outside the slices;
   each stream (literals, offsets, lengths, interval arrays) must be fully consumed. Correctness is
-  measured with the BLAKE3 of each `FCompressedBuffer`.
+  measured with the BLAKE3 of each `CompressedBuffer`.
 - Match copies write 8-byte words and may overwrite up to 7 bytes after the match inside the
   destination: that is output not yet written.
 
@@ -69,7 +69,7 @@ size is `len(destination)` without allocating.
 
 - `texture_kind` recognizes the `/Script/Engine` texture classes (2D and its lightmap and light
   profile variants, cube, arrays and volume). `texture_read` reads the `Source` struct and locates
-  the payload (`FEditorBulkData` since UE5 virtualization, bulk data before) with Unreal's load
+  the payload (`EditorBulkData` since UE5 virtualization, bulk data before) with Unreal's load
   rules for old saves.
 - **Usage.** `TC_Normalmap` is `Normal`; false `SRGB`, `TC_Masks`, `TC_Alpha` and HDR are `Data`;
   the rest, `Color`. `TC_Grayscale`, `TC_Displacementmap`, `TC_HalfFloat`, `TC_SingleFloat` and
@@ -85,9 +85,9 @@ size is `len(destination)` without allocating.
   that way, as Unreal does.
 - **UEJPEG** (`uejpeg.odin`): the quantized coefficients of a baseline JPEG without Huffman, in
   horizontal bands (splits) stored or Oodle-compressed (decoded with `kraken`). It gives the pixels
-  Unreal gives on x64: the integer fast IDCT as its SSE2 path computes it, and fixed-point
-  upsampling and YCbCr via SSE2. The source is `BGRA8`, or `G8`,
-  which stores red as `ImageCore` does; 16 bits or float is `Unsupported_Value`. What Unreal does
+  Unreal gives on x64: the integer fast IDCT, and fixed-point upsampling and YCbCr.
+  The source is `BGRA8`, or `G8`,
+  which stores red in the one channel; 16 bits or float is `Unsupported_Value`. What Unreal does
   not validate and would make it read outside its planes or leave coefficients unwritten is
   rejected: blocks outside the image or an empty Oodle split.
 - Normal maps come out in Mirai's convention (+Y): green is inverted unless `bFlipGreenChannel`
@@ -121,7 +121,7 @@ is opened with `LIMITS`: the payload of a mesh of millions of triangles exceeds 
 - **Model.** `Lod0` (what Unreal draws without Nanite) or `Hi_Res` (`HiResSourceModel`, from which
   Nanite is built). LOD 1+ are not
   read: Mirai's levels come from LOD 0.
-- **Payload**, depending on the package versions: an `FRawMesh` or an `FMeshDescription` (in the
+- **Payload**, depending on the package versions: a `RawMesh` or a `MeshDescription` (in the
   element-map format or the UE4 array format). A description saved before
   `MeshDescriptionTriangles` has only polygons: its triangles are the ones UE5 makes on load, a
   fan on the second corner, also for a concave polygon.
@@ -144,21 +144,21 @@ is opened with `LIMITS`: the payload of a mesh of millions of triangles exceeds 
 
 ## Skeletal meshes (`mesh`)
 
-`skeletal_read` reads a `SkeletalMesh` (properties, materials, `FReferenceSkeleton` and where
+`skeletal_read` reads a `SkeletalMesh` (properties, materials, `ReferenceSkeleton` and where
 LOD 0 is); `skeletal_decode` gives a `Skinned_Mesh`, the static `Mesh` with the influences of each
 position and LOD 0's morph targets. `skeleton_read` gives the reference skeleton of a `Skeleton`
 and its sockets.
 
 - **Skeleton.** The mesh's reference skeleton, its bind pose: names, parents (always an earlier
   bone, a single root) and each bone's pose relative to its parent; `Skeleton` is the path of its
-  `USkeleton`, which is not opened.
-- **Sockets**: the `USkeletalMeshSocket`s of the mesh or of the `Skeleton`, with their bone and
+  `Skeleton`, which is not opened.
+- **Sockets**: the `SkeletalMeshSocket`s of the mesh or of the `Skeleton`, with their bone and
   placement.
 - **Morph target curves** (`Skeleton.morph_curves`): those the `Skeleton`'s curve metadata marks
   with `bMorphtarget`, read per version; if the metadata could not be read, `curves_known` is
   false.
-- **Where LOD 0 is**: up to UE 5.3, the `FSkeletalMeshLODModel` the build saves with the editor
-  data, what Unreal draws, rebuilding nothing; after that, the source model's `FMeshDescription`
+- **Where LOD 0 is**: up to UE 5.3, the `SkeletalMeshLODModel` the build saves with the editor
+  data, what Unreal draws, rebuilding nothing; after that, the source model's `MeshDescription`
   with its `SkinWeights`. Saves before `SplitModelAndRenderData` or `IncreaseNormalPrecision` are
   `Unsupported_Value`: they must be saved again in Unreal.
 - **Building a description** (`skin.odin`), what Unreal's skeletal build would store in the LOD
@@ -174,7 +174,7 @@ and its sockets.
     `Config/DefaultEngine.ini` of the `/Game` mount (`skin_project_read`); without it, the engine
     defaults. The limit's `PerPlatform` value is not read.
   - Welding: in face order, a corner becomes the first vertex already made in its chunk (its
-    section's material) whose corner overlaps and is equal within the `FSkeletalMeshBuildSettings`
+    section's material) whose corner overlaps and is equal within the `SkeletalMeshBuildSettings`
     thresholds (position, uv, tangent basis) with the same color and influences; a triangle with
     two corners on one vertex is dropped (`degenerate`). The source's tangent is compared; the one
     the import makes later with MikkTSpace is not there yet. A description's normals are not those
@@ -186,7 +186,7 @@ and its sockets.
   does); `bDisabled` sections are left out (`left_out`) and cloth ones are counted (`cloth`) and
   drawn with their skin.
 - **Morph targets** (`morphs`, with each corner's delta row): from a LOD model, the
-  `FMorphTargetLODModel` of LOD 0 of each `UMorphTarget`; from a description, the
+  `MorphTargetLODModel` of LOD 0 of each `MorphTarget`; from a description, the
   `Morph-<name>` attributes. A cooked target is `Cooked`.
 
 ## Animations (`mesh`)
@@ -199,7 +199,7 @@ motion, additive, notifies), with a key every `interval` seconds from 0 to the d
   `SourceRawAnimationData`, with the keys Unreal fixes on load), `Data_Model` in UE 5.0 and 5.1
   (the `AnimDataModel`) and `Sequencer` since 5.2: each bone is a `<bone>_CONTROL` control of the
   section's control rig, whose channels are evaluated at each frame as in Unreal, and rotation by
-  `FQuat::MakeFromEuler`.
+  quaternions from Euler angles.
 - A track with fewer keys keeps the last one, as Unreal clamps the key it samples; those with more
   are trimmed. Tangents that are not numbers are zero.
 - Approximation: a cubic segment with weighted tangents is evaluated without the weight
@@ -217,7 +217,7 @@ list).
 - The poses are the source ones (`SourceLocalSpacePose`), whole, which Unreal keeps with the
   editor data before making them additive: measured from the base they are its additive poses. A
   save without them is `Unsupported_Value`.
-- Names come from `PoseFNames` or from the `FSmartName`s of `PoseNames`; each curve of `Curves` is
+- Names come from `PoseFNames` or from the `SmartName`s of `PoseNames`; each curve of `Curves` is
   a float curve with the value of each pose (`SourceCurveData`) at its frame and zero at the base.
 - A count of poses, bones or curve values that does not match is `Malformed`.
 
@@ -268,10 +268,10 @@ arrives with its cause and offset.
   world meter and darker every ten), with a warning naming the original reference. With `/Engine`
   mounted, the original is read.
 - **Model.** LOD 0; with `Options.hi_res`, the Nanite hi-res of the meshes that have it.
-- **Skeleton.** The mesh's reference skeleton, with the name of its `USkeleton`; a bone's path is
+- **Skeleton.** The mesh's reference skeleton, with the name of its `Skeleton`; a bone's path is
   the names from the root. One joint per bone, whose inverse bind is the bone's at rest: the bind
   pose draws the mesh as it is. Bones and inverse binds go to engine space with the geometry. Its
-  sockets are the mesh's and those of its `USkeleton` (opened through the mounts) that the mesh
+  sockets are the mesh's and those of its `Skeleton` (opened through the mounts) that the mesh
   does not name, as in Unreal; one on a bone the skeleton lacks, or of zero scale, is left out
   with a warning.
 - **Weights.** Each vertex keeps its eight largest influences, quantized to bytes that sum to 255,
@@ -282,7 +282,7 @@ arrives with its cause and offset.
   normal deltas of each corner's row; the tangents MikkTSpace makes follow the shape.
 - **Animations.** An `AnimSequence`'s clip carries its name and is in the package's `.anim`;
   importing a mesh does not ask for its animations.
-  - Tracks are bound by each bone's path in the animation's `USkeleton` (without it,
+  - Tracks are bound by each bone's path in the animation's `Skeleton` (without it,
     `Not_Found`), comparing names case-insensitively as Unreal does; a track of a bone that does
     not exist is left out with a warning.
   - One key per frame, linear. With `Interpolation` Step each key starts halfway through the
@@ -353,7 +353,7 @@ it names). Everything lives in the library's arena.
   `PixelDepth`, `SceneDepth` at its point and `DepthFade`; the scene behind is seen by the glass
   and translucent passes.
 - **What only a program computes** (the graph's `PROGRAM`): `Noise` and `VectorNoise`, which call
-  `shaders/include/unreal_noise.slang` (Unreal's noise functions once, the table-based ones over
+  `shaders/include/unreal_noise.slang` (the noise functions once, the table-based ones over
   hashed gradients); `TextureProperty`, the texture size on the GPU; and `Custom`, its HLSL as a
   program function with its inputs and extra outputs. HLSL that reads what a program does not have
   (`View.`, `Primitive.`, `Parameters.`, derivatives, `discard`, includes, an Unreal shader
@@ -407,7 +407,7 @@ it names). Everything lives in the library's arena.
   them.
 - **Particles.** `DynamicParameter` (of index `ParameterIndex`) reads what the particle of the
   sprite that draws the point gives (`ctx.particle_data`), and its `DefaultValue` where it does
-  not, like Unreal's `GetDynamicParameter`; the `unreal_vfx` bridge passes it from Niagara
+  not, as a dynamic parameter does; the `unreal_vfx` bridge passes it from Niagara
   attributes. `ParticleRandom` is the particle's random value (`ctx.particle_random`) and
   `ParticleRadius` half its sprite (`ctx.particle_radius`). `ParticleColor` is the particle's
   color, which the sprite gives its program as `ctx.vertex_color` and does not multiply, as in
@@ -460,7 +460,7 @@ names (classes, properties) stay in each type's translators.
 
 - **Library.** `Library` opens packages by long name through `Source_Mount`, once; a package that
   fails stores its error. Needed for Blueprint archetypes and external actors.
-- **Document.** `document_open` reads each `ULevel` (also the old actor array), the actors and the
+- **Document.** `document_open` reads each `Level` (also the old actor array), the actors and the
   objects whose outer is each actor, contiguous per actor, with `AttachParent` and
   `AttachSocketName`. Everything is named by indices; an object is a `Ref{pkg,object}`.
 - **External actors.** With `bUseExternalActors` (World Partition) the packages under
@@ -477,11 +477,11 @@ names (classes, properties) stay in each type's translators.
   its outer's archetype and, if none, what is found going up the Blueprint class and its Blueprint
   super classes: the `SCS_Node` template of that variable; if the class has no such node, the one
   its `InheritableComponentHandler` stores for an inherited component it changes (the record whose
-  `FComponentKey` names the variable, or whose template is so named); otherwise, an object of that
+  `ComponentKey` names the variable, or whose template is so named); otherwise, an object of that
   name under the class. One of those inherited templates has as archetype the object of its name
   in the closest super class that has it (that of a `DefaultSceneRoot`, without its `ICH-` prefix).
 - **Transforms.** `SPACE` is Unreal's space for the engine importer. `component_relative` gives
-  Unreal's values with the defaults of `USceneComponent` or of the actor's native constructor
+  Unreal's values with the defaults of `SceneComponent` or of the actor's native constructor
   (`NATIVE_RELATIVES`: directional and spot lights, decals and `DefaultPawn`'s mesh; no other
   native ContentExamples class moves a subobject that is not editor-only); `component_local` and
   `component_world` give them in Mirai, the second composed through `AttachParent` with the
@@ -501,7 +501,7 @@ names (classes, properties) stay in each type's translators.
   `WorldPartitionRuntimeHashSet` (UE 5.4 onward; the earlier `RuntimeSpatialHash` is
   `Unsupported_Value`): for each `RuntimePartitionLHGrid`, its cell size, origin, 2D or 3D, loading
   range and box method; a `RuntimePartitionPersistent` loads with the map. An actor with
-  `bIsSpatiallyLoaded` (by its archetype or its native class default: lights, `AInfo` and those
+  `bIsSpatiallyLoaded` (by its archetype or its native class default: lights, `Info` and those
   that turn it off in their constructor) goes to the cell of its grid (`RuntimeGrid`, or the
   first) that holds its bounds' center, at the loose hierarchy level its size asks for, and is
   named as in Unreal (`<grid>_L<level>_X<x>_Y<y>_Z<z>`). A level 0 cell's box is what it holds
@@ -543,14 +543,14 @@ components, in a grid.
 `foliage_read` gives a `Foliage` per `InstancedFoliageActor`: its types and their instances in
 Mirai space.
 
-- **Native data.** The actor's comes after what `AActor` stores, which since
+- **Native data.** The actor's comes after what `Actor` stores, which since
   `SerializeActorLabelInCookedBuilds` says whether it was cooked (`level.actor_native_payload`; a
   cooked one is rejected).
 - **Instances.** From the record the editor stores per type (`FoliageInfos` or, in old versions,
   `FoliageMeshes`): world transform, whether it was placed on something, the component it was
   placed on and its height over that point (`ZOffset` by its scale, along its up). Deleted ones
   are not output.
-- **Type classes** (`Foliage_Kind`, each one's `EFoliageImplType`). `Static_Mesh` names the
+- **Type classes** (`Foliage_Kind`, each one's `FoliageImplType`). `Static_Mesh` names the
   component that draws it. `Actor` (`FoliageType_Actor`) placed an actor of its class on each
   instance, which the level stores among its actors: `Instance.actor` names it (-1 if absent, and
   Unreal's editor places it again). `ISM_Actor` (the same type with `bStaticMeshOnly`) draws the
@@ -561,7 +561,7 @@ Mirai space.
   in the same order (`compared`, `mismatched`, `max_difference`; `uncompared` if the component is
   not at the origin or its format is unknown).
 - **Types.** From `FoliageType_InstancedStaticMesh` or `FoliageType_Actor`, from the actor or
-  another package, with the defaults of `UFoliageType`'s constructor. Bases with `TSoftObjectPtr`
+  another package, with the defaults of `FoliageType`'s constructor. Bases with `SoftObjectPtr`
   are skipped depending on their version; with no corpus that uses it, that path is not verified,
   like actor and ISM actor types (ContentExamples has none).
 - `foliage_source` (plugin `unreal_foliage`) converts it to a `.foliage` source:
@@ -638,7 +638,7 @@ entity, the imported meshes and the time.
   ([foliage](translators.md#foliage-unreal_foliage)); without it, their actor is a warning saying
   how to import it. Those hidden in game are left out, with a warning. Their instance matrices come
   from the `PerInstanceSMData` array of their native payload, which follows what
-  `UStaticMeshComponent` stores (LODs and painted vertices, of variable length depending on the
+  `StaticMeshComponent` stores (LODs and painted vertices, of variable length depending on the
   save): it is found by size, count and a first matrix of row vectors (`level.instances_read`, which
   the foliage check also uses). A `SplineMeshComponent` is not translated: it is a warning.
   `SkeletalMeshComponent` (of a `SkeletalMeshActor` or any Blueprint, such as a character) is the
@@ -793,7 +793,7 @@ All with `mirai test` on the package folder inside a project with the plugin ins
   layers, a program, screen, depth, bounds, the world with its origin, `Custom`, noise,
   untranslated classes and damaged bytes; writing reads back `.mat` and `.tex` and reimports over a
   changed parameter.
-- `editor/level`, `landscape` and `foliage`: Unreal space against `FRotationMatrix`, archetypes
+- `editor/level`, `landscape` and `foliage`: Unreal space against rotation matrices, archetypes
   from another package and by SCS, inherited templates
   (`an_inherited_component_a_blueprint_changes_takes_its_override_template`), native constructor
   defaults, sockets (`sockets_test.odin`: of a static mesh, of a skeletal mesh and its skeleton or

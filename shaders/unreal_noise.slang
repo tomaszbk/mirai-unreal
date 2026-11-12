@@ -1,6 +1,6 @@
-// Unreal's noise functions, for the programs translated from Unreal: the
-// Noise and VectorNoise expressions of its materials, the curl noise of
-// Niagara and the custom HLSL that calls them by their names. Unreal's
+// The noise functions of imported Unreal programs: the Noise and
+// VectorNoise expressions of materials, the curl noise of Niagara and the
+// custom HLSL that calls them by their names. The
 // texture noises read a table of random gradients; here a hash of the cell
 // picks one of the same twelve gradients, with the period of the table: the
 // same noise, with another draw of the gradients.
@@ -108,7 +108,7 @@ float3x4 JacobianSimplex_ALU(float3 v, bool tiling, float repeat) {
     j[2] = float4(mul(sv, gvec[2]) + mul(dsm, grad[2]), dot(sv, grad[2]));
     return j;
 }
-// One of the twelve gradients of Unreal's tables (the middles of the edges
+// One of the twelve gradients of the noise tables (the middles of the edges
 // of a cube), for a cell of a table with period cells along each axis.
 float3 unreal_noise_gradient(int3 cell, int period) {
     int3 wrapped = ((cell % period) + period) % period;
@@ -132,8 +132,8 @@ float GradientNoise3D_TEX(float3 v, bool tiling, float repeat) {
     }
     return NoiseCorners(values, fv);
 }
-// Gradient noise over Unreal's 3D table of 15 cells a side, interpolated by
-// Perlin's ramp (FastGradientPerlinNoise3D_TEX).
+// Gradient noise over a 3D table of 15 cells a side, interpolated by
+// Perlin's ramp.
 float FastGradientPerlinNoise3D_TEX(float3 xyz) {
     xyz = frac(xyz / 15.0) * 15.0;
     float3 fv = frac(xyz);
@@ -247,7 +247,7 @@ float MaterialExpressionNoise(float3 position, float scale, int quality, int fun
     if (!turbulence) result = result * 0.5 + 0.5;
     return lerp(output_min, output_max, result);
 }
-// The same of a place of the world, which Unreal mirrors and repeats every
+// The same of a place of the world, which is mirrored and repeated every
 // 65536 units first.
 float MaterialExpressionNoiseWorld(float3 position, float scale, int quality, int function, bool turbulence, uint levels, float output_min,
                                    float output_max, float level_scale, float filter_width, bool tiling, float repeat) {

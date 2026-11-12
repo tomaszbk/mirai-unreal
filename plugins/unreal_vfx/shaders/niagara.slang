@@ -64,10 +64,10 @@ FLWCVector3 LWCAdd(FLWCVector3 a, float3 b) { a.Offset += b; return a; }
 FLWCVector3 LWCSubtract(FLWCVector3 a, float3 b) { a.Offset -= b; return a; }
 float3 LWCSubtract(FLWCVector3 a, FLWCVector3 b) { return LWCToFloat(a) - LWCToFloat(b); }
 
-// The view of the frame as Unreal's View uniforms give it, in Unreal's space.
+// The view of the frame in Unreal's space.
 struct FLWCMatrix { float4x4 M; float3 Tile; };
 float4x4 LWCToFloat(FLWCMatrix m) { return m.M; }
-// The double floats of Unreal are the floats of Mirai.
+// Double floats are floats.
 float4x4 DFDemote(FLWCMatrix m) { return m.M; }
 float4x4 DFDemote(float4x4 m) { return m; }
 float3 DFDemote(FLWCVector3 v) { return LWCToFloat(v); }
@@ -103,7 +103,7 @@ float3 mirai_direction(float3 unreal) { return float3(unreal.y, unreal.z, -unrea
 
 // The transform of the emitter (Mirai rows) as a matrix of Unreal that takes
 // a point of the system in Unreal's centimetres to the world (row vectors,
-// as Unreal's HLSL multiplies them: mul(p, M)).
+// multiplied as mul(p, M)).
 float4x4 niagara_local_to_world(float4 world[3]) {
     float3 o = niagara_point(float3(world[0].w, world[1].w, world[2].w));
     float3 x = niagara_direction(-float3(world[0].z, world[1].z, world[2].z));
@@ -163,7 +163,7 @@ float4x4 niagara_to_mirai() {
 Niagara_View niagara_view() {
     Mirai_Vfx_View v = mirai_vfx_view();
     Niagara_View n = (Niagara_View)0;
-    // Unreal multiplies row vectors: clip = mul(float4(p, 1), WorldToClip).
+    // Row vectors: clip = mul(float4(p, 1), WorldToClip).
     n.WorldToClip.M = transpose(mul(v.view_projection, niagara_to_mirai()));
     n.ClipToWorld.M = niagara_inverse(n.WorldToClip.M);
     n.TranslatedWorldToClip = n.WorldToClip.M;
@@ -212,7 +212,7 @@ void niagara_begin(Mirai_Vfx_Context ctx, uint linear, uint3 dispatch) {
     niagara_spawn_dropped = false;
 }
 
-// A condition of ENiagaraConditionalOperator: Equals, NotEqual, LessThan,
+// A conditional operator: Equals, NotEqual, LessThan,
 // LessThanOrEqual, GreaterThan, GreaterThanOrEqual.
 bool niagara_compare(uint op, float a, float b) {
     switch (op) {
@@ -466,7 +466,7 @@ float3 niagara_read_velocity(uint r, int slot, bool local) {
     return local ? mul(float4(v, 0.0), niagara_inverse(niagara_local_to_world(niagara_ctx.world))).xyz : v;
 }
 
-// The curl of the simplex noise of Unreal that Niagara's curl noise samples.
+// The curl of the simplex noise that Niagara's curl noise samples.
 float3 niagara_curl_noise(float3 p) {
     float3x4 j = JacobianSimplex_ALU(p, false, 1.0);
     return float3(j[1][2] - j[2][1], j[2][0] - j[0][2], j[0][1] - j[1][0]);
