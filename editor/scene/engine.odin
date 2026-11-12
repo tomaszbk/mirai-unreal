@@ -58,7 +58,7 @@ translation_or_grid :: proc(c:^Context,path:string,custom:[]f32=nil) -> (t:mater
         warn(c,"the material %s is not in its package; its slot keeps the material of its mesh",path)
         return
     }
-    translated,error:=material.translate(c.lib,object,{reads=c.texture_reads[:],custom_data=custom},context.temp_allocator)
+    translated,error:=material.translate(c.lib,object,{reads=c.texture_reads[:],writers=c.writers,custom_data=custom},context.temp_allocator)
     if error.code!=.None {
         if missing:=uasset.engine_missing_named(c.lib,error.message);missing!="" {
             warn(c,"the material %s reads %s %s",path,missing,unmounted)

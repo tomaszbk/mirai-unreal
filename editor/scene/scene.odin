@@ -197,6 +197,7 @@ Context :: struct {
     format_options:uasset.Options,
     translators:[]Translator,
     texture_reads:[dynamic]material.Texture_Read, // those of the plugins, then those translators add (texture_read_add)
+    writers:[]material.Virtual_Texture_Writer,    // of the runtime virtual textures the landscapes of the level write
     meshes:map[string]Mesh_Import,     // by object path
     bodies:map[string]Mesh_Body,       // by object path
     clips:map[string]Clip_Import,      // by object path
@@ -355,6 +356,8 @@ document_import :: proc(d:^level.Document,source:string,size,hash:u64,options:im
         return {},message
     }
     base.profile_end(outputs_zone)
+    c.writers=virtual_texture_writers(&c)
+    c.format_options.writers=c.writers
     partition_zone:=importer.zone_begin(options,"level.partition")
     partition,partition_error:=level.partition_read(d,scratch)
     base.profile_end(partition_zone)

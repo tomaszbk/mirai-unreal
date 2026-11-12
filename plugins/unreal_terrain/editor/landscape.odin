@@ -1,10 +1,8 @@
 package unreal_terrain_editor
 
 import "core:fmt"
-import "core:math/linalg"
 import "core:slice"
 import "project:plugins/unreal/editor/landscape"
-import "project:plugins/unreal/editor/level"
 import material "project:plugins/unreal/editor/material"
 import unreal_scene "project:plugins/unreal/editor/scene"
 import "mirai:std/base"
@@ -109,14 +107,7 @@ layers_choose :: proc(l:^landscape.Landscape,folded:[]int,layers:^[terrain.LAYER
 // the world (Unreal's centimetres) to the coordinates of the landscape.
 landscape_mapping :: proc(l:^landscape.Landscape,result:^Landscape_Terrain) -> (mapping:material.Landscape_Mapping) {
     for at,slot in result.layers {if at>=0 {mapping.layers[slot]=l.layers[at].name}}
-    axes:=[3][3]f32{level.point_to_mirai({1,0,0}),level.point_to_mirai({0,1,0}),level.point_to_mirai({0,0,1})}
-    quads :: proc(axes:[3][3]f32,local:[3]f32) -> [2]f32 {
-        return {linalg.dot(local,axes[0])/linalg.dot(axes[0],axes[0]),linalg.dot(local,axes[1])/linalg.dot(axes[1],axes[1])}
-    }
-    origin:=quads(axes,mm.transform_inverse_point(l.local,{}))
-    along:[3][2]f32
-    for axis,i in axes {along[i]=quads(axes,mm.transform_inverse_vector(l.local,axis))}
-    for row in 0..<2 {mapping.coordinates[row]={along[0][row],along[1][row],along[2][row],origin[row]}}
+    mapping.coordinates=landscape.coordinates_of(l.local)
     return
 }
 

@@ -820,6 +820,160 @@ virtual_texture_switches_take_the_branch_without_virtual_textures :: proc(t:^tes
     testing.expect_value(t,translated.info.opacity,f32(1))
 }
 
+// A landscape material that writes RVT_Ground with its layers Grass and
+// Rock, a roughness of what it writes apart from what it shows
+// (RuntimeVirtualTextureReplace) and its parameter Wet, and that reads its
+// virtual texture back.
+@(private="file")
+ground_material :: proc() -> []u8 {
+    b:=material_begin("M_Ground")
+    w:=fx.writer(&b.p)
+    fx.color_put(&w,"Constant",{0.1,0.6,0.1,1})
+    grass:=expression(&b,"Constant3Vector","Grass",&w)
+    w=fx.writer(&b.p)
+    fx.color_put(&w,"Constant",{0.4,0.4,0.4,1})
+    rock:=expression(&b,"Constant3Vector","Rock",&w)
+    layers:=[2][]u8{}
+    for &layer,i in layers {
+        l:=fx.writer(&b.p)
+        fx.name_property_put(&l,"LayerName",i==0?"Grass":"Rock")
+        fx.enum_put(&l,"BlendType","ELandscapeLayerBlendType","LB_WeightBlend")
+        fx.input_put(&l,"LayerInput","ExpressionInput",{expression=i==0?grass:rock})
+        layer=fx.end(&l)
+    }
+    w=fx.writer(&b.p)
+    fx.structs_put(&w,"Layers","LayerBlendInput",layers[:])
+    blended:=expression(&b,"LandscapeLayerBlend","Blend",&w)
+    w=fx.writer(&b.p)
+    fx.name_property_put(&w,"ParameterName","Wet")
+    fx.float_put(&w,"DefaultValue",0.3)
+    wet:=expression(&b,"ScalarParameter","Wet",&w)
+    w=fx.writer(&b.p)
+    fx.float_put(&w,"R",0.8)
+    dry:=expression(&b,"Constant","Dry",&w)
+    w=fx.writer(&b.p)
+    fx.input_put(&w,"Default","ExpressionInput",{expression=dry})
+    fx.input_put(&w,"VirtualTextureOutput","ExpressionInput",{expression=wet})
+    replace:=expression(&b,"RuntimeVirtualTextureReplace","Replace",&w)
+    w=fx.writer(&b.p)
+    fx.input_put(&w,"BaseColor","ExpressionInput",{expression=blended})
+    fx.input_put(&w,"Roughness","ExpressionInput",{expression=replace})
+    expression(&b,"RuntimeVirtualTextureOutput","Output",&w)
+    read:=virtual_sample(&b,"Read","BaseColor_Normal_Specular")
+    m:=fx.writer(&b.p)
+    fx.input_put(&m,"BaseColor","ColorMaterialInput",{expression=read})
+    fx.input_put(&m,"Metallic","ScalarMaterialInput",{expression=read,output=2})
+    fx.input_put(&m,"Roughness","ScalarMaterialInput",{expression=replace})
+    b.p.exports[0].data=fx.finish(&m)
+    return fx.package_bytes(&b.p,"/Game/M/M_Ground")
+}
+
+// A sample of the virtual texture /Game/RVT/<texture> ("": none) that holds content.
+@(private="file")
+virtual_sample :: proc(b:^Graph_Builder,name,content:string,texture:="RVT_Ground") -> i32 {
+    w:=fx.writer(&b.p)
+    if texture!="" {
+        fx.object_put(&w,"VirtualTexture",fx.external(&b.p,strings.concatenate({"/Game/RVT/",texture},context.temp_allocator),"/Script/Engine","RuntimeVirtualTexture",texture))
+    }
+    fx.enum_put(&w,"MaterialType","ERuntimeVirtualTextureMaterialType",strings.concatenate({"ERuntimeVirtualTextureMaterialType::",content},context.temp_allocator))
+    return expression(b,"RuntimeVirtualTextureSample",name,&w)
+}
+
+@(private="file")
+ground_writers :: proc() -> []Virtual_Texture_Writer {
+    return slice.clone([]Virtual_Texture_Writer{{texture="/Game/RVT/RVT_Ground.RVT_Ground",material="/Game/M/M_Ground.M_Ground"}},context.temp_allocator)
+}
+
+// A landscape material that reads back the virtual texture it writes reads
+// what its own branch writes: RuntimeVirtualTextureReplace takes what it
+// writes there, and its default where the material shows itself.
+@(test)
+a_landscape_material_reads_back_what_it_writes :: proc(t:^testing.T) {
+    lib:Library
+    library_with(&lib,{"/Game/M/M_Ground",ground_material()})
+    defer library_destroy(&lib)
+    material,_:=object_find(&lib,"/Game/M/M_Ground")
+    translated,error:=translate(&lib,material,{layer="Rock",writers=ground_writers()})
+    if !testing.expect_value(t,error.code,Error_Code.None) {return}
+    defer translated_destroy(&translated)
+    testing.expect_value(t,len(translated.untranslated),0)
+    testing.expect_value(t,translated.info.base_color,[3]f32{0.4,0.4,0.4})
+    testing.expect(t,abs(translated.info.metallic-0.3)<1e-6,"the roughness it writes")
+    testing.expect(t,abs(translated.info.roughness-0.8)<1e-6,"the roughness it shows")
+}
+
+// A mesh that samples the virtual texture a landscape writes shows what the
+// material of the landscape gives where the mesh is, as that material shows
+// without a terrain (its first layer), with its parameters apart from those
+// of the mesh. Without a landscape that writes it, the sample is not
+// translated.
+@(test)
+a_mesh_reads_what_the_landscape_writes_where_it_is :: proc(t:^testing.T) {
+    b:=material_begin("M_Grass")
+    read:=virtual_sample(&b,"Ground","BaseColor_Normal_Specular")
+    w:=fx.writer(&b.p)
+    fx.name_property_put(&w,"ParameterName","Wet")
+    fx.float_put(&w,"DefaultValue",0.9)
+    wet:=expression(&b,"ScalarParameter","Wet",&w)
+    m:=fx.writer(&b.p)
+    fx.input_put(&m,"BaseColor","ColorMaterialInput",{expression=read})
+    fx.input_put(&m,"Metallic","ScalarMaterialInput",{expression=read,output=2})
+    fx.input_put(&m,"Roughness","ScalarMaterialInput",{expression=wet})
+    b.p.exports[0].data=fx.finish(&m)
+    lib:Library
+    library_with(&lib,{"/Game/M/M_Grass",fx.package_bytes(&b.p,"/Game/M/M_Grass")},{"/Game/M/M_Ground",ground_material()})
+    defer library_destroy(&lib)
+    material,_:=object_find(&lib,"/Game/M/M_Grass")
+    translated,error:=translate(&lib,material,{writers=ground_writers()})
+    if !testing.expect_value(t,error.code,Error_Code.None) {return}
+    defer translated_destroy(&translated)
+    testing.expect_value(t,len(translated.untranslated),0)
+    testing.expect_value(t,len(translated.layers),0)
+    testing.expect_value(t,translated.info.base_color,[3]f32{0.1,0.6,0.1})
+    testing.expect(t,abs(translated.info.metallic-0.3)<1e-6,"the Wet of the landscape")
+    testing.expect(t,abs(translated.info.roughness-0.9)<1e-6,"its own Wet")
+    alone,alone_error:=translate(&lib,material)
+    if !testing.expect_value(t,alone_error.code,Error_Code.None) {return}
+    defer translated_destroy(&alone)
+    if testing.expect_value(t,len(alone.untranslated),1) {
+        testing.expect_value(t,alone.untranslated[0],Untranslated{"MaterialExpressionRuntimeVirtualTextureSample",1})
+    }
+}
+
+// Where a sample has nothing to read, Unreal gives constants: a sample that
+// names no virtual texture, and an output its texture does not hold. A
+// feature switch takes the branch without virtual textures, also where a
+// landscape writes the one its other branch reads.
+@(test)
+a_sample_with_nothing_to_read_gives_the_constants_of_unreal :: proc(t:^testing.T) {
+    b:=material_begin("M_Patch")
+    unnamed:=virtual_sample(&b,"Unnamed","BaseColor",texture="")
+    color:=virtual_sample(&b,"Color","BaseColor")
+    w:=fx.writer(&b.p)
+    fx.color_put(&w,"Constant",{0.2,0.3,0.4,1})
+    own:=expression(&b,"Constant3Vector","Own",&w)
+    w=fx.writer(&b.p)
+    fx.input_put(&w,"Yes","ExpressionInput",{expression=color})
+    fx.input_put(&w,"No","ExpressionInput",{expression=own})
+    feature:=expression(&b,"VirtualTextureFeatureSwitch","Feature",&w)
+    m:=fx.writer(&b.p)
+    fx.input_put(&m,"BaseColor","ColorMaterialInput",{expression=feature})
+    fx.input_put(&m,"Metallic","ScalarMaterialInput",{expression=unnamed,output=5})
+    fx.input_put(&m,"Specular","ScalarMaterialInput",{expression=color,output=4})
+    b.p.exports[0].data=fx.finish(&m)
+    lib:Library
+    library_with(&lib,{"/Game/M/M_Patch",fx.package_bytes(&b.p,"/Game/M/M_Patch")},{"/Game/M/M_Ground",ground_material()})
+    defer library_destroy(&lib)
+    material,_:=object_find(&lib,"/Game/M/M_Patch")
+    translated,error:=translate(&lib,material,{writers=ground_writers()})
+    if !testing.expect_value(t,error.code,Error_Code.None) {return}
+    defer translated_destroy(&translated)
+    testing.expect_value(t,len(translated.untranslated),0)
+    testing.expect_value(t,translated.info.base_color,[3]f32{0.2,0.3,0.4})
+    testing.expect_value(t,translated.info.metallic,f32(1))
+    testing.expect_value(t,translated.info.specular_factor,f32(0))
+}
+
 // A vector goes between tangent, object and world space by the tangent
 // frame and the axes of the object a program sees.
 @(test)

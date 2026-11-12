@@ -54,16 +54,16 @@ layer_weight_node :: proc(e:^Evaluator,name:string) -> (weight:u32,found:bool) {
     return scalar(g,0),false
 }
 
-// The coordinates of a set of uvs: in a whole landscape, those of the
-// landscape (quads of Unreal from its actor) at the place of the point in
-// the world, whatever the set.
+// The coordinates of a set of uvs: where the coordinates are a landscape's,
+// those of the landscape (quads of Unreal from its actor) at the place of
+// the point in the world, whatever the set.
 @(private)
 uv_value :: proc(e:^Evaluator,set:u32) -> u32 {
     g:=e.g
-    if e.landscape==nil {return context_value(g,.UV,2,set)}
+    if e.coordinates==nil {return context_value(g,.UV,2,set)}
     p:=world_place(e,.World_Position)
     along :: proc(g:^Graph,p:u32,row:[4]f32) -> u32 {return binary(g,.Add,binary(g,.Dot,p,constant(g,{row.x,row.y,row.z,0},3)),scalar(g,row.w))}
-    return append_values(g,along(g,p,e.landscape.coordinates[0]),along(g,p,e.landscape.coordinates[1]))
+    return append_values(g,along(g,p,e.coordinates[0]),along(g,p,e.coordinates[1]))
 }
 
 // The value a blend of layers gives, as Unreal's LandscapeLayerBlend: the

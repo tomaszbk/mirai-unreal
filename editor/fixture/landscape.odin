@@ -1,5 +1,6 @@
 package fixture
 
+import "core:strings"
 import unreal "project:plugins/unreal/editor/package"
 
 @(private="file")
@@ -10,8 +11,9 @@ landscape_height :: proc(x,y:int) -> int {return 32768+128*(x+10*y)}
 
 // A landscape of two components side by side, two quads each in two
 // subsections of one quad, one heightmap shared, a weightmap each with a
-// paint layer and the visibility layer; the actor at scale.
-landscape_map :: proc(scale:=[3]f32{100,100,50}) -> unreal.Package {
+// paint layer and the visibility layer; the actor at scale, writing the
+// runtime virtual textures of the packages virtual_textures.
+landscape_map :: proc(scale:=[3]f32{100,100,50},virtual_textures:=[]string{}) -> unreal.Package {
     b:=builder_make()
     custom_version(&b,LANDSCAPE_RELEASE,3)
     world:=export_begin(&b,class_import(&b,"/Script/Engine","World"),0,"Map")
@@ -58,6 +60,13 @@ landscape_map :: proc(scale:=[3]f32{100,100,50}) -> unreal.Package {
     actor:=export_begin(&b,class_import(&b,"/Script/Landscape","Landscape"),level_ref,"Landscape")
     guid_property(&b,"LandscapeGuid",{1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16})
     object_property(&b,"LandscapeMaterial",material)
+    if len(virtual_textures)>0 {
+        refs:=make([]unreal.Object_Ref,len(virtual_textures),context.temp_allocator)
+        for path,i in virtual_textures {
+            refs[i]=object_import(&b,package_import(&b,path),"/Script/Engine","RuntimeVirtualTexture",path[strings.last_index_byte(path,'/')+1:])
+        }
+        objects_property(&b,"RuntimeVirtualTextures",refs)
+    }
     root_at:=len(b.bytes)
     object_property(&b,"RootComponent",0)
     properties_end(&b);export_end(&b)

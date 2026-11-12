@@ -329,13 +329,13 @@ it names). Everything lives in the library's arena.
   material's instances.
 - **Inputs.** The material's or, in UE5, those of its `MaterialEditorOnlyData`, native or tagged
   depending on the version; a property that was not saved has the class constructor's value.
-- **Expressions.** Each class is a case of `expression_build`, with the semantics of Unreal's
-  `MaterialExpressionsToMIR`: the whole value, and the input's mask picks the channels. Functions
-  are expanded where called; parameter collections give their default; reroutes and quality and
-  feature-level switches take their default input, and virtual-texture ones, the branch without
-  them; material attributes are attribute rows, and `SetMaterialAttributes` changes its own over
-  those of `Inputs[0]`. A `Lerp` alpha of a different width than its ends is its first component,
-  as in Unreal.
+- **Expressions.** Each class is a case of `expression_build`, with the semantics Unreal compiles
+  it with: the whole value, and the input's mask picks the channels. Functions are expanded where
+  called; parameter collections give their default; reroutes and quality and feature-level
+  switches take their default input, and `VirtualTextureFeatureSwitch` the branch without virtual
+  textures; material attributes are attribute rows, and `SetMaterialAttributes` changes its own
+  over those of `Inputs[0]`. A `Lerp` alpha of a different width than its ends is its first
+  component, as in Unreal.
 - **Value table** (`Graph`): one node per operation over earlier nodes, of one to four components;
   equal nodes are one and constants are folded when added. The context values are UV, time, world
   position and normals, the tangent frame, vertex colors, the object (center, radius and corners
@@ -419,6 +419,18 @@ it names). Everything lives in the library's arena.
   stay constant), position and normals go to centimeters and Z up, normal maps are unpacked and
   the tangent normal goes to the world with the MikkTSpace frame. Its name is the base material
   and a hash of what it computes: instances that only change values share a program.
+- **Runtime virtual textures.** Mirai has none: a `RuntimeVirtualTextureSample` (or its parameter)
+  is what the material that writes that texture gives at the point of the sample, its graph
+  evaluated there (`Options.writers`, the landscapes of a level that list it in
+  `RuntimeVirtualTextures`). The writer gives the inputs of its `RuntimeVirtualTextureOutput`
+  (where `RuntimeVirtualTextureReplace` takes `VirtualTextureOutput`) or, without one, its base
+  color, specular, roughness, normal in the world and the height of the point; the sample keeps
+  them as the texture does (0 to 1, a unit normal) and gives Unreal's constants for an output its
+  content does not hold or without a texture. The landscape material that reads back what it
+  writes does so with its own weights and branch; another surface (grass over the ground) sees
+  the landscape's material as it shows without a terrain, its first layer, with the landscape's
+  coordinates of its own place, and its parameters named after that material. Without a writer,
+  or sampled at another place, the sample is not translated.
 - **Textures written while the game runs.** A render target that writes a grid, or a texture
   parameter Unreal fills at runtime (FluidNinja's buffers), has no image: `Options.reads` names
   each by its object path or parameter name, with the function that reads it by UV and its
@@ -600,7 +612,8 @@ entity, the imported meshes and the time.
   components override and the sky, and at the root what the level stores and plugins write.
   A single `material.Library` and a single `write.Builder` serve the whole level: each package is
   opened and each texture decoded once, while memory allows. The packages of meshes and overridden
-  materials are read ahead ([read-ahead](#read-ahead)).
+  materials are read ahead ([read-ahead](#read-ahead)). Every material of the level reads the
+  runtime virtual textures its landscapes write (`virtual_texture_writers`).
 - **Identity.** The scene is the root of the map's import (`importer.output_root`) and the sections
   and what plugins write, its parts by name (`importer.output_part`, `importer.output_model`).
   Sections take file and id when written, only those with something and all at once

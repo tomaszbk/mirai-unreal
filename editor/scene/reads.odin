@@ -228,7 +228,7 @@ materials_run :: proc(read:^Read,worker:int) {
         sync.mutex_lock(&c.library_lock)
         c.lib.worker=ref
         if object,found:=material.object_find(c.lib,path);found {
-            if t,error:=material.translate(c.lib,object,{reads=c.format_options.reads},context.temp_allocator);error.code==.None {
+            if t,error:=material.translate(c.lib,object,{reads=c.format_options.reads,writers=c.writers},context.temp_allocator);error.code==.None {
                 material_write.builder_room(&c.images)
                 material_write.material_build(&c.images,&t,&decoder)
                 material.translated_destroy(&t)

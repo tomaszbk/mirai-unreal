@@ -59,6 +59,9 @@ Options :: struct {
     // The textures systems of the project write as they run, which programs
     // read instead (material.Options.reads).
     reads:[]material.Texture_Read,
+    // What writes the runtime virtual textures the materials read: the
+    // landscapes of the level (material.Options.writers).
+    writers:[]material.Virtual_Texture_Writer,
 }
 
 // FORMAT with options other than its defaults; options outlives the imports.
@@ -100,6 +103,7 @@ Context :: struct {
     decoder:^kraken.Decoder,            // of this read, made when first needed (decoder_need)
     decoder_made:^bool,
     reads:[]material.Texture_Read,      // of the options
+    writers:[]material.Virtual_Texture_Writer, // of the options
 }
 
 // What the material of a slot is in the model.
@@ -118,7 +122,7 @@ read :: proc(r:^importer.Reader,bytes:[]u8) -> bool {
     if open_error.code!=.None {return failure(r,open_error,"the package")}
     defer upackage.package_destroy(&p)
     own:material.Library
-    c:=Context{r=r,p=&p,library=options.library,reads=options.reads}
+    c:=Context{r=r,p=&p,library=options.library,reads=options.reads,writers=options.writers}
     if c.library!=nil {
         c.lock=options.lock
     } else {
@@ -402,7 +406,7 @@ slot_material :: proc(c:^Context,slot:umesh.Material_Slot) -> Slot_Material {
         return made
     }
     translate_zone:=importer.zone_begin(r.options,"material.translate")
-    t,error:=material.translate(c.library,object,{reads=c.reads},context.temp_allocator)
+    t,error:=material.translate(c.library,object,{reads=c.reads,writers=c.writers},context.temp_allocator)
     base.profile_end(translate_zone)
     if error.code!=.None {
         if missing:=engine_missing_named(c.library,error.message);missing!="" {

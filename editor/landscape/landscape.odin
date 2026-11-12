@@ -1,5 +1,6 @@
 package landscape
 
+import "core:math/linalg"
 import "core:mem"
 import "core:slice"
 import "core:strings"
@@ -41,6 +42,21 @@ Landscape :: struct {
     subsection_quads:int,
     missing_quads:int,      // quads of the rectangle no component covers, left as holes
     allocator:mem.Allocator,
+}
+
+// The coordinates of a landscape (its quads, from its actor) at a point p of
+// the world in Unreal's centimetres, by the transform of the actor (local):
+// dot(row.xyz,p)+row.w.
+coordinates_of :: proc(local:mm.Transform) -> (rows:[2][4]f32) {
+    axes:=[3][3]f32{level.point_to_mirai({1,0,0}),level.point_to_mirai({0,1,0}),level.point_to_mirai({0,0,1})}
+    quads :: proc(axes:[3][3]f32,v:[3]f32) -> [2]f32 {
+        return {linalg.dot(v,axes[0])/linalg.dot(axes[0],axes[0]),linalg.dot(v,axes[1])/linalg.dot(axes[1],axes[1])}
+    }
+    origin:=quads(axes,mm.transform_inverse_point(local,{}))
+    along:[3][2]f32
+    for axis,i in axes {along[i]=quads(axes,mm.transform_inverse_vector(local,axis))}
+    for row in 0..<2 {rows[row]={along[0][row],along[1][row],along[2][row],origin[row]}}
+    return
 }
 
 landscape_destroy :: proc(l:^Landscape) {
@@ -97,20 +113,32 @@ landscapes_read :: proc(d:^level.Document,decoder:^kraken.Decoder,allocator:=con
     r.textures.allocator=context.temp_allocator
     r.layers.allocator=context.temp_allocator
     defer for _,&decoded in r.textures {texture.decoded_destroy(&decoded)}
-    guids:[dynamic]unreal.Guid
-    guids.allocator=context.temp_allocator
-    for actor in d.actors {
-        if !is_proxy(actor.class) {continue}
-        guid:=guid_property(d,actor.ref,"LandscapeGuid")
-        if !slice.contains(guids[:],guid) {append(&guids,guid)}
-    }
-    for guid in guids {
+    for actor in landscape_actors(d) {
         l:Landscape
-        l,error=landscape_read(&r,guid)
+        l,error=landscape_read(&r,actor)
         if error.code!=.None {landscapes_destroy(&list);return}
         append(&list,l)
     }
     return
+}
+
+// The actor that stands for each landscape of the level, in the order its
+// LandscapeGuid first appears: its Landscape, or else its first proxy.
+landscape_actors :: proc(d:^level.Document,allocator:=context.temp_allocator) -> []int {
+    guids:=make([dynamic]unreal.Guid,context.temp_allocator)
+    actors:=make([dynamic]int,allocator)
+    for actor,i in d.actors {
+        if !is_proxy(actor.class) {continue}
+        guid:=guid_property(d,actor.ref,"LandscapeGuid")
+        at,found:=slice.linear_search(guids[:],guid)
+        if !found {
+            append(&guids,guid)
+            append(&actors,i)
+        } else if actor.class.name=="Landscape" && d.actors[actors[at]].class.name!="Landscape" {
+            actors[at]=i
+        }
+    }
+    return actors[:]
 }
 
 @(private)
@@ -166,18 +194,18 @@ object_ref :: proc(d:^level.Document,ref:level.Ref,name:string) -> (target:level
 }
 
 @(private)
-landscape_read :: proc(r:^Reader,guid:unreal.Guid) -> (l:Landscape,error:unreal.Error) {
+landscape_read :: proc(r:^Reader,stand:int) -> (l:Landscape,error:unreal.Error) {
     d:=r.d
+    guid:=guid_property(d,d.actors[stand].ref,"LandscapeGuid")
     l.guid=guid
-    l.actor=-1
+    l.actor=stand
     l.allocator=r.allocator
     defer if error.code!=.None {landscape_destroy(&l)}
     components:[dynamic]Component
     components.allocator=context.temp_allocator
     clear(&r.layers)
-    for actor,i in d.actors {
+    for actor in d.actors {
         if !is_proxy(actor.class) || guid_property(d,actor.ref,"LandscapeGuid")!=guid {continue}
-        if l.actor<0 || actor.class.name=="Landscape" && d.actors[l.actor].class.name!="Landscape" {l.actor=i}
         for c in actor.first_component..<actor.first_component+actor.component_count {
             item:=d.components[c]
             if !level.class_is(item.class,"/Script/Landscape","LandscapeComponent") {continue}

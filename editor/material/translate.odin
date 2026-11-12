@@ -32,6 +32,7 @@ Options :: struct {
     custom_data:[]f32, // of the instance it shows (PerInstanceSMCustomData); none: what PerInstanceCustomData gives by default
     landscape:^Landscape_Mapping, // a landscape material whole, for the terrain that shows it; nil: per layer
     reads:[]Texture_Read, // the textures systems of the project write as they run, which a program reads instead
+    writers:[]Virtual_Texture_Writer, // what writes each runtime virtual texture the material may sample
 }
 
 // How the vertex colors of a mesh enter its material.
@@ -132,33 +133,12 @@ translate :: proc(lib:^Library,material:Object,options:Options={},allocator:=con
     for &image in t.images {image=MAP_NONE}
     graph_init(&t.graph,out)
 
-    // The chain of instances down to the material, the closest first.
-    overrides:=make([dynamic]Override,out)
-    base:Base_Properties
-    stack:Layer_Stack
-    current:=material
-    for depth:=0;;depth+=1 {
-        class:=object_class(current)
-        if class=="Material" {break}
-        if !strings.has_prefix(class,"MaterialInstance") {
-            translated_destroy(&t)
-            return {},error_make(.Unsupported,"%s is a %s, not a material",object_path(current),class)
-        }
-        if depth>=MAX_CHAIN {
-            translated_destroy(&t)
-            return {},error_make(.Malformed,"%s: the chain of parents is longer than %d",object_path(material),MAX_CHAIN)
-        }
-        instance_overrides(current,&overrides,&base,&stack,out)
-        reference:=prop_object(current,"Parent")
-        parent,found:=object_resolve(lib,current.pkg,reference)
-        if !found {
-            translated_destroy(&t)
-            parent_path,_:=unreal.reference_path(&current.pkg.p,reference,context.temp_allocator)
-            return {},error_make(.Not_Found,"%s: its parent %s could not be read",object_path(current),parent_path)
-        }
-        current=parent
+    chain,chain_error:=chain_read(lib,material,out)
+    if chain_error.code!=.None {
+        translated_destroy(&t)
+        return {},chain_error
     }
-    base_material:=current
+    base,base_material:=chain.base,chain.material
     t.material=strings.clone(object_name(base_material),out)
     domain:=prop_name(base_material,"MaterialDomain","MD_Surface")
     if domain!="MD_Surface" {
@@ -173,12 +153,15 @@ translate :: proc(lib:^Library,material:Object,options:Options={},allocator:=con
 
     e:Evaluator
     evaluator_init(&e,lib,&t.graph,out)
-    e.overrides=overrides
-    e.stack=stack
+    e.overrides=chain.overrides
+    e.stack=chain.stack
     e.layer=options.layer
     e.custom_data=options.custom_data
     e.landscape=options.landscape
+    if options.landscape!=nil {e.coordinates=&options.landscape.coordinates}
     e.reads=options.reads
+    e.writers=options.writers
+    e.material=t.path
     e.ue5=base_material.pkg.p.summary.version_ue5>0
 
     // The inputs: on the material in UE4, on its editor-only data in UE5.
@@ -194,7 +177,7 @@ translate :: proc(lib:^Library,material:Object,options:Options={},allocator:=con
             clear(&e.memo)
             clear(&e.aggregates)
         }
-        roots,connected=material_outputs(&e,base_material,inputs,outputs_read(blend,shading))
+        roots,connected=material_outputs(&e,base_material,inputs,outputs_read(blend,shading),-1)
     }
     t.layers=e.layers[:]
     if options.layer!="" {
@@ -216,6 +199,37 @@ translate :: proc(lib:^Library,material:Object,options:Options={},allocator:=con
     t.missing=e.missing[:]
     t.reads_custom_data=e.reads_custom_data
     return t,{}
+}
+
+// The chain of instances down to the material: the values the closest
+// instance sets first, and the material at its root.
+@(private)
+Chain :: struct {overrides:[dynamic]Override,base:Base_Properties,stack:Layer_Stack,material:Object}
+
+@(private)
+chain_read :: proc(lib:^Library,material:Object,out:mem.Allocator) -> (c:Chain,error:Error) {
+    c.overrides=make([dynamic]Override,out)
+    current:=material
+    for depth:=0;;depth+=1 {
+        class:=object_class(current)
+        if class=="Material" {break}
+        if !strings.has_prefix(class,"MaterialInstance") {
+            return c,error_make(.Unsupported,"%s is a %s, not a material",object_path(current),class)
+        }
+        if depth>=MAX_CHAIN {
+            return c,error_make(.Malformed,"%s: the chain of parents is longer than %d",object_path(material),MAX_CHAIN)
+        }
+        instance_overrides(current,&c.overrides,&c.base,&c.stack,out)
+        reference:=prop_object(current,"Parent")
+        parent,found:=object_resolve(lib,current.pkg,reference)
+        if !found {
+            parent_path,_:=unreal.reference_path(&current.pkg.p,reference,context.temp_allocator)
+            return c,error_make(.Not_Found,"%s: its parent %s could not be read",object_path(current),parent_path)
+        }
+        current=parent
+    }
+    c.material=current
+    return
 }
 
 @(private)
@@ -281,8 +295,8 @@ list_enum :: proc(p:^unreal.Package,list:^unreal.Property_List,name:string,names
 parameter_values :: proc(o:Object,overrides:^[dynamic]Override,forced:^Layer_Ref,out:mem.Allocator) {
     p:=&o.pkg.p
     // A vector of doubles is a vector parameter as floats.
-    arrays:=[4]string{"ScalarParameterValues","VectorParameterValues","TextureParameterValues","DoubleVectorParameterValues"}
-    kinds:=[4]Override_Kind{.Scalar,.Vector,.Texture,.Vector}
+    arrays:=[5]string{"ScalarParameterValues","VectorParameterValues","TextureParameterValues","DoubleVectorParameterValues","RuntimeVirtualTextureParameterValues"}
+    kinds:=[5]Override_Kind{.Scalar,.Vector,.Texture,.Vector,.Texture}
     for array,i in arrays {
         for &item in prop_structs(o,array) {
             name,layer,ok:=list_parameter(p,&item)
@@ -365,11 +379,11 @@ offset_collapses :: proc(e:^Evaluator,o:Object,input:Input) -> bool {
 
 // The node of each output of the material and whether it is connected.
 @(private)
-material_outputs :: proc(e:^Evaluator,material,inputs:Object,wanted:bit_set[Attribute]) -> (roots:[Attribute]u32,connected:[Attribute]bool) {
+material_outputs :: proc(e:^Evaluator,material,inputs:Object,wanted:bit_set[Attribute],scope:i32) -> (roots:[Attribute]u32,connected:[Attribute]bool) {
     g:=e.g
     for &root,attribute in roots {root=constant(g,ATTRIBUTE_DEFAULTS[attribute],ATTRIBUTE_WIDTHS[attribute])}
     if prop_bool(material,"bUseMaterialAttributes",false) {
-        value:=pin_value(e,inputs,"MaterialAttributes",-1)
+        value:=pin_value(e,inputs,"MaterialAttributes",scope)
         if value.aggregate<0 {
             note(e,"its material attributes could not be translated")
             for &c in connected {c=true}
@@ -388,7 +402,7 @@ material_outputs :: proc(e:^Evaluator,material,inputs:Object,wanted:bit_set[Attr
         width:=ATTRIBUTE_WIDTHS[attribute]
         if input.expression!=0 {
             connected[attribute]=true
-            if attribute in wanted {roots[attribute]=convert(g,input_value(e,inputs,input,-1).node,width)}
+            if attribute in wanted {roots[attribute]=convert(g,input_value(e,inputs,input,scope).node,width)}
             if attribute==.World_Position_Offset && offset_collapses(e,inputs,input) {
                 roots[attribute]=binary(g,.Mul,context_value(g,.World_Position,3),scalar(g,-1))
             }

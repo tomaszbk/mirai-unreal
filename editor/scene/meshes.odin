@@ -457,14 +457,14 @@ layer_materials :: proc(c:^Context,path:string,label:="",mapping:^material.Lands
         warn(c,"the landscape material %s is not under a mount of the level",path)
         return
     }
-    layers,error:=material.landscape_layers(c.lib,object,{},context.temp_allocator)
+    layers,error:=material.landscape_layers(c.lib,object,{writers=c.writers},context.temp_allocator)
     if error.code!=.None {
         warn(c,"the landscape material %s could not be translated (%s)",path,error.message)
         return
     }
     defer material.landscape_layers_destroy(layers,context.temp_allocator)
     if len(layers)==0 {
-        t,whole_error:=material.translate(c.lib,object,{reads=c.texture_reads[:]},context.temp_allocator)
+        t,whole_error:=material.translate(c.lib,object,{reads=c.texture_reads[:],writers=c.writers},context.temp_allocator)
         if whole_error.code!=.None {
             warn(c,"the landscape material %s could not be translated (%s)",path,whole_error.message)
             return
@@ -494,7 +494,7 @@ layer_materials :: proc(c:^Context,path:string,label:="",mapping:^material.Lands
     programs:=make([]int,len(entry.wholes),context.temp_allocator)
     for &whole,i in entry.wholes {
         programs[i]=-1
-        t,whole_error:=material.translate(c.lib,object,{landscape=&whole.mapping,reads=c.texture_reads[:]},context.temp_allocator)
+        t,whole_error:=material.translate(c.lib,object,{landscape=&whole.mapping,reads=c.texture_reads[:],writers=c.writers},context.temp_allocator)
         if whole_error.code!=.None {
             if i==len(entry.wholes)-1 {warn(c,"%s: its landscape material %s could not be translated whole (%s); its layers blend their own materials",whole.label,path,whole_error.message)}
             continue

@@ -109,6 +109,7 @@ Evaluator :: struct {
     stack:Layer_Stack,           // that the closest instance sets; none: that of the material
     layer:string,         // the landscape layer whose branch is evaluated; "" none
     landscape:^Landscape_Mapping, // a whole landscape: the weights of its layers are those of a terrain
+    coordinates:^[2][4]f32, // the coordinates of a landscape from the world (Landscape_Mapping): of the terrain shown, or of the landscape that writes a virtual texture read
     layers:[dynamic]string, // the landscape layers the graph names
     scopes:[dynamic]Scope,
     aggregates:[dynamic][Attribute]u32,
@@ -126,6 +127,10 @@ Evaluator :: struct {
     custom_data:[]f32,      // of the instance: what PerInstanceCustomData reads
     reads_custom_data:bool, // PerInstanceCustomData was evaluated
     reads:[]Texture_Read,   // of the options
+    writers:[]Virtual_Texture_Writer, // of the options
+    material:string,        // the object path of the material translated
+    prefix:string,          // before the names of the parameters of the material that writes a virtual texture read
+    writing:bool,           // evaluating what a material writes to a virtual texture
 }
 
 @(private) MAX_EVALUATION_DEPTH :: 400
@@ -203,8 +208,9 @@ scope_layer :: proc(e:^Evaluator,scope:i32) -> Layer_Ref {return scope>=0?e.scop
 @(private)
 parameter_name :: proc(e:^Evaluator,name:string,scope:i32) -> string {
     layer:=scope_layer(e,scope)
-    if layer.association==.Global {return name}
-    return fmt.aprintf("%s%d.%s",layer.association==.Layer?"Layer":"Blend",layer.index,name,allocator=e.g.parameters.allocator)
+    if layer.association==.Global && e.prefix=="" {return name}
+    if layer.association==.Global {return fmt.aprintf("%s%s",e.prefix,name,allocator=e.g.parameters.allocator)}
+    return fmt.aprintf("%s%s%d.%s",e.prefix,layer.association==.Layer?"Layer":"Blend",layer.index,name,allocator=e.g.parameters.allocator)
 }
 
 // The value an input of o computes; NO_VALUE when it is not connected.
@@ -429,7 +435,7 @@ expression_build :: proc(e:^Evaluator,o:Object,output:i32,scope:i32) -> Value {
     case "TextureCoordinate":
         if prop_bool(o,"UnMirrorU",false) || prop_bool(o,"UnMirrorV",false) {return untranslated(e,o,"unmirrored coordinates")}
         index:=prop_int(o,"CoordinateIndex",0)
-        if (index<0 || index>1) && e.landscape==nil {return untranslated(e,o,UV_SETS_PAST)}
+        if (index<0 || index>1) && e.coordinates==nil {return untranslated(e,o,UV_SETS_PAST)}
         uv:=uv_value(e,u32(index))
         return nodes(binary(g,.Mul,uv,constant(g,{prop_float(o,"UTiling",1),prop_float(o,"VTiling",1),0,0},2)))
     case "BumpOffset":
@@ -536,7 +542,9 @@ expression_build :: proc(e:^Evaluator,o:Object,output:i32,scope:i32) -> Value {
     case "VirtualTextureFeatureSwitch":
         return pin_value(e,o,"No",scope)
     case "RuntimeVirtualTextureReplace":
-        return pin_value(e,o,"Default",scope)
+        return pin_value(e,o,e.writing?"VirtualTextureOutput":"Default",scope)
+    case "RuntimeVirtualTextureSample","RuntimeVirtualTextureSampleParameter":
+        return virtual_texture_sample(e,o,output,scope)
     case "TextureObject","TextureObjectParameter":
         return nodes(texture_object(e,o,scope))
     case "TextureSample","TextureSampleParameter2D":
@@ -1004,16 +1012,19 @@ world_place :: proc(e:^Evaluator,op:Op) -> u32 {
     return binary(g,.Add,context_value(g,op,3),context_value(g,.Origin,3))
 }
 
-// The tangent frame of the surface in the world: that of the mesh or, in a
-// whole landscape, Unreal's, along the axes of the landscape across its
-// normal.
+// The tangent frame of the surface in the world: that of the mesh or, where
+// the coordinates are a landscape's, along the axes of the landscape across
+// its normal.
 @(private)
 tangent_frame :: proc(e:^Evaluator) -> (t,b,n:u32) {
     g:=e.g
     n=context_value(g,.Vertex_Normal,3)
-    if e.landscape==nil {return context_value(g,.Vertex_Tangent,3),context_value(g,.Vertex_Bitangent,3),n}
-    across :: proc(g:^Graph,axis,n:u32) -> u32 {return unary(g,.Normalize,binary(g,.Sub,axis,binary(g,.Mul,n,binary(g,.Dot,axis,n))))}
-    return across(g,object_axis(e,0),n),across(g,object_axis(e,1),n),n
+    if e.coordinates==nil {return context_value(g,.Vertex_Tangent,3),context_value(g,.Vertex_Bitangent,3),n}
+    across :: proc(g:^Graph,row:[4]f32,n:u32) -> u32 {
+        axis:=constant(g,{row.x,row.y,row.z,0},3)
+        return unary(g,.Normalize,binary(g,.Sub,axis,binary(g,.Mul,n,binary(g,.Dot,axis,n))))
+    }
+    return across(g,e.coordinates[0],n),across(g,e.coordinates[1],n),n
 }
 
 @(private)
@@ -1351,7 +1362,7 @@ function_input :: proc(e:^Evaluator,o:Object,scope:i32) -> Value {
     // A layer takes the input of the stack in its first input of material
     // attributes; a blend, what is below in its Bottom and the layer in its
     // Top, or in its first two.
-    if scope>=0 && e.scopes[scope].call.pkg==nil {
+    if scope>=0 && e.scopes[scope].call.pkg==nil && e.scopes[scope].function.pkg!=nil {
         s:=e.scopes[scope]
         if kind==MATERIAL_ATTRIBUTES {
             slot:=-1
@@ -1375,7 +1386,7 @@ function_input :: proc(e:^Evaluator,o:Object,scope:i32) -> Value {
                 return {NONE,i32(len(e.aggregates)-1)}
             }
         }
-    } else if scope>=0 {
+    } else if scope>=0 && e.scopes[scope].call.pkg!=nil {
         s:=e.scopes[scope]
         id,has_id:=prop_guid(o,"Id")
         own_name:=prop_name(o,"InputName","")
