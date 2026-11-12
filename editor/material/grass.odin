@@ -1,5 +1,6 @@
 package material
 
+import "core:math"
 import "core:strings"
 import unreal "project:plugins/unreal/editor/package"
 
@@ -28,8 +29,20 @@ Landscape_Grass :: struct {
     name:string,               // of the input
     type:string,               // object path of its grass type
     layers:[]string,           // the paint layers the input reads
-    plain:bool,                // the input is the weight of one layer, as it is
+    fit:Grass_Fit,
     varieties:[]Grass_Variety, // none when its grass type could not be read
+}
+
+// What a foliage rule takes of an input: the slopes of the ground it grows
+// on and the weight its layers need there, past which it is as dense as they
+// weigh; the pair closest to the density the input gives, at every weight of
+// its layers and every slope, a texture it reads taken at each of its values
+// alike.
+Grass_Fit :: struct {
+    slope:[2]f32, // radians from horizontal: lowest and highest
+    weight:f32,   // of its layers, at least
+    error:f32,    // the mean difference of the two densities, as a share of the input's mean density
+    ok:bool,      // false: the input reads what a rule does not see (time, the camera, noise), or never grows
 }
 
 // The grass of a landscape material (a Material or an instance of one), in
@@ -78,7 +91,7 @@ landscape_grass :: proc(lib:^Library,material:Object,allocator:=context.allocato
             value:=input_value(&e,o,input,-1)
             path,_:=unreal.reference_path(p,type_ref,allocator)
             read:=Landscape_Grass{name=strings.clone(list_name(p,&entry,"Name"),allocator),type=path,layers=layers}
-            read.plain=value.node!=NONE && g.nodes[value.node].op==.Layer_Weight
+            read.fit=grass_fit(&g,value.node)
             if grass_type,resolved:=object_resolve(lib,o.pkg,type_ref);resolved && object_valid(grass_type) {
                 read.varieties=varieties_read(grass_type,allocator)
             }
@@ -101,6 +114,84 @@ landscape_grass_destroy :: proc(grass:[]Landscape_Grass,allocator:=context.alloc
         delete(g.varieties,allocator)
     }
     delete(grass,allocator)
+}
+
+@(private) FIT_WEIGHTS :: 20 // of the layers, at the middle of 20 equal steps
+@(private) FIT_DEGREES :: 90 // slopes, a degree apart
+@(private) FIT_TEXELS :: 8  // values a texture read takes
+
+// The rule closest to the density the input root gives (Grass_Fit), with
+// its layers all at each weight, the normal at each slope, and every texture
+// at each value.
+@(private)
+grass_fit :: proc(g:^Graph,root:u32) -> (fit:Grass_Fit) {
+    if root==NONE {return}
+    order:=nodes_under(g,{root})
+    SEEN :: bit_set[Op]{.Layer_Weight,.Pixel_Normal,.Vertex_Normal,.World_Position,.Origin,.UV,.Sample,.Texture}
+    for n in order {if op:=g.nodes[n].op;op in VARYING && op not_in SEEN {return}}
+    values:=make([][4]f32,len(g.nodes),context.temp_allocator)
+    density:=make([]f32,(FIT_DEGREES+1)*FIT_WEIGHTS,context.temp_allocator)
+    texel:Texel_Context
+    total:f32
+    for degree in 0..=FIT_DEGREES {
+        angle:=f32(degree)*math.PI/180
+        // Unreal's normal, Z up.
+        normal:=[4]f32{math.sin(angle),0,math.cos(angle),0}
+        for k in 0..<FIT_WEIGHTS {
+            weight:=(f32(k)+0.5)/FIT_WEIGHTS
+            sum:f32
+            for j in 0..<FIT_TEXELS {
+                read:=(f32(j)+0.5)/FIT_TEXELS
+                for n in order {
+                    node:=&g.nodes[n]
+                    #partial switch node.op {
+                    case .Layer_Weight:values[n]={weight,0,0,0}
+                    case .Pixel_Normal,.Vertex_Normal:values[n]=normal
+                    case .World_Position,.Origin,.UV,.Texture:values[n]={}
+                    case .Sample:values[n]={read,read,read,read}
+                    case:
+                        args:[3][4]f32
+                        for arg,i in node.args {if arg!=NONE {args[i]=values[arg]}}
+                        values[n]=node_compute(g,node,args,&texel)
+                    }
+                }
+                sum+=clamp(values[root].x,0,1)
+            }
+            density[degree*FIT_WEIGHTS+k]=sum/FIT_TEXELS
+            total+=sum/FIT_TEXELS
+        }
+    }
+    if !(total>0) {return}
+    // For each least weight, the slopes where the rule is closer than no
+    // grass: the run of most gain.
+    gains:[FIT_DEGREES+1]f32
+    best:=max(f32)
+    for step in 0..=FIT_WEIGHTS {
+        least:=f32(step)/FIT_WEIGHTS
+        for &gain,degree in gains {
+            gain=0
+            for k in 0..<FIT_WEIGHTS {
+                weight:=(f32(k)+0.5)/FIT_WEIGHTS
+                d:=density[degree*FIT_WEIGHTS+k]
+                gain+=d-abs(d-(weight>=least?weight:0))
+            }
+        }
+        run,start:=f32(0),0
+        most,low,high:=-max(f32),0,0
+        for gain,degree in gains {
+            if run<=0 {run,start=0,degree}
+            run+=gain
+            if run>most {most,low,high=run,start,degree}
+        }
+        if total-most<best-1e-6 {
+            best=total-most
+            fit.weight=least
+            fit.slope={low==0?0:(f32(low)-0.5)*math.PI/180,high==FIT_DEGREES?math.PI/2:(f32(high)+0.5)*math.PI/180}
+        }
+    }
+    fit.error=max(best,0)/total
+    fit.ok=true
+    return
 }
 
 // The landscape layers the expressions an input reads name, along the pins

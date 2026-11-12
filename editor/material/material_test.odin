@@ -1549,12 +1549,14 @@ material_layers_are_their_functions_with_the_parameters_of_each_layer :: proc(t:
 }
 
 // A grass output whose Meadow grass reads the weight of the layer Meadow as
-// it is and whose Rock grass reads half of Rock's: each names the layers its
-// input reads and the varieties of its grass type, read with the defaults of
-// a variety for what they do not save; an input without a grass type grows
-// nothing.
+// it is, whose Rock grass reads Rock's where the normal is steeper than 0.7
+// (about 44 degrees) and whose Tall grass a contrast of 7 over Meadow: each
+// names the layers its input reads, the slopes and least weight of the
+// foliage rule closest to it, and the varieties of its grass type, read with
+// the defaults of a variety for what they do not save; an input without a
+// grass type grows nothing.
 @(test)
-a_grass_output_gives_each_grass_type_its_layers_and_varieties :: proc(t:^testing.T) {
+a_grass_output_gives_each_grass_type_its_layers_rule_and_varieties :: proc(t:^testing.T) {
     b:=material_begin("M_Ground")
     samples:[2]i32
     for &sample,i in samples {
@@ -1562,18 +1564,44 @@ a_grass_output_gives_each_grass_type_its_layers_and_varieties :: proc(t:^testing
         fx.name_property_put(&w,"ParameterName",i==0?"Meadow":"Rock")
         sample=expression(&b,"LandscapeLayerSample",i==0?"Meadow":"Rock",&w)
     }
-    half:=fx.writer(&b.p)
-    fx.input_put(&half,"A","ExpressionInput",{expression=samples[1]})
-    fx.float_put(&half,"ConstB",0.5)
-    rock:=expression(&b,"Multiply","Half",&half)
+    normal_writer:=fx.writer(&b.p)
+    normal:=expression(&b,"PixelNormalWS","Normal",&normal_writer)
+    up:=fx.writer(&b.p)
+    fx.input_put(&up,"Input","ExpressionInput",{expression=normal})
+    fx.bool_put(&up,"B",true)
+    vertical:=expression(&b,"ComponentMask","Up",&up)
+    below:=fx.writer(&b.p)
+    fx.input_put(&below,"A","ExpressionInput",{expression=vertical})
+    fx.float_put(&below,"ConstB",0.7)
+    flat:=expression(&b,"Subtract","Flat",&below)
+    sharp:=fx.writer(&b.p)
+    fx.input_put(&sharp,"A","ExpressionInput",{expression=flat})
+    fx.float_put(&sharp,"ConstB",20)
+    sharpened:=expression(&b,"Multiply","Sharp",&sharp)
+    clamp_writer:=fx.writer(&b.p)
+    fx.input_put(&clamp_writer,"Input","ExpressionInput",{expression=sharpened})
+    mask:=expression(&b,"Saturate","Mask",&clamp_writer)
+    masked:=fx.writer(&b.p)
+    fx.input_put(&masked,"A","ExpressionInput",{expression=samples[1]})
+    fx.input_put(&masked,"B","ExpressionInput",{expression=mask})
+    rock:=expression(&b,"Multiply","Rocky",&masked)
+    contrast:=fx.writer(&b.p)
+    fx.float_put(&contrast,"ConstA",-7)
+    fx.float_put(&contrast,"ConstB",8)
+    fx.input_put(&contrast,"Alpha","ExpressionInput",{expression=samples[0]})
+    stretched:=expression(&b,"LinearInterpolate","Contrast",&contrast)
+    tall_writer:=fx.writer(&b.p)
+    fx.input_put(&tall_writer,"Input","ExpressionInput",{expression=stretched})
+    tall_input:=expression(&b,"Saturate","Tall",&tall_writer)
     grass_type:=fx.external(&b.p,"/Game/G/GT_Meadow","/Script/Landscape","LandscapeGrassType","GT_Meadow")
-    entries:=[3][]u8{}
-    names:=[3]string{"Meadow","Rock","Bare"}
+    entries:=[4][]u8{}
+    names:=[4]string{"Meadow","Rock","Tall","Bare"}
+    inputs:=[4]i32{samples[0],rock,tall_input,samples[0]}
     for &entry,i in entries {
         w:=fx.writer(&b.p)
         fx.name_property_put(&w,"Name",names[i])
-        if i<2 {fx.object_put(&w,"GrassType",grass_type)}
-        fx.input_put(&w,"Input","ExpressionInput",{expression=i==0?samples[0]:rock})
+        if i<3 {fx.object_put(&w,"GrassType",grass_type)}
+        fx.input_put(&w,"Input","ExpressionInput",{expression=inputs[i]})
         entry=fx.end(&w)
     }
     output:=fx.writer(&b.p)
@@ -1612,11 +1640,15 @@ a_grass_output_gives_each_grass_type_its_layers_and_varieties :: proc(t:^testing
     defer library_destroy(&lib)
     material,_:=object_find(&lib,"/Game/M/M_Ground")
     grass,error:=landscape_grass(&lib,material,context.temp_allocator)
-    if !testing.expect_value(t,error.code,Error_Code.None) || !testing.expect_value(t,len(grass),2) {return}
-    meadow,stones:=grass[0],grass[1]
+    if !testing.expect_value(t,error.code,Error_Code.None) || !testing.expect_value(t,len(grass),3) {return}
+    meadow,stones,steep:=grass[0],grass[1],grass[2]
     testing.expect(t,meadow.name=="Meadow" && meadow.type=="/Game/G/GT_Meadow.GT_Meadow")
-    testing.expect(t,len(meadow.layers)==1 && meadow.layers[0]=="Meadow" && meadow.plain,"Meadow grows as its layer weighs")
-    testing.expect(t,len(stones.layers)==1 && stones.layers[0]=="Rock" && !stones.plain,"Rock grows on half the weight of its layer")
+    testing.expect(t,len(meadow.layers)==1 && meadow.layers[0]=="Meadow")
+    testing.expectf(t,meadow.fit.ok && meadow.fit.slope=={0,math.PI/2} && meadow.fit.weight==0 && meadow.fit.error<1e-6,"Meadow grows as its layer weighs: %v",meadow.fit)
+    degrees:=stones.fit.slope*180/math.PI
+    testing.expect(t,len(stones.layers)==1 && stones.layers[0]=="Rock")
+    testing.expectf(t,stones.fit.ok && degrees[0]==0 && degrees[1]>42 && degrees[1]<46 && stones.fit.weight==0 && stones.fit.error<0.05,"Rock grows up to the slope of its mask: %v",stones.fit)
+    testing.expectf(t,steep.fit.ok && steep.fit.slope=={0,math.PI/2} && steep.fit.weight>=0.4 && steep.fit.weight<=0.55,"Tall grows past the middle of its contrast: %v",steep.fit)
     if !testing.expect_value(t,len(meadow.varieties),2) {return}
     v:=meadow.varieties[0]
     testing.expect_value(t,v.mesh,"/Game/G/SM_Blades.SM_Blades")

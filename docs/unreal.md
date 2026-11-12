@@ -456,11 +456,13 @@ it names). Everything lives in the library's arena.
   a branch on the weight that gathers everything of that layer. Without weight, the input is zero
   (or each attribute's default) and the height zero: what Unreal sums from an unpainted layer,
   except the minimum weight (`0.0001`) of a height one.
-- **Landscape grass** (`landscape_grass`, `grass.odin`): each input of a `LandscapeGrassOutput`
-  that names a `LandscapeGrassType` gives the paint layers it reads (as the graph evaluates it,
-  and along its pins past a function that cannot be read), whether it is one layer's weight as is
-  (`plain`), and the `GrassVarieties` of its type with a variety's defaults (densities per square
-  metre, distances in metres; the `Default` of a per-platform value).
+- **Landscape grass** (`landscape_grass`, `grass.odin`): each input of a `LandscapeGrassOutput` that
+  names a `LandscapeGrassType` gives the paint layers it reads (as the graph evaluates it, and along
+  its pins past a function that cannot be read), the foliage rule closest to it (`Grass_Fit`: the
+  slopes and least weight of its layers past which it is as dense as they weigh, chosen against the
+  input evaluated at every weight and slope, a texture it reads at each of its values alike, with
+  the mean error), and the `GrassVarieties` of its type with a variety's defaults (densities per
+  square metre, distances in metres; the `Default` of a per-platform value).
 
 ### Writing (`material/write`)
 

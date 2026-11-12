@@ -106,13 +106,15 @@ in the space of an entity at the scene origin.
   the instances of each set of per-instance floats (`PerInstanceSMCustomData`) are a batch showing
   the variant, with those values, of the materials that read them (the wall color of a blueprint).
 - **Landscape grass** (`grass_add`, `grass.odin`): in the map's scene, each variety of each grass
-  type of a landscape material ([grass](unreal.md#translation)) is a generated type of its mesh,
-  its rule on the terrain layers (by material) whose paint layers its input reads, at most
-  `RULE_LAYERS` of most coverage, and as dense as they weigh, as Unreal keeps a point where a
-  chance is under the weight. An input that weighs more than its layers (a contrast, the slope, a
-  texture) grows as densely as they do alone. The cells over quads where those layers weigh,
-  holes left out, generate, and then the other types of the source have density 0: what Unreal
-  placed of them is all there is. Equal varieties of landscapes of one material are one type.
+  type of a landscape material ([grass](unreal.md#translation)) is a generated type of its mesh, its
+  rule on the terrain layers (by material) whose paint layers its input reads, at most `RULE_LAYERS`
+  of most coverage, on the slopes and from the least weight the input fits, and as dense as they
+  weigh, as Unreal keeps a point where a chance is under the weight. A fit more than `FIT_NOTED` off
+  is a warning with its slopes, weight and error; an input that reads what a rule does not see
+  (time, the camera, noise) grows as densely as its layers alone. The cells over quads where those
+  layers weigh, holes left out, generate, and then the other types of the source have density 0:
+  what Unreal placed of them is all there is. Equal varieties of landscapes of one material are one
+  type.
 - **When importing a level**, the `Foliage_Unreal` translator writes per scene a `.foliage` in the
   folder of the map's import with its `Import_Info`, named after the World Partition cell (`Foliage`
   in the map's scene), and a `Foliage` entity at its origin.
@@ -268,7 +270,7 @@ the area the Blueprint simulates; at 1, those of the mesh. `PressureDivergenceBu
   `a_reimported_level_keeps_the_ids_of_the_foliage_it_had`,
   `unreal_foliage_of_actors_adds_only_its_static_mesh_types` and
   `landscape_grass_is_a_generated_type_on_its_layer_over_the_cells_where_it_is_painted`; the
-  grass of a material, `a_grass_output_gives_each_grass_type_its_layers_and_varieties` of
+  grass of a material, `a_grass_output_gives_each_grass_type_its_layers_rule_and_varieties` of
   `editor/material`.
 - Tests of `plugins/unreal_physics/editor`:
   `a_blocking_volume_of_an_unreal_level_is_a_static_box`.

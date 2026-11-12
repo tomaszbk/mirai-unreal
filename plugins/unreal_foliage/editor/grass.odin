@@ -19,10 +19,10 @@ import foliage "plugins:foliage/runtime"
 // The grass of the landscapes of a level, in the source of the scene of the
 // map: each variety of each grass type their materials name is a type the
 // generator scatters, its rule on the layers of the terrain whose weight its
-// input reads (by their materials) and as dense as they weigh there, and the
-// cells where those layers are painted generate. An input that weighs more
-// than its layers (a contrast, the slope, a texture) grows as densely as
-// they do alone.
+// input reads (by their materials), on the slopes and from the least weight
+// of the rule closest to the input (material.Grass_Fit), as dense as they
+// weigh there; the cells where those layers are painted generate. An input
+// a rule cannot fit grows as densely as its layers alone.
 
 // What a variety shows.
 Grass_Look :: struct {
@@ -43,7 +43,7 @@ Grass_Result :: struct {
     cells:int,     // cells that came to generate
     unlayered:int, // varieties on layers its terrain shows without a material, left out
     folded:int,    // varieties on more layers than a rule names: they grow on those of most weight
-    weighed:int,   // varieties whose input weighs more than its layers
+    weighed:int,   // varieties whose input no rule fits: they grow as densely as its layers
 }
 
 // Adds the grass of the landscapes to s, where they are from origin. Once a
@@ -87,8 +87,12 @@ grass_add :: proc(s:^foliage.Source,landscapes:[]Grass_Landscape,origin:[3]f32) 
                 case .Lock_XY:scaling=.Lock_XY
                 }
                 type_from(&t,{density=v.density,scale=v.scale,scaling=scaling,random_yaw=v.random_rotation,align_to_normal=v.align,cull=v.cull,casts_shadow=v.casts_shadow})
-                t.rule.enabled=len(candidates)>0
                 t.rule.weight=clamp(v.weights[0],0,1)
+                if g.fit.ok {
+                    t.rule.slope=g.fit.slope
+                    t.rule.weight=max(t.rule.weight,clamp(g.fit.weight,0,1))
+                }
+                t.rule.enabled=len(candidates)>0 || t.rule.slope!=foliage.FOLIAGE_TYPE_DEFAULT.rule.slope
                 kept:=0
                 for candidate in candidates {
                     if slice.contains(t.rule.layers[:kept],candidate.material) {driving[candidate.layer]=true;continue}
@@ -99,7 +103,7 @@ grass_add :: proc(s:^foliage.Source,landscapes:[]Grass_Landscape,origin:[3]f32) 
                 }
                 for candidate in candidates {if !slice.contains(t.rule.layers[:kept],candidate.material) {result.folded+=1;break}}
                 everywhere||=len(candidates)==0
-                if !g.plain {result.weighed+=1}
+                if !g.fit.ok {result.weighed+=1}
                 // Equal varieties of the landscapes of one material are one type.
                 same:=false
                 for existing in s.types[held:] {
@@ -181,6 +185,8 @@ grass_cells :: proc(s:^foliage.Source,l:^landscape.Landscape,driving:[]bool,ever
     return cells,true
 }
 
+FIT_NOTED :: f32(0.01) // of the density, a fit off by more than which the import tells
+
 // The grass of the landscapes of the level into s, the source of the scene
 // of the map, where they are from origin; their meshes and the materials of
 // their slots imported as the other meshes of the level.
@@ -195,6 +201,10 @@ grass_translate :: proc(c:^unreal_scene.Context,s:^foliage.Source,origin:[3]f32)
         grass:=unreal_scene.landscape_grass(c,path)
         by_material[strings.clone(path,context.temp_allocator)]=grass
         for g in grass {
+            if len(g.varieties)>0 && g.fit.ok && g.fit.error>FIT_NOTED {
+                unreal_scene.warn(c,"%s: its grass %s grows on slopes of %.0f to %.0f degrees where its layers weigh %.2f or more, as dense as they weigh: %.0f%% off the density its material gives",
+                    path,g.name,g.fit.slope[0]*180/math.PI,g.fit.slope[1]*180/math.PI,g.fit.weight,g.fit.error*100)
+            }
             if len(g.varieties)>0 {some=true;continue}
             unreal_scene.warn(c,"%s: its grass %s names the grass type %s, which could not be read or has no varieties; it is left out",path,g.name,g.type)
         }
@@ -231,7 +241,7 @@ grass_translate :: proc(c:^unreal_scene.Context,s:^foliage.Source,origin:[3]f32)
     if !ok {unreal_scene.warn(c,"the grass of the landscapes does not fit in a .foliage (%d types, %d cells at most); some is left out",foliage.TYPES_MAX,foliage.CELLS_MAX)}
     unreal_scene.tally(c,"varieties of landscape grass grow on paint layers whose terrain layer has no material, and are left out",result.unlayered)
     unreal_scene.tally(c,fmt.tprintf("varieties of landscape grass read more paint layers than the %d a foliage rule names, and grow on those of most weight",foliage.RULE_LAYERS),result.folded)
-    unreal_scene.tally(c,"varieties of landscape grass weigh more than their paint layers (a contrast, the slope, a texture), and grow as densely as those layers alone",result.weighed)
+    unreal_scene.tally(c,"varieties of landscape grass read what a foliage rule does not see (time, the camera, noise), and grow as densely as their paint layers alone",result.weighed)
     return
 }
 
