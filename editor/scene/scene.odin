@@ -43,7 +43,7 @@ import "mirai:std/serial"
 // entity keeps its id: it is the hash of the path of its actor (and its
 // component) in the map, which Unreal keeps while labels change.
 
-LEVEL_VERSION :: 1 // of what the same map gives
+LEVEL_VERSION :: 2 // of what the same map gives
 
 TRANSLATOR_CLASSES :: 4
 PROVIDER_TRANSLATORS :: 4

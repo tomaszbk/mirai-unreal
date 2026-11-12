@@ -173,11 +173,11 @@ a_skeletal_mesh_imports_its_morph_targets_and_the_sockets_of_its_mesh_and_skelet
         if testing.expect_value(t,len(mesh.morphs),1) {
             testing.expect_value(t,base.text_get(mesh.morphs[0].name[:]),"Smile")
             testing.expect_value(t,mesh.morphs[0].weight,f32(0))
-            // Vertex 1 of Unreal (100,0,100), raised 10 cm, is the engine's (0,1,1) moved 0.1 m along +Y.
+            // Vertex 1 of Unreal (100,0,100), raised 10 cm, is the engine's (0,1,-1) moved 0.1 m along +Y.
             raised:=false
             for delta in mesh.morph_deltas[mesh.morphs[0].first:][:mesh.morphs[0].count] {
                 vertex:=mesh.vertices[delta.vertex]
-                if linalg.length(vertex.position-[3]f32{0,1,1})<1e-4 {
+                if linalg.length(vertex.position-[3]f32{0,1,-1})<1e-4 {
                     raised=linalg.length(delta.position-importer.space_point(basis,{0,0,10}))<1e-5
                     testing.expectf(t,linalg.length(delta.normal-importer.space_direction(basis,{0,0.5,0}))<1e-5,"%v: the turned normal %v",layout,delta.normal)
                 }
@@ -190,9 +190,9 @@ a_skeletal_mesh_imports_its_morph_targets_and_the_sockets_of_its_mesh_and_skelet
             hand:=skeleton.sockets[0]
             testing.expect_value(t,base.text_get(hand.name[:]),"hand_socket")
             testing.expect_value(t,base.text_get(hand.bone[:]),"root/spine/hand")
-            testing.expect(t,linalg.length(hand.offset.position-[3]f32{0,0,0.05})<1e-6)
+            testing.expect(t,linalg.length(hand.offset.position-[3]f32{0,0,-0.05})<1e-6)
             q:=hand.offset.rotation
-            turned:=mm.quat_rotate(q,{0,0,1})
+            turned:=mm.quat_rotate(q,{0,0,-1})
             testing.expectf(t,linalg.length(turned-importer.space_direction(basis,{0,1,0}))<1e-5,"a yaw of 90 turns Unreal's X to its Y: %v",turned)
             head:=skeleton.sockets[1]
             testing.expect_value(t,base.text_get(head.name[:]),"head_socket")

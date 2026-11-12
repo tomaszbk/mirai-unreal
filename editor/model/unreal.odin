@@ -25,13 +25,13 @@ import mm "mirai:std/math"
 // skeleton; a package of a Skeleton alone, that skeleton; a package of
 // textures alone, each one a texture (unreal/editor/texture). Unreal's space
 // is centimeters, +Z up, +X forward and +Y right, left-handed, with v from
-// the top of the image: the engine's +X is Unreal's -Y, its +Y Unreal's +Z
-// and its front Unreal's +X.
+// the top of the image: the engine's +X is Unreal's +Y, its +Y Unreal's +Z
+// and its -Z, the front of everything, Unreal's +X.
 
 FORMAT :: importer.Format{
     name="Unreal",
     extensions={0=".uasset"},
-    version=0,
+    version=1,
     space=SPACE,
     sniff=sniff,
     read=read,

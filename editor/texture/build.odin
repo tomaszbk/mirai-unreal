@@ -142,9 +142,9 @@ cube_texel :: proc "contextless" (d:[3]f32,size:int) -> (face,x,y:int) {
 }
 
 // Unreal's world direction of one of Mirai (the inverse of level.SPACE: +X
-// is Unreal's -Y, +Y its +Z and +Z its +X).
+// is Unreal's +Y, +Y its +Z and -Z its +X).
 @(private)
-unreal_direction :: proc "contextless" (m:[3]f32) -> [3]f32 {return {m.z,-m.x,m.y}}
+unreal_direction :: proc "contextless" (m:[3]f32) -> [3]f32 {return {-m.z,m.x,m.y}}
 
 // Faces whose texel sampled with a direction of Mirai's world is the one
 // Unreal samples with the same direction of its world: each texel of a face

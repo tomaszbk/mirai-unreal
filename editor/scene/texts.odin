@@ -8,11 +8,12 @@ import "project:plugins/unreal/editor/level"
 import "mirai:engine/gui"
 import "mirai:host"
 import "mirai:std/base"
+import mm "mirai:std/math"
 import "mirai:ui"
 
 // A TextRenderComponent: its text on a .ui of its own, which a World_Widget
 // shows fixed at the entity of the component, facing where the component
-// faces (Unreal's +X, Mirai's +Z), a line WorldSize tall, in its color and
+// faces (Unreal's +X, Mirai's -Z), a line WorldSize tall, in its color and
 // aligned to the component as Unreal aligns it. "<br>" breaks a line, as in
 // Unreal. Texts alike share their .ui.
 @(private)
@@ -59,7 +60,7 @@ text_add :: proc(c:^Context,a,k:int) -> bool {
     hash=base.hash_combine(hash,u64(align_x))
     id,made:=text_ui(c,text,size,width,height,shown,align_x,hash)
     if !made {return false}
-    e:=component_entity(c,a,k) or_return
+    e:=component_entity(c,a,k,FACING) or_return
     widget:=gui.WORLD_WIDGET_DEFAULT
     widget.asset=id
     widget.size={width,height}
@@ -70,6 +71,10 @@ text_add :: proc(c:^Context,a,k:int) -> bool {
     widget.passive=true
     return component_set(c,e,"World_Widget",&widget)
 }
+
+// A fixed World_Widget shows its face toward +Z of its entity and a text faces
+// the front of its component, -Z: half a turn about the up of Mirai.
+@(private) FACING :: mm.Quat(quaternion(w=0,x=0,y=1,z=0))
 
 // The advance of a character in sizes, wide enough for the text of a line.
 @(private) TEXT_ADVANCE :: f32(0.6)

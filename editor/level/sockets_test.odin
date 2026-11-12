@@ -88,7 +88,7 @@ a_component_on_a_socket_of_a_static_mesh_hangs_from_the_socket :: proc(t:^testin
     testing.expect_value(t,error.code,unreal.Error_Code.None)
     // The socket 50 cm over the root at X 100, turned right: 10 cm along it is Y 10.
     testing.expectf(t,near(bulb.position,point_to_mirai({100,10,50})),"on the socket: %v",bulb.position)
-    testing.expect(t,near(mm.quat_rotate(bulb.rotation,{0,0,1}),{-1,0,0}),"turned with the socket")
+    testing.expect(t,near(mm.quat_rotate(bulb.rotation,{0,0,-1}),{1,0,0}),"turned with the socket")
     shade,_:=component_world(&d,component_named(&d,"Shade"))
     testing.expectf(t,near(shade.position,point_to_mirai({110,0,0})),"a socket the mesh does not have is the component: %v",shade.position)
 }
@@ -159,5 +159,5 @@ a_component_on_the_end_of_a_spring_arm_is_where_the_arm_ends_at_rest :: proc(t:^
     testing.expect_value(t,error.code,unreal.Error_Code.None)
     // Turned right, 200 cm back along it is Y -200, 50 cm up.
     testing.expectf(t,near(end.position,point_to_mirai({100,-200,50})),"%v",end.position)
-    testing.expect(t,near(mm.quat_rotate(end.rotation,{0,0,1}),{-1,0,0}),"looking along the arm")
+    testing.expect(t,near(mm.quat_rotate(end.rotation,{0,0,-1}),{1,0,0}),"looking along the arm")
 }

@@ -25,7 +25,7 @@ import mm "mirai:std/math"
 
 // The camera of a component on an entity under its actor that has the label
 // of the actor, as mirai capture --camera-entity names it. Unreal's camera
-// looks along +X with +Z up; Mirai's along -Z with +Y up.
+// looks along +X with +Z up: Mirai's -Z and +Y.
 @(private)
 camera_add :: proc(c:^Context,a,k:int,cine:bool) -> bool {
     d:=c.d
@@ -54,7 +54,7 @@ camera_add :: proc(c:^Context,a,k:int,cine:bool) -> bool {
     }
     activation,_:=level.enum_of(d,d.actors[a].ref,"AutoActivateForPlayer","Disabled")
     camera.active=activation!="Disabled"
-    e:=component_entity(c,a,k,FACING,{1,1,1},d.actors[a].label) or_return
+    e:=component_entity(c,a,k,scale={1,1,1},name=d.actors[a].label) or_return
     if !component_set(c,e,"Camera",&camera) {return false}
     settings:=struct_chain(d,ref,"PostProcessSettings")
     aperture:=f32(0)

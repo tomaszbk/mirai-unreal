@@ -216,7 +216,7 @@ a_map_becomes_a_scene_of_entities_meshes_lights_and_cameras_in_the_units_of_mira
     rock,rock_parent,found:=entity_named(&scene,"Rock")
     if !testing.expect(t,found && rock_parent==0,"the actor is an entity with its label") {return}
     rock_t,_:=asset.scene_get(&scene,rock,"Transform",core.Transform)
-    testing.expect(t,close3(rock_t.position,{-2,3,1}),"centimetres to metres in Mirai's axes")
+    testing.expect(t,close3(rock_t.position,{2,3,-1}),"centimetres to metres in Mirai's axes")
     testing.expect_value(t,rock_t.scale,[3]f32{2,2,2})
     shown,shown_parent,shown_found:=entity_named(&scene,"StaticMeshComponent0")
     testing.expect(t,shown_found && shown_parent==rock)
@@ -230,7 +230,7 @@ a_map_becomes_a_scene_of_entities_meshes_lights_and_cameras_in_the_units_of_mira
     moss,moss_parent,_:=entity_named(&scene,"Moss")
     testing.expect_value(t,moss_parent,rock)
     moss_local,_:=asset.scene_get(&scene,moss,"Transform",core.Transform)
-    testing.expect(t,close3(moss_local.position,{0,0,0.1}),"10 cm forward of its parent, in the frame of its actor")
+    testing.expect(t,close3(moss_local.position,{0,0,-0.1}),"10 cm forward of its parent, in the frame of its actor")
 
     _,moss_hidden:=asset.scene_get(&scene,moss,"Hidden",render.Hidden)
     testing.expect(t,moss_hidden,"bHiddenInGame hides")
@@ -695,9 +695,9 @@ a_sky_light_of_a_cubemap_lights_from_its_image_turned_as_unreal_turns_it :: proc
         defer asset.asset_close(&file)
         view,view_error:=asset.texture_view(&file,&types)
         testing.expect(t,view_error==.None && view.info.width==2*view.info.height && view.info.layers==1 && .Cube not_in view.info.flags,"a longitude-latitude image of the whole sky")
-        // Looking along Unreal's +X, Unreal shows what its cube has at +Y once turned 90°: Mirai's -X.
+        // Looking along Unreal's +X, Unreal shows what its cube has at +Y once turned 90°: Mirai's +X.
         place,_:=asset.scene_get(&scene,e,"Transform",core.Transform)
-        testing.expect(t,close3(mm.quat_rotate(mm.quat_inverse(place.rotation),{0,0,1}),{-1,0,0}),"the image turns with the entity of the sky")
+        testing.expect(t,close3(mm.quat_rotate(mm.quat_inverse(place.rotation),{0,0,-1}),{1,0,0}),"the image turns with the entity of the sky")
         testing.expect(t,!sky.atmosphere,"the atmosphere does not replace the image")
     }
 }

@@ -205,10 +205,10 @@ line_emit :: proc(m:^Emitter,n:u32,indent:string) {
     case .Texture_Read:
         read:=m.g.textures[node.index].read
         code=fmt.tprintf("%s(\"%s\",%s)",read.function,read.name,operand(m,a))
-    case .Vertex_Normal:code="float3(ctx.vertex_normal.z,-ctx.vertex_normal.x,ctx.vertex_normal.y)"
-    case .Vertex_Tangent:code="float3(ctx.tangent.z,-ctx.tangent.x,ctx.tangent.y)"
+    case .Vertex_Normal:code="float3(-ctx.vertex_normal.z,ctx.vertex_normal.x,ctx.vertex_normal.y)"
+    case .Vertex_Tangent:code="float3(-ctx.tangent.z,ctx.tangent.x,ctx.tangent.y)"
     case .Vertex_Bitangent:code="unreal_bitangent(ctx)"
-    case .Pixel_Normal:code="float3(ctx.normal.z,-ctx.normal.x,ctx.normal.y)"
+    case .Pixel_Normal:code="float3(-ctx.normal.z,ctx.normal.x,ctx.normal.y)"
     case .Vertex_Color:code="ctx.vertex_color"
     case .Object_Position:code="unreal_point(ctx.object_center)"
     case .Actor_Position:code="unreal_point(ctx.object_position)"
@@ -558,22 +558,22 @@ PROGRAM_HELPERS :: `float4 unreal_normal(float4 texel) {
 float3 mirai_bitangent(Mirai_Surface_Context ctx) {return ctx.tangent.w*cross(ctx.vertex_normal,ctx.tangent.xyz);}
 float3 unreal_bitangent(Mirai_Surface_Context ctx) {
     float3 b=mirai_bitangent(ctx);
-    return float3(b.z,-b.x,b.y);
+    return float3(-b.z,b.x,b.y);
 }
 float3 unreal_tangent_to_world(Mirai_Surface_Context ctx, float3 n) {
     return ctx.tangent.xyz*n.x+mirai_bitangent(ctx)*n.y+ctx.vertex_normal*n.z;
 }
-float3 unreal_point(float3 p) {return float3(p.z,-p.x,p.y)*100.0;}
-float3 unreal_vector(float3 v) {return float3(v.z,-v.x,v.y);}
-float3 unreal_to_mirai(float3 v) {return float3(-v.y,v.z,v.x);}
+float3 unreal_point(float3 p) {return float3(-p.z,p.x,p.y)*100.0;}
+float3 unreal_vector(float3 v) {return float3(-v.z,v.x,v.y);}
+float3 unreal_to_mirai(float3 v) {return float3(v.y,v.z,-v.x);}
 // What the origin of the render adds to a place of the world.
 float3 unreal_origin(Mirai_Surface_Context ctx) {return unreal_point(float3(ctx.origin)*ORIGIN_STEP);}
 // Axis i of the object in Unreal's axes: its local X, Y and Z.
-float3 unreal_object_axis(Mirai_Surface_Context ctx, int i) {return unreal_vector(i==0?ctx.object_z:i==1?-ctx.object_x:ctx.object_y);}
+float3 unreal_object_axis(Mirai_Surface_Context ctx, int i) {return unreal_vector(i==0?-ctx.object_z:i==1?ctx.object_x:ctx.object_y);}
 // The low (0) or high corner of the bounds of the object in its own space, in Unreal's axes.
 float3 unreal_object_bounds(Mirai_Surface_Context ctx, int i) {
     float3 low=ctx.object_low, high=ctx.object_high;
-    return i==0?float3(low.z,-high.x,low.y)*100.0:float3(high.z,-low.x,high.y)*100.0;
+    return i==0?float3(-high.z,low.x,low.y)*100.0:float3(-low.z,high.x,high.y)*100.0;
 }
 void unreal_specular(inout Mirai_Surface s, float specular) {
     float f0=0.08*saturate(specular);

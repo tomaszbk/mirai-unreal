@@ -228,8 +228,8 @@ foliage_instances_and_types_come_out_in_mirai_space_and_match_their_component ::
         testing.expect_value(t,type.cull,[2]f32{0,50})
         testing.expect(t,!type.casts_shadow && type.collides && type.random_yaw && type.align_to_normal)
         first:=f.instances[0]
-        testing.expect(t,linalg.length(first.transform.position-[3]f32{-2,3,1})<1e-4)
-        testing.expect(t,linalg.length(mm.quat_rotate(first.transform.rotation,{0,0,1})-[3]f32{-1,0,0})<1e-4,"a yaw of 90 turns forward to the right")
+        testing.expect(t,linalg.length(first.transform.position-[3]f32{2,3,-1})<1e-4)
+        testing.expect(t,linalg.length(mm.quat_rotate(first.transform.rotation,{0,0,-1})-[3]f32{1,0,0})<1e-4,"a yaw of 90 turns forward to the right")
         testing.expect(t,first.based && first.base>=0 && d.components[first.base].name=="StaticMeshComponent0")
         // 10 cm under its base along its up, twice its size: 0.2 m.
         testing.expect(t,abs(first.ground-(-0.2))<1e-5)

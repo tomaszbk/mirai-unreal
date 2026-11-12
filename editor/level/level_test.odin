@@ -28,9 +28,9 @@ unreal_space_is_a_reflection_whose_rotations_turn_what_the_rotator_matrix_turns 
     basis,ok:=importer.space_basis(SPACE)
     testing.expect(t,ok && basis.mirrored,"Unreal is left-handed: the change of basis reflects")
     moved,_:=transform_to_mirai({100,200,300},{0,0,0},{1,1,1})
-    testing.expect(t,close3(moved.position,{-2,3,1}),"centimetres become metres, X forward is +Z, Y right is -X, Z up is +Y")
+    testing.expect(t,close3(moved.position,{2,3,-1}),"centimetres become metres, X forward is -Z, Y right is +X, Z up is +Y")
     turned,_:=transform_to_mirai({},{0,90,0},{1,1,1})
-    testing.expect(t,close3(mm.quat_rotate(turned.rotation,{0,0,1}),{-1,0,0}),"a yaw of 90 turns forward to the right")
+    testing.expect(t,close3(mm.quat_rotate(turned.rotation,{0,0,-1}),{1,0,0}),"a yaw of 90 turns forward to the right")
     rotators:=[?][3]f64{{0,0,0},{30,0,0},{0,45,0},{0,0,60},{20,-130,75},{-89,10,170},{400,-725,33}}
     vectors:=[?][3]f64{{1,0,0},{0,1,0},{0,0,1},{0.3,-2,5}}
     for r in rotators {
@@ -160,10 +160,10 @@ level_actors_components_and_transforms_follow_attachment_and_archetypes :: proc(
         testing.expect_value(t,d.components[moss].socket,"Top")
         world,placed,world_error:=actor_world(&d,0)
         testing.expect(t,placed && world_error.code==.None)
-        testing.expect(t,close3(world.position,{0,0,1}))
+        testing.expect(t,close3(world.position,{0,0,-1}))
         moss_world,_:=component_world(&d,moss)
         // 10 cm forward of a root turned to the right and scaled twice: 20 cm to the right.
-        testing.expect(t,close3(moss_world.position,{-0.2,0,1}),"the child goes through the turn and scale of its parent")
+        testing.expect(t,close3(moss_world.position,{0.2,0,-1}),"the child goes through the turn and scale of its parent")
         testing.expect_value(t,moss_world.scale,[3]f32{1,1,1})
         lamp:=d.actors[1]
         testing.expect_value(t,lamp.label,"BP_Lamp_2")
@@ -178,7 +178,7 @@ level_actors_components_and_transforms_follow_attachment_and_archetypes :: proc(
         native,_:=property(&d,d.components[bulb].ref,"RelativeRotation")
         testing.expect_value(t,native.origin,Origin.Native)
         bulb_world,_:=component_world(&d,bulb)
-        testing.expect(t,close3(bulb_world.position,{-5,2.5,0}),"the Blueprint's location of the bulb over the lamp's root")
+        testing.expect(t,close3(bulb_world.position,{5,2.5,0}),"the Blueprint's location of the bulb over the lamp's root")
         shade_relative,shade_error:=component_relative(&d,lamp.first_component+2)
         testing.expect_value(t,shade_error.code,unreal.Error_Code.None)
         testing.expect_value(t,shade_relative.location,[3]f64{0,0,300})
@@ -232,7 +232,7 @@ a_component_that_keeps_what_its_native_actor_constructor_sets_takes_it :: proc(t
     r,_:=component_relative(&d,d.actors[0].root)
     testing.expect_value(t,r.rotation,[3]f64{-90,0,0})
     world_t,_,_:=actor_world(&d,0)
-    testing.expect(t,close3(mm.quat_rotate(world_t.rotation,{0,0,1}),{0,-1,0}),"a spot light points down")
+    testing.expect(t,close3(mm.quat_rotate(world_t.rotation,{0,0,-1}),{0,-1,0}),"a spot light points down")
 }
 
 // A Blueprint that changes a component it inherits keeps a template for it

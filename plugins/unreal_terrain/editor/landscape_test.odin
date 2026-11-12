@@ -198,7 +198,7 @@ a_landscape_of_unequal_scales_is_a_square_heightfield_on_a_stretched_entity :: p
     testing.expect_value(t,s.cell,f32(1))
     testing.expect_value(t,result.transform.scale,[3]f32{3,1,1})
     for y in 0..=2 {for x in 0..=4 {
-        got:=mm.transform_point(result.transform,terrain.source_point(&s,{2-y,0,x}))
+        got:=mm.transform_point(result.transform,terrain.source_point(&s,{y,0,4-x}))
         expected:=level.point_to_mirai({f64(1000+100*x),f64(2000+300*y),f64(300+50*(x+10*y))})
         testing.expectf(t,abs(got.x-expected.x)<1e-3 && abs(got.y-expected.y)<1e-3 && abs(got.z-expected.z)<1e-3,"vertex %d,%d: %v, expected %v",x,y,got,expected)
     }}

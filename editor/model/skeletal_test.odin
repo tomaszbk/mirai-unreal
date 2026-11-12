@@ -44,7 +44,7 @@ a_skeletal_mesh_is_a_skinned_mesh_of_its_reference_skeleton_in_the_engine_space 
         testing.expect(t,near3(spine.translation,{0,1,0}),"the spine in meters and the engine's axes")
         q:=spine.rotation
         testing.expectf(t,abs(q.x)<1e-5 && abs(q.z)<1e-5 && abs(q.y+0.70710677)<1e-5 && abs(q.w-0.70710677)<1e-5,"the spine turned about the engine's Y: %v",q)
-        testing.expect(t,near3(skeleton.bones[2].translation,{0,0,0.5}),"50 cm along Unreal's X is the engine's front")
+        testing.expect(t,near3(skeleton.bones[2].translation,{0,0,-0.5}),"50 cm along Unreal's X is the engine's front")
         if !testing.expect_value(t,len(model.nodes),1) {continue}
         testing.expect_value(t,model.nodes[0].mesh,0)
         mesh:=&model.meshes[0]
@@ -63,8 +63,8 @@ a_skeletal_mesh_is_a_skinned_mesh_of_its_reference_skeleton_in_the_engine_space 
             for row in 0..<4 {for column in 0..<4 {worst=max(worst,abs(product[row,column]-(row==column?1:0)))}}
             testing.expectf(t,worst<1e-5,"%v: joint %d: the inverse bind undoes its bone (%v)",layout,joint.node,worst)
         }
-        // Unreal (100,0,100) is the engine's (0,1,1): half on the spine, half on the hand.
-        half:=vertex_at(mesh,{0,1,1})
+        // Unreal (100,0,100) is the engine's (0,1,-1): half on the spine, half on the hand.
+        half:=vertex_at(mesh,{0,1,-1})
         if testing.expect(t,half>=0,"the vertex between spine and hand") {
             skin:=mesh.skin[half]
             weights:map[u16]f32
@@ -73,7 +73,7 @@ a_skeletal_mesh_is_a_skinned_mesh_of_its_reference_skeleton_in_the_engine_space 
             testing.expectf(t,abs(weights[1]-0.5)<0.01 && abs(weights[2]-0.5)<0.01,"%v",skin)
         }
         // Unreal (0,100,100): the eight largest of its influences, weighing 255 together.
-        many:=vertex_at(mesh,{-1,1,0})
+        many:=vertex_at(mesh,{1,1,0})
         if testing.expect(t,many>=0,"the vertex of many influences") {
             skin:=mesh.skin[many]
             total:int

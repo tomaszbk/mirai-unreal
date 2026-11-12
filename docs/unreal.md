@@ -233,7 +233,7 @@ only textures, each a `.tex` with its layers, faces and the precision of its sou
 arrives with its cause and offset.
 
 - **Space.** Centimeters, +Z up, +X forward, +Y right and left-handed, with V from the top: the
-  engine's +X is Unreal's -Y, its +Y is +Z and its front is +X. It is a mirror: Unreal's
+  engine's +X is Unreal's +Y, its +Y is +Z and its -Z, the front of everything, is +X. It is a mirror: Unreal's
   triangles, which run opposite to its axes, enter the builder with inverted corners and the
   mirror turns them again.
 - **Slots.** One per `StaticMaterials` slot that a section uses: its id is the slot index plus one
@@ -520,8 +520,8 @@ names (classes, properties) stay in each type's translators.
 `landscapes_read` gives a `Landscape` per `LandscapeGuid`: that guid's proxies and their
 components, in a grid.
 
-- **Grid.** The rectangle of the `SectionBase`s. Mirai's x runs along Unreal's -Y and z along its
-  X, and each Heightfield cell is split along the same diagonal Unreal uses in its quad.
+- **Grid.** The rectangle of the `SectionBase`s. Mirai's x runs along Unreal's +Y and z along its
+  -X, and each Heightfield cell is split along the same diagonal Unreal uses in its quad.
 - **Heights.** From `HeightmapTexture` (16 bits in R and G) with its offset and subsections, which
   repeat the edge vertices, in meters by the actor's Z scale; a shared texture is decoded once.
 - **Spacing.** `spacing` is the actor's X scale (along Mirai's z) and `transform`, the grid's
@@ -655,8 +655,8 @@ entity, the imported meshes and the time.
     Unreal's old computation;
   - the color is linear `LightColor` times `ColorTemperatureToLinear` with `bUseTemperature`; a
     channel above one goes to the intensity. `AttenuationRadius` is `range` and `SourceRadius`,
-    `radius`. Unreal lights toward the component's +X and Mirai toward -Z: the entity turns half a
-    turn in Y and has scale one. False `bAffectsWorld` leaves the component off.
+    `radius`. Unreal lights toward the component's +X, Mirai's -Z, and the entity has scale one.
+    False `bAffectsWorld` leaves the component off.
   - Warned, with count: no inverse-square falloff (candelas that give the same at half the radius),
     `SourceLength`, IES, light functions, no shadows and cones outside 1° to 89°.
   - Mirai lights with one sun: with several directionals the brightest stays on.
@@ -685,7 +685,7 @@ entity, the imported meshes and the time.
   layers are the terrain's), a Landscape's Nanite and proxy components, the PCG graph and a packed
   level actor's level (its instances show it) are omitted without a warning.
 - **Texts.** `TextRenderComponent` is a fixed `World_Widget` on the component's entity, facing
-  where the text faces in Unreal (its +X, Mirai's +Z), with its own `.ui` in `levels/<map>/`: a
+  where the text faces in Unreal (its +X, Mirai's -Z), with its own `.ui` in `levels/<map>/`: a
   line measures `WorldSize` times `YScale`, in its color, aligned as Unreal aligns it and with
   `<br>` as line break; equal texts share the `.ui`. `TextProperty` is read as the text it shows
   in the source culture (`None` and `Base` histories).

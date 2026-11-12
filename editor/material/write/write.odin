@@ -443,7 +443,7 @@ model_of :: proc(lib:^material.Library,source:string,allocator:mem.Allocator) ->
     model.source_size=u64(len(bytes))
     model.source_hash=base.hash64(bytes)
     model.format="Unreal"
-    model.version=importer.import_version(0)
+    model.version=importer.import_version(1)
     return
 }
 

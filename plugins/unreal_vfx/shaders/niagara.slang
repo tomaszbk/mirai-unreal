@@ -2,8 +2,8 @@
 // for the Vfx programs the import translates from it (vfx/editor,
 // niagara_program.odin): the state of the thread that runs a script, its
 // random numbers and helpers, and the space of Unreal the scripts compute
-// in: centimetres, Z up, Mirai's x is Unreal's -y, Mirai's y its z and
-// Mirai's z its x.
+// in: centimetres, Z up, Mirai's x is Unreal's y, Mirai's y its z and
+// Mirai's z its -x.
 #ifndef MIRAI_NIAGARA_SLANG
 #define MIRAI_NIAGARA_SLANG
 #include "mirai_vfx.slang"
@@ -94,20 +94,20 @@ static Niagara_View View;
 static Niagara_View PrimaryView;
 
 // Unreal's centimetres and axes, and back.
-float3 niagara_point(float3 mirai) { return float3(mirai.z, -mirai.x, mirai.y) * 100.0; }
-float3 niagara_vector(float3 mirai) { return float3(mirai.z, -mirai.x, mirai.y) * 100.0; }
-float3 niagara_direction(float3 mirai) { return float3(mirai.z, -mirai.x, mirai.y); }
-float3 mirai_point(float3 unreal) { return float3(-unreal.y, unreal.z, unreal.x) * 0.01; }
-float3 mirai_vector(float3 unreal) { return float3(-unreal.y, unreal.z, unreal.x) * 0.01; }
-float3 mirai_direction(float3 unreal) { return float3(-unreal.y, unreal.z, unreal.x); }
+float3 niagara_point(float3 mirai) { return float3(-mirai.z, mirai.x, mirai.y) * 100.0; }
+float3 niagara_vector(float3 mirai) { return float3(-mirai.z, mirai.x, mirai.y) * 100.0; }
+float3 niagara_direction(float3 mirai) { return float3(-mirai.z, mirai.x, mirai.y); }
+float3 mirai_point(float3 unreal) { return float3(unreal.y, unreal.z, -unreal.x) * 0.01; }
+float3 mirai_vector(float3 unreal) { return float3(unreal.y, unreal.z, -unreal.x) * 0.01; }
+float3 mirai_direction(float3 unreal) { return float3(unreal.y, unreal.z, -unreal.x); }
 
 // The transform of the emitter (Mirai rows) as a matrix of Unreal that takes
 // a point of the system in Unreal's centimetres to the world (row vectors,
 // as Unreal's HLSL multiplies them: mul(p, M)).
 float4x4 niagara_local_to_world(float4 world[3]) {
     float3 o = niagara_point(float3(world[0].w, world[1].w, world[2].w));
-    float3 x = niagara_direction(float3(world[0].z, world[1].z, world[2].z));
-    float3 y = niagara_direction(-float3(world[0].x, world[1].x, world[2].x));
+    float3 x = niagara_direction(-float3(world[0].z, world[1].z, world[2].z));
+    float3 y = niagara_direction(float3(world[0].x, world[1].x, world[2].x));
     float3 z = niagara_direction(float3(world[0].y, world[1].y, world[2].y));
     return float4x4(float4(x, 0.0), float4(y, 0.0), float4(z, 0.0), float4(o, 1.0));
 }

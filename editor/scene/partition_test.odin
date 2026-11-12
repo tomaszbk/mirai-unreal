@@ -164,7 +164,7 @@ a_map_of_world_partition_is_a_scene_that_references_a_section_for_each_cell :: p
     if testing.expect(t,found) {
         local,_:=asset.scene_get(&section,rock,"Transform",core.Transform)
         world:=local.position+placed.position
-        testing.expectf(t,linalg.length(world-[3]f32{-2,3,1})<1e-3,"the rock is where it is in the world through its section: %v",world)
+        testing.expectf(t,linalg.length(world-[3]f32{2,3,-1})<1e-3,"the rock is where it is in the world through its section: %v",world)
         // The box of the cell holds the rock and the instances of the grass.
         testing.expect(t,abs(local.position.x)<=reference.extents.x+1e-3 && abs(local.position.z)<=reference.extents.z+1e-3)
     }

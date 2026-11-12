@@ -171,14 +171,14 @@ fortnite_version :: proc(c:^Context,ref:level.Ref) -> i32 {
 
 
 // The light of a component on an entity under its actor: it shines toward
-// the -Z of its entity, where Unreal's shines along +X, and takes its shape
-// from the scale of the entity, which Unreal's does not have.
+// the -Z of its entity, the +X of Unreal, and takes its shape from the scale
+// of the entity, which Unreal's does not have.
 light_add :: proc(c:^Context,actor,component:int,kind:Light_Kind) -> bool {
     u:=unreal_light(c,component,kind)
     m,approximated:=light_convert(u)
     scale:=[3]f32{1,1,1}
     if kind==.Rect {scale={max(m.size.x,1e-3),max(m.size.y,1e-3),1}}
-    e,ok:=component_entity(c,actor,component,FACING,scale)
+    e,ok:=component_entity(c,actor,component,scale=scale)
     if !ok {return false}
     name:=c.d.actors[actor].label
     value:=m.value
@@ -219,7 +219,3 @@ light_add :: proc(c:^Context,actor,component:int,kind:Light_Kind) -> bool {
 }
 
 LIGHT_NAMES :: [Light_Kind]string{.Point="Point_Light",.Spot="Spot_Light",.Rect="Rect_Light",.Directional="Sun"}
-
-// What turns Unreal's +X (Mirai's +Z), which lights and cameras face, to the
-// -Z that Mirai's face, keeping up as up.
-FACING :: mm.Quat(quaternion(w=0,x=0,y=1,z=0))

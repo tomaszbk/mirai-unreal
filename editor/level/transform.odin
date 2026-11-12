@@ -8,10 +8,10 @@ import unreal "project:plugins/unreal/editor/package"
 import mm "mirai:std/math"
 
 // Unreal's space: centimetres, +X forward, +Y right, +Z up, left-handed; v
-// from the top of the image. Mirai's +Z (the front of a model) is Unreal's
-// +X, +X (its left) is -Y and +Y is up: a reflection, baked as cook/import
+// from the top of the image. Mirai's -Z (the front of everything) is Unreal's
+// +X, +X (the right) is +Y and +Y is up: a reflection, baked as cook/import
 // bakes every space.
-SPACE :: importer.Source_Space{meters_per_unit=0.01,axes={.Negative_Y,.Z,.X},v_origin=.Top}
+SPACE :: importer.Source_Space{meters_per_unit=0.01,axes={.Y,.Z,.Negative_X},v_origin=.Top}
 
 // The relative transform of a scene component as Unreal keeps it:
 // centimetres, degrees of Pitch, Yaw and Roll, and which parts are absolute.

@@ -14,8 +14,8 @@ import mm "mirai:std/math"
 // every ALandscape and ALandscapeProxy of one LandscapeGuid; their
 // components tile one grid of quads.
 //
-// Mirai's x runs along Unreal's -Y and z along +X, so sample (i,j) of the
-// grid is the vertex X=min.x+j, Y=max.y-i of Unreal, and each cell is split
+// Mirai's x runs along Unreal's +Y and z along -X, so sample (i,j) of the
+// grid is the vertex X=max.x-j, Y=min.y+i of Unreal, and each cell is split
 // along the same diagonal Unreal splits its quad with (i00,i11).
 
 // A paint layer: the LandscapeLayerInfoObject its weights belong to.
@@ -199,13 +199,13 @@ landscape_read :: proc(r:^Reader,guid:unreal.Guid) -> (l:Landscape,error:unreal.
         high={max(high.x,c.base.x+c.size_quads),max(high.y,c.base.y+c.size_quads)}
     }
     vertices:=[2]int{high.x-low.x+1,high.y-low.y+1}
-    // Mirai x along Unreal's Y, z along X.
+    // Mirai x along Unreal's Y, z along -X.
     l.samples={vertices.y,vertices.x}
     if l.samples.x>1<<16 || l.samples.y>1<<16 {return l,{.Limit,0,"landscape grid size"}}
     l.components=len(components)
     world,_,world_error:=level.actor_world(d,l.actor)
     if world_error.code!=.None {return l,world_error}
-    // Mirai's scale of the actor: x is Unreal's Y, y its Z, z its X.
+    // Mirai's scale of the actor: x along Unreal's Y, y its Z, z its X.
     if !(world.scale.x>0) || !(world.scale.z>0) {
         return l,{.Unsupported_Value,0,"landscape needs a positive scale along X and Y"}
     }
@@ -256,8 +256,8 @@ landscape_read :: proc(r:^Reader,guid:unreal.Guid) -> (l:Landscape,error:unreal.
     cells:=[2]int{l.samples.x-1,l.samples.y-1}
     hole_of :: proc(covered:[]bool,visibility:[]u8,vertices:[2]int,l:^Landscape,qx,qy:int) -> bool {
         if !covered[qx+(vertices.x-1)*qy] {return true}
-        // The weight of the first vertex of the quad: Unreal's (qx,qy) is Mirai's (max.y-qy, qx).
-        i,j:=vertices.y-1-qy,qx
+        // The weight of the first vertex of the quad: Unreal's (qx,qy) is Mirai's (qy, max.x-qx).
+        i,j:=qy,vertices.x-1-qx
         return visibility[i+l.samples.x*j]>HOLE_WEIGHT
     }
     for qy in 0..<vertices.y-1 {for qx in 0..<vertices.x-1 {
@@ -269,8 +269,8 @@ landscape_read :: proc(r:^Reader,guid:unreal.Guid) -> (l:Landscape,error:unreal.
         if allocation_error!=nil {return l,{.Out_Of_Memory,0,"landscape holes"}}
         for qy in 0..<vertices.y-1 {for qx in 0..<vertices.x-1 {
             if !hole_of(covered,visibility,vertices,&l,qx,qy) {continue}
-            // Quad (qx,qy) spans Mirai's i from max.y-qy-1 to max.y-qy.
-            l.holes[(vertices.y-2-qy)+cells.x*qx]=1
+            // Quad (qx,qy) spans Mirai's j from max.x-qx-1 to max.x-qx.
+            l.holes[qy+cells.x*(vertices.x-2-qx)]=1
         }}
     }
     return
@@ -422,7 +422,7 @@ component_heights :: proc(r:^Reader,l:^Landscape,c:Component,low,high:[2]int,hei
         texel:=pixels[(tx+ty*width)*4:]
         value:=int(texel[0])<<8|int(texel[1])
         x,y:=c.base.x+vx-low.x,c.base.y+vy-low.y
-        i,j:=(high.y-low.y)-y,x
+        i,j:=y,(high.x-low.x)-x
         l.heights[i+l.samples.x*j]=f32(value-HEIGHT_MID)*height_scale
     }}
     for qy in 0..<c.size_quads {for qx in 0..<c.size_quads {
@@ -450,7 +450,7 @@ component_weights :: proc(r:^Reader,l:^Landscape,c:Component,low,high:[2]int,vis
         for vy in 0..=c.size_quads {for vx in 0..=c.size_quads {
             w:=pixels[(texel_of(c,vx)+texel_of(c,vy)*width)*4+a.channel]
             x,y:=c.base.x+vx-low.x,c.base.y+vy-low.y
-            at:=(high.y-low.y)-y+l.samples.x*x
+            at:=y+l.samples.x*((high.x-low.x)-x)
             if target<0 {visibility[at]=w} else if len(l.weights)>0 {l.weights[target*count+at]=w}
         }}
     }

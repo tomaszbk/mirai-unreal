@@ -287,18 +287,18 @@ cell_box :: proc(g:Grid,c:Cell,content:mm.Aabb) -> mm.Aabb {
 }
 
 // A box of Mirai (metres) in Unreal's space (centimetres): Unreal's X is
-// Mirai's Z, its Y Mirai's -X and its Z Mirai's Y.
+// Mirai's -Z, its Y Mirai's X and its Z Mirai's Y.
 ue_box :: proc "contextless" (box:mm.Aabb) -> (b:[2][3]f64) {
-    b[0]={f64(box.min.z)*100,-f64(box.max.x)*100,f64(box.min.y)*100}
-    b[1]={f64(box.max.z)*100,-f64(box.min.x)*100,f64(box.max.y)*100}
+    b[0]={-f64(box.max.z)*100,f64(box.min.x)*100,f64(box.min.y)*100}
+    b[1]={-f64(box.min.z)*100,f64(box.max.x)*100,f64(box.max.y)*100}
     return
 }
 
 // A box of Unreal (centimetres) in Mirai's space (metres).
 mirai_box :: proc "contextless" (b:[2][3]f64) -> mm.Aabb {
     return {
-        {f32(-b[1].y/100),f32(b[0].z/100),f32(b[0].x/100)},
-        {f32(-b[0].y/100),f32(b[1].z/100),f32(b[1].x/100)},
+        {f32(b[0].y/100),f32(b[0].z/100),f32(-b[1].x/100)},
+        {f32(b[1].y/100),f32(b[1].z/100),f32(-b[0].x/100)},
     }
 }
 

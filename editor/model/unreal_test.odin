@@ -72,9 +72,9 @@ a_static_mesh_is_a_mesh_in_meters_and_the_engine_axes_with_a_slot_per_material :
         testing.expect_value(t,mesh.slots[1].label,"Metal")
         testing.expect_value(t,model.materials[mesh.slots[0].material].name,"Wood")
         testing.expect_value(t,model.materials[mesh.slots[1].material].name,"Metal")
-        // Forward (+X) is the engine's front (+Z), right (+Y) its -X, up (+Z) its +Y.
-        testing.expect_value(t,mesh.bounds_min,[3]f32{-1,0,0})
-        testing.expect_value(t,mesh.bounds_max,[3]f32{0,0,1})
+        // Forward (+X) is the engine's front (-Z), right (+Y) its +X, up (+Z) its +Y.
+        testing.expect_value(t,mesh.bounds_min,[3]f32{0,0,-1})
+        testing.expect_value(t,mesh.bounds_max,[3]f32{1,0,0})
         for i in 0..<len(mesh.indices)/3 {
             c:=importer.mesh_triangle(mesh,i)
             face:=linalg.cross(c[1].position-c[0].position,c[2].position-c[0].position)
@@ -96,7 +96,7 @@ a_static_mesh_is_a_mesh_in_meters_and_the_engine_axes_with_a_slot_per_material :
 the_unreal_space_turns_axes_and_mirrors :: proc(t:^testing.T) {
     basis,ok:=importer.space_basis(SPACE)
     testing.expect(t,ok && basis.mirrored)
-    testing.expect_value(t,SPACE.axes,[3]importer.Axis{.Negative_Y,.Z,.X})
+    testing.expect_value(t,SPACE.axes,[3]importer.Axis{.Y,.Z,.Negative_X})
 }
 
 @(test)
@@ -153,10 +153,10 @@ the_simple_collision_of_a_mesh_is_its_colliders_unless_the_settings_force_theirs
     collision:=model.meshes[0].collision
     if !testing.expect_value(t,len(collision.colliders),4) {return}
     near :: proc(a,b:[3]f32) -> bool {return linalg.length(a-b)<1e-5}
-    // Unreal's +X is the engine's +Z, its +Y the engine's -X and its +Z the engine's +Y.
+    // Unreal's +X is the engine's -Z, its +Y the engine's +X and its +Z the engine's +Y.
     box:=collision.colliders[0]
     testing.expect_value(t,box.kind,asset.Collider_Kind.Box)
-    testing.expect(t,near(box.center,{0,0,1}),"the box is 1 m forward")
+    testing.expect(t,near(box.center,{0,0,-1}),"the box is 1 m forward")
     testing.expect(t,near(box.size,{0.5,0.25,1}),"its half sizes follow the axes they become")
     testing.expect(t,near(mm.quat_rotate(box.rotation,{1,0,0}),{1,0,0}),"a box without rotation keeps the engine's axes")
     sphere:=collision.colliders[1]
@@ -167,7 +167,7 @@ the_simple_collision_of_a_mesh_is_its_colliders_unless_the_settings_force_theirs
     testing.expectf(t,near(axis,{0,1,0}) || near(axis,{0,-1,0}),"the capsule of Unreal's Z lies along the engine's Y: %v",axis)
     hull:=collision.colliders[3]
     testing.expect(t,hull.kind==.Hull && hull.point_count==4,"a convex is a hull of its points")
-    testing.expect(t,near(collision.points[hull.first_point+1],{-1,0,0}),"Unreal's +Y is the engine's -X")
+    testing.expect(t,near(collision.points[hull.first_point+1],{1,0,0}),"Unreal's +Y is the engine's +X")
 
     cooked:importer.Cooked_Mesh
     importer.mesh_cook(&model.meshes[0],{collision=.Mesh},{},&cooked,context.allocator)

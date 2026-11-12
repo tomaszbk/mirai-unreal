@@ -39,9 +39,9 @@ an_actor_goes_to_the_cell_of_its_center_at_the_level_its_size_asks :: proc(t:^te
     low,high:=cell_bounds({-1,0,0},25600,0,{12800,0,0})
     testing.expect_value(t,low,[3]f64{-12800,0,0})
     testing.expect_value(t,high,[3]f64{12800,25600,25600})
-    // Unreal's X is Mirai's Z, its Y Mirai's -X, its Z Mirai's Y.
+    // Unreal's X is Mirai's -Z, its Y Mirai's X, its Z Mirai's Y.
     box:=mirai_box({{100,200,300},{400,600,900}})
-    testing.expect_value(t,box,mm.Aabb{{-6,3,1},{-2,9,4}})
+    testing.expect_value(t,box,mm.Aabb{{2,3,-4},{6,9,-1}})
     back:=ue_box(box)
     testing.expect_value(t,back,[2][3]f64{{100,200,300},{400,600,900}})
 }
@@ -147,11 +147,11 @@ a_map_of_world_partition_is_the_cells_of_its_grid_and_what_loads_with_it :: proc
     testing.expect_value(t,partition.actor_cells[0],rock)
     testing.expect_value(t,partition.actor_cells[1],rock)
     testing.expect_value(t,partition.cells[rock].actors,2)
-    testing.expect(t,close_box(partition.cells[rock].box,{{-250,0,1},{-1,250,250}}),"two points, within the cell")
+    testing.expect(t,close_box(partition.cells[rock].box,{{1,0,-250},{250,250,-1}}),"two points, within the cell")
     testing.expect_value(t,partition.actor_cells[2],cell_named(&partition,"MainGrid_L0_X2_Y-1_Z0"))
     wall:=cell_named(&partition,"MainGrid_L1_X0_Y0_Z0")
     testing.expect_value(t,partition.actor_cells[3],wall)
-    testing.expect(t,close_box(partition.cells[wall].box,{{-0.5,-0.5,0},{0.5,0.5,400}}),"above level 0 a cell is what it holds")
+    testing.expect(t,close_box(partition.cells[wall].box,{{-0.5,-0.5,-400},{0.5,0.5,0}}),"above level 0 a cell is what it holds")
     testing.expect_value(t,partition.actor_cells[4],-1)
     testing.expect(t,!partition.spatial[4],"a light loads with the map, as its constructor says")
     testing.expect_value(t,partition.actor_cells[5],-1)
