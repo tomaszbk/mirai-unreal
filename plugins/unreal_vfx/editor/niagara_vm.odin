@@ -85,7 +85,7 @@ niagara_type_of :: proc(p:^unreal.Package,definition:^unreal.Property_List) -> (
             break
         }
     }
-    // EUnderlyingType: a class is an object, an enum an integer.
+    // The underlying type: a class is an object, an enum an integer.
     if underlying==1 {return Niagara_Type{name=name,object=true},true}
     type,ok=niagara_type_named(underlying==3?"NiagaraInt32":name)
     type.name=name
@@ -123,7 +123,7 @@ niagara_type_named :: proc(name:string) -> (type:Niagara_Type,ok:bool) {
     return {},false
 }
 
-// The variables of an array of FNiagaraVariableBase, or of FNiagaraVariable
+// The variables of an array of NiagaraVariableBase, or of NiagaraVariable
 // with their bytes: natively a name, a type definition as tagged properties
 // and, with data, the size of the bytes and the bytes. A variable of a type
 // the VM does not know has no components; false for a malformed array.
@@ -159,7 +159,7 @@ niagara_variables :: proc(p:^unreal.Package,property:^unreal.Property,with_data:
     return out[:],true
 }
 
-// The variables of an FNiagaraParameters (its Parameters).
+// The variables of a NiagaraParameters (its Parameters).
 @(private)
 niagara_parameters_of :: proc(p:^unreal.Package,property:^unreal.Property) -> (list:[]Niagara_Variable,ok:bool) {
     if property==nil {return nil,true}
@@ -234,7 +234,7 @@ niagara_vm_read :: proc(d:^level.Document,script:level.Ref,vm_fields:^Struct_Fie
 
 // The parameters of the instance of the system a script of the system reads
 // as its data set 1: the one entry of its DataSetToParameters, a map of a
-// name to an FNiagaraParameters.
+// name to a NiagaraParameters.
 @(private)
 niagara_instance_parameters :: proc(p:^unreal.Package,property:^unreal.Property) -> []Niagara_Variable {
     raw,error:=unreal.span_bytes(p,property.data)
@@ -398,8 +398,8 @@ niagara_vm_call :: proc(w:^Niagara_Vm_Writer,fn:^Niagara_Vm_Function,operands:[]
 }
 
 // A value of the engine in the table of constants of the VM: the structs
-// FNiagaraGlobalParameters, FNiagaraSystemParameters, FNiagaraOwnerParameters
-// and FNiagaraEmitterParameters, by their offsets.
+// NiagaraGlobalParameters, NiagaraSystemParameters, NiagaraOwnerParameters
+// and NiagaraEmitterParameters, by their offsets.
 @(private)
 Niagara_Engine_Value :: struct {name,type:string,offset:int}
 
@@ -427,7 +427,7 @@ NIAGARA_ENGINE_EMITTER :: [?]Niagara_Engine_Value{
     {"Engine.Emitter.SpawnCountScale","NiagaraFloat",616},{"Emitter.Age","NiagaraFloat",620},
     {"Emitter.RandomSeed","NiagaraInt32",624},{"Engine.Emitter.InstanceSeed","NiagaraInt32",628},
 }
-NIAGARA_ENGINE_GLOBAL_BYTES :: 32   // sizeof(FNiagaraGlobalParameters)
+NIAGARA_ENGINE_GLOBAL_BYTES :: 32   // the bytes of NiagaraGlobalParameters
 NIAGARA_ENGINE_EMITTER_BYTES :: 640 // the four structs the scripts of an emitter see
 
 // A variable at its offset in the table of constants of a script: the values
@@ -638,7 +638,7 @@ niagara_vm_output :: proc(w:^Niagara_Vm_Writer,set,index:int,register:Niagara_Re
     if !slice.contains(w.writes[:],line) {append(&w.writes,line)}
 }
 
-// The operations of the VectorVM bytecode a compilation keeps (EVectorVMOp up
+// The operations of the VectorVM bytecode a compilation keeps (up
 // to iasf; the merged ones after it are the optimizer's).
 @(private)
 Niagara_Op :: enum u8 {

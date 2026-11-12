@@ -168,7 +168,7 @@ which uses `shaders/unreal_noise.slang`.
   (`unreal.user_enum_entries`), which is what selects: the `NewEnumeratorN` are not values. The
   stored values of the other branches do not count. Only a module whose graph lacks the switch
   (saved before the module had it) takes the range and warns. What dynamic inputs wire is not read.
-- **Lightweight emitters** (`UNiagaraStatelessEmitter`, `unreal_niagara_stateless.odin`): their
+- **Lightweight emitters** (`NiagaraStatelessEmitter`, `unreal_niagara_stateless.odin`): their
   cycle, spawns and module properties, without scripts. A distribution is a constant or a range
   (`Min`, `Max`), or values along the lifetime (`Values` over `ValuesTimeRange`); what the package
   omits is the module constructor's; one bound to a `User.` parameter takes the value the system

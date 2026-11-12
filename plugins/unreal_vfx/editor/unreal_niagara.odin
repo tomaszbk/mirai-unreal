@@ -241,7 +241,7 @@ struct_field_floats :: proc(d:^level.Document,ref:level.Ref,name:string) -> []f3
     return out
 }
 
-// FNiagaraParameterStore: its SortedParameterOffsets, natively a name, a
+// NiagaraParameterStore: its SortedParameterOffsets, natively a name, a
 // type definition as tagged properties and an offset into ParameterData,
 // where the value lies as its type lays it out. Only the inputs of modules
 // ("Constants.<emitter>.<module>.<input>") are kept, as "<module>.<input>",

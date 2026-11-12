@@ -28,7 +28,7 @@ Niagara_Interface :: struct {
 
 Niagara_Iteration :: enum u8 {Particles,Interface,Direct}
 
-// A simulation stage of a GPU script (FSimulationStageMetaData).
+// A simulation stage of a GPU script (SimulationStageMetaData).
 Niagara_Stage_Info :: struct {
     name:string,
     source:Niagara_Iteration,

@@ -457,8 +457,8 @@ dist_curve :: proc(d:Dist,axis:int,scale:f32=1) -> (c:effect.Particle_Curve) {
     return
 }
 
-// A Cascade distribution of a module (FRawDistributionFloat or
-// FRawDistributionVector): the object it names (constant, uniform or a
+// A Cascade distribution of a module (RawDistributionFloat or
+// RawDistributionVector): the object it names (constant, uniform or a
 // curve), else the values the package baked with it.
 @(private)
 cascade_dist :: proc(d:^level.Document,module:level.Ref,name:string) -> (out:Dist) {

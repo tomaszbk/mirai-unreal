@@ -8,7 +8,7 @@ import unreal "project:plugins/unreal/editor/package"
 import unreal_scene "project:plugins/unreal/editor/scene"
 import "plugins:vfx/runtime/effect"
 
-// A lightweight emitter of Niagara (UNiagaraStatelessEmitter): its cycle, its
+// A lightweight emitter of Niagara (NiagaraStatelessEmitter): its cycle, its
 // spawns and its modules keep their values as properties of their own, with
 // no scripts. Each module becomes fields of the effect, or a Vfx program for
 // what the fields do not say; what has no meaning in Mirai is a warning.
@@ -68,7 +68,7 @@ niagara_spawns :: proc(u:^Niagara_Values,d:^level.Document,info:^effect.Particle
     }
 }
 
-// A distribution of a property of a lightweight module (FNiagaraDistribution*):
+// A distribution of a property of a lightweight module (NiagaraDistribution*):
 // a range a particle takes its value from when it starts, or values over its
 // life (curve: sampled evenly over its time range). What the package leaves
 // out is that of the constructor of the module, default.
