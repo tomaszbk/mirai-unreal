@@ -135,8 +135,8 @@ warnings.
 
 ## Navigation (`unreal_navigation`)
 
-- `NavMeshBoundsVolume` is a `Nav_Bounds` of the size of its `CubeBuilder`.
-- `NavModifierVolume` is a `Nav_Area` of that size: `NavArea_Null` (the one that names no area),
+- `NavMeshBoundsVolume` is a `Nav_Bounds` in a box `Volume` of the size of its `CubeBuilder`.
+- `NavModifierVolume` is a `Nav_Area` in a box `Volume` of that size: `NavArea_Null` (the one that names no area),
   `NavArea_Obstacle` and `NavArea_LowHeight` block, `NavArea_Default` walks, and any other area
   walks with a warning to declare it.
 - `NavLinkProxy` gives a `Jump` `Nav_Link` per point link, from `Left` to `Right` in the actor's
