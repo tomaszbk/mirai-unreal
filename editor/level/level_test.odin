@@ -11,7 +11,7 @@ import mm "mirai:std/math"
 @(private="file")
 close3 :: proc(a,b:[3]f32,tolerance:f32=1e-4) -> bool {return linalg.length(a-b)<=tolerance}
 
-// FRotationMatrix of Unreal: rows are where X, Y and Z go (row vectors).
+// RotationMatrix of Unreal: rows are where X, Y and Z go (row vectors).
 @(private="file")
 rotator_matrix :: proc(pitch,yaw,roll:f64) -> (m:[3][3]f64) {
     sp,cp:=math.sincos(pitch*math.PI/180)

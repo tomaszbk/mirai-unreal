@@ -3,24 +3,24 @@ package mesh
 import "core:mem"
 import unreal "project:plugins/unreal/editor/package"
 
-// The curves a USkeleton marks as driving morph targets (FCurveMetaData's
-// Type.bMorphtarget): in its FSmartNameContainer, after the retarget sources
+// The curves a Skeleton marks as driving morph targets (CurveMetaData's
+// Type.bMorphtarget): in its SmartNameContainer, after the retarget sources
 // and the guid of its native tail, until UE 5.3; in the CurveMetaData of its
-// UAnimCurveMetaData since.
+// AnimCurveMetaData since.
 
 @(private) ANIM_PHYS_GUID :: [4]u32{0x29E575DD,0xE0A34627,0x9D10D276,0x232CDCEA}
-@(private) UE4_SMART_NAMES :: 388                  // VER_UE4_SKELETON_ADD_SMARTNAMES
-@(private) UE5_SOFT_PATH_NAMES :: 1007             // FSOFTOBJECTPATH_REMOVE_ASSET_PATH_FNAMES
-@(private) UE5_SOFT_PATH_LIST :: 1008              // ADD_SOFTOBJECTPATH_LIST
-@(private) FRAMEWORK_SMART_NAME_REFACTOR :: 7      // FFrameworkObjectVersion::SmartNameRefactor
-@(private) FRAMEWORK_CURVE_TYPES_ON_SKELETON :: 15 // FFrameworkObjectVersion::MoveCurveTypesToSkeleton
-@(private) ANIM_PHYS_DETERMINISTIC_NAMES :: 10     // FAnimPhysObjectVersion::SmartNameRefactorForDeterministicCooking
-@(private) ANIM_PHYS_CURVE_LOD :: 12               // FAnimPhysObjectVersion::AddLODToCurveMetaData
-@(private) ANIM_PHYS_SOFT_RETARGET_MESH :: 15      // FAnimPhysObjectVersion::ChangeRetargetSourceReferenceToSoftObjectPtr
-@(private) RELEASE_SMART_NAMES_REMOVED :: 64       // FUE5ReleaseStreamObjectVersion::RemovedSmartNameContainerPayload
+@(private) UE4_SMART_NAMES :: 388
+@(private) UE5_SOFT_PATH_NAMES :: 1007
+@(private) UE5_SOFT_PATH_LIST :: 1008
+@(private) FRAMEWORK_SMART_NAME_REFACTOR :: 7
+@(private) FRAMEWORK_CURVE_TYPES_ON_SKELETON :: 15
+@(private) ANIM_PHYS_DETERMINISTIC_NAMES :: 10
+@(private) ANIM_PHYS_CURVE_LOD :: 12
+@(private) ANIM_PHYS_SOFT_RETARGET_MESH :: 15
+@(private) RELEASE_SMART_NAMES_REMOVED :: 64
 
 // The morph target curves of a skeleton, from the rest of its native tail
-// after the reference skeleton, or from its UAnimCurveMetaData. ok is false
+// after the reference skeleton, or from its AnimCurveMetaData. ok is false
 // when the save keeps them in a way that is not read: a retarget source
 // whose mesh is in the soft object path table.
 @(private)
@@ -33,7 +33,7 @@ morph_curves_read :: proc(r:^Reader,p:^unreal.Package,v:Versions,skeleton:int,al
     if v.main_release<RELEASE_SMART_NAMES_REMOVED && v.ue4>=UE4_SMART_NAMES {
         framework,_:=unreal.custom_version(p,unreal.FRAMEWORK_OBJECT_VERSION)
         physics,_:=unreal.custom_version(p,ANIM_PHYS_GUID)
-        // AnimRetargetSources: TMap<FName,FReferencePose>.
+        // AnimRetargetSources: a map of Name to ReferencePose.
         sources:=count_read(r,8,"retarget source count")
         for _ in 0..<sources {
             _=take(r,16,"retarget source and pose names")
@@ -47,7 +47,7 @@ morph_curves_read :: proc(r:^Reader,p:^unreal.Package,v:Versions,skeleton:int,al
             }
         }
         if v.ue4>=UE4_SKELETON_GUID {_=take(r,16,"skeleton guid")}
-        // FSmartNameContainer: TMap<FName,FSmartNameMapping>.
+        // SmartNameContainer: a map of Name to SmartNameMapping.
         containers:=count_read(r,8,"smart name container count")
         for _ in 0..<containers {
             _=name_read(r,p,"smart name container")
@@ -69,7 +69,7 @@ morph_curves_read :: proc(r:^Reader,p:^unreal.Package,v:Versions,skeleton:int,al
         if failed(r) {return nil,false}
         return out[:],true
     }
-    // UAnimCurveMetaData: CurveMetaData, a map of FName to FCurveMetaData serialized natively.
+    // AnimCurveMetaData: CurveMetaData, a map of Name to CurveMetaData serialized natively.
     for item,index in p.exports {
         if item.outer!=unreal.Object_Ref(skeleton+1) || !unreal.reference_in_package(p,item.class,"/Script/Engine","AnimCurveMetaData") {continue}
         properties,error:=unreal.export_properties(p,index,true,context.temp_allocator)
@@ -92,7 +92,7 @@ morph_curves_read :: proc(r:^Reader,p:^unreal.Package,v:Versions,skeleton:int,al
     return out[:],true
 }
 
-// operator<<(FArchive&,FCurveMetaData&): whether it drives a morph target.
+// Natively serialized CurveMetaData: whether it drives a morph target.
 @(private)
 curve_metadata_read :: proc(r:^Reader,physics:i32) -> (morph:bool) {
     _=bool_read(r,"curve metadata material")

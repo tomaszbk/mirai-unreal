@@ -672,7 +672,7 @@ inputs_put :: proc(w:^fx.Writer,property:string,inputs:[]fx.Input) {
 
 // Material attributes made, set on and broken: what SetMaterialAttributes
 // does not set is what its attributes in (Inputs[0]) give, and the outputs
-// of BreakMaterialAttributes past the customized UVs are the attributes
+// of BreakMaterialAttributes past the customized Vs are the attributes
 // they name.
 @(test)
 set_material_attributes_keeps_the_attributes_it_does_not_set :: proc(t:^testing.T) {

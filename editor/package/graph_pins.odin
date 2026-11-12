@@ -1,6 +1,6 @@
 package unreal
 
-// A pin of a node of an editor graph (UEdGraphPin), as UEdGraphNode keeps its
+// A pin of a node of an editor graph (EdGraphPin), as EdGraphNode keeps its
 // pins after its tagged properties: what reading it needs of a graph that is
 // not compiled, such as the value a static switch of a Niagara module takes.
 Graph_Pin :: struct {
@@ -86,7 +86,7 @@ graph_pin_refs_skip :: proc(r:^Reader,field:string) -> int {
     return int(count)
 }
 
-// An FText: the source string of the histories graphs keep, "" for others.
+// A Text: the source string of the histories graphs keep, "" for others.
 @(private="file")
 graph_text_read :: proc(r:^Reader,p:^Package,field:string) -> (text:Serialized_String) {
     _=u32_read(r,field)
@@ -109,7 +109,7 @@ graph_text_read :: proc(r:^Reader,p:^Package,field:string) -> (text:Serialized_S
 @(private="file")
 graph_text_skip :: proc(r:^Reader,p:^Package,field:string) {_=graph_text_read(r,p,field)}
 
-// An entry of an enum an asset defines (UUserDefinedEnum): its name without
+// An entry of an enum an asset defines (UserDefinedEnum): its name without
 // the enum, its value and the name the editor shows of it.
 User_Enum_Entry :: struct {name:string,value:i64,display:string}
 

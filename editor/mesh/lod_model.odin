@@ -7,26 +7,26 @@ import "core:strings"
 import "project:plugins/unreal/editor/kraken"
 import unreal "project:plugins/unreal/editor/package"
 
-// FSkeletalMeshLODModel of LOD 0, as the native tail of a SkeletalMesh keeps
+// SkeletalMeshLODModel of LOD 0, as the native tail of a SkeletalMesh keeps
 // it with the editor data: the sections of the build of Unreal, each with its
-// FSoftSkinVertex rows and the map of its bone indices to the reference
+// SoftSkinVertex rows and the map of its bone indices to the reference
 // skeleton, and one index buffer over all of them.
 
-// The influences of an FSoftSkinVertex.
+// The influences of an SoftSkinVertex.
 LOD_INFLUENCES :: 12
-// The UV channels of an FSoftSkinVertex.
+// The UV channels of an SoftSkinVertex.
 LOD_UVS :: 4
 // A weight of one in 16 bits.
 RAW_WEIGHT_ONE :: 65535
 // MAX_INFLUENCES_PER_STREAM and EXTRA_BONE_INFLUENCES: the influences of older saves.
 @(private) INFLUENCES_PER_STREAM :: 4
 @(private) EXTRA_INFLUENCES :: 8
-// FMeshToMeshVertData: three FVector4f, four uint16, a float and padding.
+// MeshToMeshVertData: three Vector4f, four uint16, a float and padding.
 @(private) CLOTH_MAPPING_BYTES :: 3*16+4*2+4+4
-// FClothingSectionData: the GUID of a clothing asset and the LOD of it.
+// ClothingSectionData: the GUID of a clothing asset and the LOD of it.
 @(private) CLOTHING_DATA_BYTES :: 16+4
 
-// Where the parts of an FSoftSkinVertex are, by the versions of the package.
+// Where the parts of an SoftSkinVertex are, by the versions of the package.
 @(private)
 Soft_Vertex :: struct {
     size:int,
@@ -34,7 +34,7 @@ Soft_Vertex :: struct {
     weights,weight_count,weight_size:int, // offset of InfluenceWeights, how many and their bytes
 }
 
-// Position, TangentX, TangentY, TangentZ (with the binormal sign in w), UVs and FColor come first.
+// Position, TangentX, TangentY, TangentZ (with the binormal sign in w), Vs and Color come first.
 @(private) SOFT_TANGENT_X :: 12
 @(private) SOFT_TANGENT_Z :: 36
 @(private) SOFT_UVS :: 52
@@ -103,7 +103,7 @@ lod_model_read :: proc(p:^unreal.Package,v:Versions,span:unreal.Span,scratch:mem
         if failed(&r) {return {},r.error}
     }
     if v.editor>=EDITOR_SKELETAL_MESH_BUILD_REFACTOR {
-        // TMap<int32, FSkelMeshSourceSectionUserData>: the user's settings of each section.
+        // A map of int32 to SkelMeshSourceSectionUserData: the user's settings of each section.
         entries:=count_read(&r,4,"LOD model user section count")
         disabled:=make([dynamic]i32,scratch)
         for _ in 0..<entries {
@@ -138,7 +138,7 @@ lod_model_read :: proc(p:^unreal.Package,v:Versions,span:unreal.Span,scratch:mem
         array_skip(&r,4,"LOD model raw point indices")
     }
     if v.fortnite>=FORTNITE_NEW_SKELETAL_IMPORTER && v.editor<EDITOR_SKELETAL_SOURCE_DATA_PRIVATE_ASSET {
-        // FRawSkeletalMeshBulkData of the import, before it moved to its own object.
+        // RawSkeletalMeshBulkData of the import, before it moved to its own object.
         if v.editor>=EDITOR_SKELETAL_MESH_BUILD_REFACTOR {_=take(&r,2,"raw skeletal mesh import versions")}
         if !bulk_skip(&r,p,1,"raw skeletal mesh bulk data") {return {},r.error}
         _=take(&r,16,"raw skeletal mesh guid")
@@ -169,7 +169,7 @@ bulk_skip :: proc(r:^Reader,p:^unreal.Package,element_size:int,field:string) -> 
     return !failed(r)
 }
 
-// FSkelMeshSection, for saves since SplitModelAndRenderData.
+// SkelMeshSection, for saves since SplitModelAndRenderData.
 @(private)
 lod_section_read :: proc(r:^Reader,v:Versions,layout:Soft_Vertex,s:^Lod_Section) {
     global:=u8_read(r,"section strip flags")
@@ -296,7 +296,7 @@ lod_model_build :: proc(m:^Lod_Model,mesh:^Skeletal_Mesh,base:i64,out:^Skinned_M
             skin_first[row]=u32(len(influences))
             for k in 0..<min(s.bone_count,s.weight_count) {
                 raw:u32
-                // A weight of 8 bits scales to 16 as FSoftSkinVertex loads it.
+                // A weight of 8 bits scales to 16 as SoftSkinVertex loads it.
                 if s.weight_size==2 {raw=u32(data[s.weights+k*2])|u32(data[s.weights+k*2+1])<<8} else {raw=u32(data[s.weights+k])*0x101}
                 if raw==0 {continue}
                 local_bone:=int(data[s.bones+k*s.bone_size])
@@ -369,7 +369,7 @@ lod_model_build :: proc(m:^Lod_Model,mesh:^Skeletal_Mesh,base:i64,out:^Skinned_M
     return
 }
 
-// A UE 5.4 source model: the FMeshDescription with its SkinWeights, built as
+// A UE 5.4 source model: the MeshDescription with its SkinWeights, built as
 // Unreal's skeletal build makes its LOD model: the normals of a static mesh
 // description, the colors without sRGB, the influences limited and
 // renormalized, the corners welded within the thresholds of the build

@@ -108,7 +108,7 @@ package_bytes :: proc(w:^Writer) -> []u8 {
     return b.data[:]
 }
 
-// An FCompressedBuffer that stores its bytes as they are.
+// An CompressedBuffer that stores its bytes as they are.
 compressed_buffer_none :: proc(raw:[]u8,allocator:=context.temp_allocator) -> []u8 {
     out:=make([]u8,64+len(raw),allocator)
     be32 :: proc(out:[]u8,at:int,value:u32) {for i in 0..<4 {out[at+i]=u8(value>>uint(24-i*8))}}

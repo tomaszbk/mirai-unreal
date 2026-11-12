@@ -69,11 +69,11 @@ count_read :: proc(r:^Reader,least:int,field:string) -> int {
     return int(count)
 }
 
-// An FString, skipped: its bytes stay in the payload.
+// A String, skipped: its bytes stay in the payload.
 @(private)
 text_skip :: proc(r:^Reader,field:string) {_,_=text_read(r,field)}
 
-// An FString as its bytes without the terminator, and whether they are UTF-16.
+// A String as its bytes without the terminator, and whether they are UTF-16.
 @(private)
 text_read :: proc(r:^Reader,field:string) -> (bytes:[]u8,wide:bool) {
     count:=i32_read(r,field)
@@ -88,13 +88,13 @@ text_read :: proc(r:^Reader,field:string) -> (bytes:[]u8,wide:bool) {
     return data[:len(data)-(wide?2:1)],wide
 }
 
-// An FString as UTF-8 in allocator.
+// A String as UTF-8 in allocator.
 @(private)
 text_string :: proc(r:^Reader,field:string,allocator:mem.Allocator) -> string {
     bytes,wide:=text_read(r,field)
     if failed(r) {return ""}
     if !wide {
-        // Unreal writes a narrow FString only when it is ASCII.
+        // Unreal writes a narrow String only when it is ASCII.
         for b in bytes {if b==0 || b>=128 {bad(r,.Malformed,field);return ""}}
         clone,error:=make([]u8,len(bytes),allocator)
         if error!=nil {bad(r,.Out_Of_Memory,field);return ""}

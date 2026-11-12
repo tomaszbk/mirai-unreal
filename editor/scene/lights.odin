@@ -123,7 +123,7 @@ light_convert :: proc(u:Unreal_Light) -> (m:Converted_Light,approximated:bit_set
 }
 
 // The light of a component as Unreal keeps it, with the defaults of the
-// constructors of ULightComponent and its classes.
+// constructors of LightComponent and its classes.
 unreal_light :: proc(c:^Context,component:int,kind:Light_Kind) -> (u:Unreal_Light) {
     d:=c.d
     ref:=d.components[component].ref
@@ -158,11 +158,10 @@ unreal_light :: proc(c:^Context,component:int,kind:Light_Kind) -> (u:Unreal_Ligh
     return
 }
 
-// FFortniteMainBranchObjectVersion::RectLightFixedEVUnitConversion.
 @(private)
 RECT_LIGHT_FIXED_EV :: 203
 
-// The FFortniteMainBranchObjectVersion of the package of an object; 0 when it has none.
+// The FortniteMainBranchObjectVersion of the package of an object; 0 when it has none.
 @(private)
 fortnite_version :: proc(c:^Context,ref:level.Ref) -> i32 {
     version,found:=unreal.custom_version(level.library_package(c.d.library,int(ref.pkg)),unreal.FORTNITE_MAIN_VERSION)

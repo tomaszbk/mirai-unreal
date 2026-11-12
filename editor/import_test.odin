@@ -39,7 +39,7 @@ project_folder :: proc(name:string) -> (root,assets:string) {
     return
 }
 
-// A quad of a StaticMesh saved by UE4 as FRawMesh, in two slots.
+// A quad of a StaticMesh saved by UE4 as RawMesh, in two slots.
 @(private="file")
 unreal_quad :: proc() -> []u8 {
     up:=[3]f32{0,0,1}

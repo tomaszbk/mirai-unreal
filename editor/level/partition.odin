@@ -210,7 +210,7 @@ actor_grid :: proc(d:^Document,p:^Partition,a:int) -> int {
 }
 
 // The native classes whose constructor leaves an actor out of spatial loading
-// (bIsSpatiallyLoaded false): lights, AInfo and the classes that set it.
+// (bIsSpatiallyLoaded false): lights, Info and the classes that set it.
 @(private)
 NON_SPATIAL_CLASSES :: []string{
     "DirectionalLight","PointLight","SpotLight","RectLight","Light",
@@ -477,7 +477,7 @@ name_of :: proc(d:^Document,ref:Ref,name:string) -> (value:string,found:bool) {
     return unreal.name_plain(f.pkg,v.name),true
 }
 
-// An FBox property (Min, Max and IsValid, saved natively: doubles from UE5,
+// An Box property (Min, Max and IsValid, saved natively: doubles from UE5,
 // floats before) in Mirai's space; false when it is not valid.
 box_of :: proc(d:^Document,ref:Ref,name:string) -> (box:mm.Aabb,ok:bool) {
     f,error:=property(d,ref,name)

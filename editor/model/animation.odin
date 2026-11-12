@@ -11,7 +11,7 @@ import mm "mirai:std/math"
 
 // An AnimSequence, or a PoseAsset read as one (a frame per pose): a clip of
 // the .anim of its package, named after it. Each
-// bone track of its USkeleton is a track of the path of that bone, as the
+// bone track of its Skeleton is a track of the path of that bone, as the
 // skeletons of the import name them, keyed at every frame and in Unreal's
 // space (the import turns them with the bones); a track that never changes
 // is one key. Its curves are Float tracks of their names, also of the morph

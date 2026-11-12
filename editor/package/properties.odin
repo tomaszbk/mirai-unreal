@@ -68,7 +68,7 @@ properties_destroy :: proc(list:^Property_List) {
     list^={}
 }
 
-// UObject appends its optional lazy GUID before a subclass's native data.
+// Object appends its optional lazy GUID before a subclass's native data.
 object_native_payload :: proc(p:^Package,tail:Span) -> (payload:Span,error:Error) {
     if p==nil || !span_valid(p.bytes,tail) {return {},{.Malformed,tail.offset,"UObject native range"}}
     r:=Reader{bytes=p.bytes,at=int(tail.offset),end=int(tail.offset+tail.size)}
@@ -207,7 +207,7 @@ property_value :: proc(p:^Package,property:^Property,allocator:=context.allocato
     case "StrProperty":
         text:=text_read(&r,p.limits.text_bytes,"string value")
         if r.error.code==.None {value.kind=.String;value.text,value.owned_text,error=text_decode(text,allocator)}
-    // An FText: flags, the kind of its history and what it keeps;
+    // A Text: flags, the kind of its history and what it keeps;
     // its string is the one it shows in the source culture.
     case "TextProperty":
         _=u32_read(&r,"text flags")

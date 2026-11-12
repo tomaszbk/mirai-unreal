@@ -181,7 +181,7 @@ struct_array_property :: proc(b:^Bytes,w:^Writer,property,struct_name:string,ite
     put_bytes(b,elements.data[:])
 }
 
-// FByteBulkData of UE4 with its bytes at the end of the file; zlib with zlib_chunks.
+// ByteBulkData of UE4 with its bytes at the end of the file; zlib with zlib_chunks.
 byte_bulk_data :: proc(b:^Bytes,w:^Writer,raw_size:int,stored:[]u8,zlib:bool) {
     put_u32(b,1|(zlib?2:0))
     put_i32(b,i32(raw_size))
@@ -190,7 +190,7 @@ byte_bulk_data :: proc(b:^Bytes,w:^Writer,raw_size:int,stored:[]u8,zlib:bool) {
     append(&w.tail,..stored)
 }
 
-// FEditorBulkData in the trailer, raw: an FCompressedBuffer without compression.
+// EditorBulkData in the trailer, raw: an CompressedBuffer without compression.
 editor_bulk_data :: proc(b:^Bytes,w:^Writer,raw:[]u8) {
     buffer:=compressed_buffer_none(raw)
     hash:=unreal.blake3(raw)

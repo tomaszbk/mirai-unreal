@@ -22,7 +22,7 @@ Relative :: struct {
     absolute:[3]bool, // location, rotation, scale
 }
 
-// USceneComponent's defaults.
+// SceneComponent's defaults.
 RELATIVE_DEFAULT :: Relative{scale={1,1,1}}
 
 // A transform of Unreal in Mirai's space.
@@ -126,7 +126,7 @@ actor_native_class :: proc(d:^Document,actor:int) -> Class {
 }
 
 // The relative transform of a component, from it or its archetypes, with the
-// defaults of USceneComponent, or of the constructor of its actor's native
+// defaults of SceneComponent, or of the constructor of its actor's native
 // class, where none has a value.
 component_relative :: proc(d:^Document,component:int) -> (r:Relative,error:unreal.Error) {
     r=RELATIVE_DEFAULT

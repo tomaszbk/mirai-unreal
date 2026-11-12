@@ -2,7 +2,7 @@ package unreal_texture
 
 import "base:intrinsics"
 
-// Inverse of Unreal's row delta (UEDELTA): every tile keeps its first row and
+// The inverse of a row delta: every tile keeps its first row and
 // stores each other row minus the one above, element by element, with a bias
 // of 0x80 per byte in 16 and 32 bit elements. Tiles cut a surface by column
 // strips of at most 4096 bytes and row bands of about 32768 pixels; how they

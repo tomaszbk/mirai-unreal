@@ -46,7 +46,7 @@ mesh_destroy :: proc(mesh:^Mesh) {
     mesh^={}
 }
 
-// THRESH_POINTS_ARE_SAME: corners closer than this are one point when the build removes degenerates.
+// Corners closer than this are one point when the build removes degenerates.
 DEGENERATE_DISTANCE :: 0.00002
 
 // What a source model is being made of, rows growing in allocator; the
@@ -56,7 +56,7 @@ Gather :: struct {
     allocator:mem.Allocator,
     positions:[dynamic][3]f32,
     corner_vertex:[dynamic]u32,
-    corner_instance:[dynamic]u32, // FMeshDescription: the vertex instance of each corner
+    corner_instance:[dynamic]u32, // MeshDescription: the vertex instance of each corner
     normal:[dynamic][3]f32,
     tangent:[dynamic][4]f32,
     color:[dynamic][4]u8,
@@ -65,8 +65,8 @@ Gather :: struct {
     triangle_section:[dynamic]u32,
     sections:[dynamic]Section,
     group_ids:[dynamic]i32,  // of each section: the polygon group, the material of the build when no slot has its name
-    smoothing:[]u32,         // FRawMesh: the smoothing groups of each triangle
-    hard:map[[2]u32]bool,    // FMeshDescription: the hard edges, by their vertices
+    smoothing:[]u32,         // RawMesh: the smoothing groups of each triangle
+    hard:map[[2]u32]bool,    // MeshDescription: the hard edges, by their vertices
 }
 
 @(private)

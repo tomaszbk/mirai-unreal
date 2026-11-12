@@ -4,7 +4,7 @@ import "project:plugins/unreal/editor/level"
 import unreal "project:plugins/unreal/editor/package"
 import mm "mirai:std/math"
 
-// An FColor (B, G, R, A bytes) as linear RGB: Unreal reads it as sRGB.
+// A Color (B, G, R, A bytes) as linear RGB: Unreal reads it as sRGB.
 color_of :: proc(d:^level.Document,ref:level.Ref,name:string,default:[3]f32) -> (value:[3]f32,found:bool) {
     f,error:=level.property(d,ref,name)
     if error.code!=.None || f.property==nil {return default,false}
@@ -19,7 +19,7 @@ color_of :: proc(d:^level.Document,ref:level.Ref,name:string,default:[3]f32) -> 
     return mm.srgb_to_linear([3]f32{f32(bytes[2]),f32(bytes[1]),f32(bytes[0])}/255),true
 }
 
-// The fields of a struct property (FPostProcessSettings, a filmback) of an
+// The fields of a struct property (PostProcessSettings, a filmback) of an
 // object and its archetypes, the nearest first: a field missing from one is
 // that of the next.
 Struct_Chain :: struct {

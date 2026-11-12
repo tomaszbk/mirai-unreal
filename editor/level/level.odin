@@ -4,7 +4,7 @@ import "core:mem"
 import "core:strings"
 import unreal "project:plugins/unreal/editor/package"
 
-// The levels of an uncooked Unreal map: the actors of each ULevel, the
+// The levels of an uncooked Unreal map: the actors of each Level, the
 // objects each actor owns (its components) and their properties, looked up
 // through their archetypes. Unreal's names stay here; what leaves is classes
 // by name, transforms in Mirai's space (transform.odin) and properties for
@@ -87,7 +87,7 @@ Found :: struct {
 @(private) LEVEL_ACTORS_ARRAY :: 3
 @(private) UE4_TEMPLATE_INDEX :: 508
 @(private) OUTER_DEPTH :: 64
-@(private) ACTOR_LABEL_IN_COOKED :: 4 // FUE5SpecialProjectStreamObjectVersion::SerializeActorLabelInCookedBuilds
+@(private) ACTOR_LABEL_IN_COOKED :: 4
 @(private) RF_CLASS_DEFAULT_OBJECT :: 0x10
 @(private) RF_INHERITABLE_COMPONENT_TEMPLATE :: 0x400000
 @(private) ICH_SCENE_ROOT_PREFIX :: "ICH-" // the name prefix of an overridden default scene root
@@ -105,7 +105,7 @@ document_destroy :: proc(d:^Document) {
 }
 
 // Reads the levels of package map_index of the library: the actors of each
-// ULevel and, when it keeps them apart, its external actors.
+// Level and, when it keeps them apart, its external actors.
 document_open :: proc(d:^Document,lib:^Library,map_index:int,allocator:=context.allocator) -> (error:unreal.Error) {
     d^={library=lib,allocator=allocator}
     d.levels.allocator,d.actors.allocator,d.components.allocator,d.texts.allocator=allocator,allocator,allocator,allocator
@@ -131,7 +131,7 @@ level_read :: proc(d:^Document,ref:Ref) -> unreal.Error {
     if payload_error.code!=.None {return payload_error}
     r:=payload
     release,_:=unreal.custom_version(p,unreal.RELEASE_OBJECT_VERSION)
-    // Before LevelTransArrayConvertedToTArray the array was a TTransArray, its owner first.
+    // Before the array conversion version the array carried its owner first.
     if release<LEVEL_ACTORS_ARRAY {r.offset+=4;r.size-=4}
     actors,actors_error:=refs_read(p,r)
     if actors_error.code!=.None {return actors_error}
@@ -144,7 +144,7 @@ level_read :: proc(d:^Document,ref:Ref) -> unreal.Error {
     return {}
 }
 
-// The object references of a TArray saved natively: a count and the references.
+// The object references of an array saved natively: a count and the references.
 @(private)
 refs_read :: proc(p:^unreal.Package,span:unreal.Span) -> (refs:[]unreal.Object_Ref,error:unreal.Error) {
     bytes:[]u8
@@ -396,7 +396,7 @@ archetype_of :: proc(d:^Document,ref:Ref,depth:int) -> (next:Ref,native:bool,err
 // class up its Blueprint super classes: the ComponentTemplate of the SCS_Node
 // of that variable; else, when the class has no such node, the template its
 // InheritableComponentHandler keeps for that variable (an inherited component
-// it changes, FComponentKey) or of that name; else an object of that name
+// it changes, ComponentKey) or of that name; else an object of that name
 // under the class.
 @(private)
 blueprint_template :: proc(d:^Document,outer:Ref,name:string) -> (template:Ref,found:bool,error:unreal.Error) {
@@ -688,7 +688,7 @@ paths_of :: proc(d:^Document,ref:Ref,name:string,allocator:=context.temp_allocat
 
 // How a primitive component collides, from its BodyInstance: its collision
 // profile, what it enables when the profile is Custom ("" when it does not
-// say) and whether it simulates. UStaticMeshComponent's defaults:
+// say) and whether it simulates. StaticMeshComponent's defaults:
 // BlockAllDynamic, queries and physics, not simulated.
 component_collision :: proc(d:^Document,ref:Ref) -> (profile,enabled:string,simulate:bool) {
     profile="BlockAllDynamic"

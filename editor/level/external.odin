@@ -95,7 +95,7 @@ external_preferred :: proc(a,b,object_path:string) -> bool {
 
 // Whether package_name ends as Unreal names the package of a new actor at
 // object_path: the 25 base-36 digits of the MD5 of the lowercase path, as an
-// FString is saved, split 1/2/22 or 2/2/21.
+// String is saved, split 1/2/22 or 2/2/21.
 @(private)
 external_name_matches :: proc(package_name,object_path:string) -> bool {
     digits:=actor_package_digits(object_path)
