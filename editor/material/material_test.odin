@@ -398,8 +398,9 @@ what_cannot_be_translated_is_counted_by_its_expression_class :: proc(t:^testing.
     testing.expect(t,translated_is_standard(&translated) && translated.info.emission==[3]f32{})
 }
 
-// What fakes the view sees the surface head on, and what undoes the exposure
-// leaves the emission relative to it.
+// What fakes the view sees the surface head on, from as far as the view sees
+// it: the depth from the eye along the forward of the view is the depth of
+// the point. What undoes the exposure leaves the emission relative to it.
 @(test)
 the_view_is_taken_head_on_and_eye_adaptation_makes_emission_relative :: proc(t:^testing.T) {
     b:=material_begin("M_Glow")
@@ -407,9 +408,29 @@ the_view_is_taken_head_on_and_eye_adaptation_makes_emission_relative :: proc(t:^
     view:=expression(&b,"CameraVectorWS","View",&w)
     w=fx.writer(&b.p)
     inverse:=expression(&b,"EyeAdaptationInverse","Inverse",&w)
+    w=fx.writer(&b.p)
+    world:=expression(&b,"WorldPosition","World",&w)
+    w=fx.writer(&b.p)
+    eye:=expression(&b,"CameraPositionWS","Eye",&w)
+    w=fx.writer(&b.p)
+    fx.input_put(&w,"A","ExpressionInput",{expression=world})
+    fx.input_put(&w,"B","ExpressionInput",{expression=eye})
+    away:=expression(&b,"Subtract","Away",&w)
+    w=fx.writer(&b.p)
+    fx.color_put(&w,"Constant",{0,0,1,0})
+    z:=expression(&b,"Constant3Vector","Z",&w)
+    w=fx.writer(&b.p)
+    fx.input_put(&w,"Input","ExpressionInput",{expression=z})
+    fx.enum_put(&w,"TransformSourceType","EMaterialVectorCoordTransformSource","TRANSFORMSOURCE_View")
+    forward:=expression(&b,"Transform","Forward",&w)
+    w=fx.writer(&b.p)
+    fx.input_put(&w,"A","ExpressionInput",{expression=away})
+    fx.input_put(&w,"B","ExpressionInput",{expression=forward})
+    depth:=expression(&b,"DotProduct","Depth",&w)
     m:=fx.writer(&b.p)
     fx.input_put(&m,"BaseColor","ColorMaterialInput",{expression=view})
     fx.input_put(&m,"EmissiveColor","ColorMaterialInput",{expression=inverse})
+    fx.input_put(&m,"Roughness","ScalarMaterialInput",{expression=depth})
     b.p.exports[0].data=fx.finish(&m)
     lib:Library
     library_with(&lib,{"/Game/M/M_Glow",fx.package_bytes(&b.p,"/Game/M/M_Glow")})
@@ -421,6 +442,7 @@ the_view_is_taken_head_on_and_eye_adaptation_makes_emission_relative :: proc(t:^
     testing.expect_value(t,len(translated.untranslated),0)
     testing.expect_value(t,translated.info.emission_mode,asset.Emission_Mode.Relative)
     testing.expect(t,!translated_is_standard(&translated),"a base color of the normal needs a program")
+    testing.expect(t,strings.contains(translated.program.source,"ctx.depth"),"the eye as far as the view sees the point")
 }
 
 // A two-sided Subsurface material reflects its base color and sends its

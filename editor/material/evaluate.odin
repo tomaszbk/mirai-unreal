@@ -617,9 +617,9 @@ expression_build :: proc(e:^Evaluator,o:Object,output:i32,scope:i32) -> Value {
         note(e,"%s is taken at normal incidence: the surface seen head on",object_name(o))
         return nodes(context_value(g,.Pixel_Normal,3))
     case "CameraPositionWS":
-        // A point along the normal, whose direction from the surface is that view.
+        // The eye of that view: along the normal, as far as the view sees the point.
         note(e,"%s is taken at normal incidence: the surface seen head on",object_name(o))
-        return nodes(binary(g,.Add,world_place(e,.World_Position),context_value(g,.Pixel_Normal,3)))
+        return nodes(binary(g,.Add,world_place(e,.World_Position),binary(g,.Mul,context_value(g,.Pixel_Normal,3),context_value(g,.Pixel_Depth,1))))
     case "EyeAdaptationInverse":
         // LightValue·Exposure^-Alpha (EyeAdaptationInverseLookup): with Alpha 1
         // its light value is relative to the exposure, with 0 physical.
@@ -893,12 +893,13 @@ TRANSFORM_SOURCES :: []string{"TRANSFORMSOURCE_Tangent","TRANSFORMSOURCE_Local",
 TRANSFORM_TARGETS :: []string{"TRANSFORM_Tangent","TRANSFORM_Local","TRANSFORM_World","TRANSFORM_View","TRANSFORM_Camera",
     "TRANSFORM_ParticleWorld","TRANSFORM_Instance"}
 
-// A vector from one space to another, as EmitTransformVector: through the
-// world, by the tangent frame of the surface or the axes of its object.
+// A vector from one space to another through the world, by the tangent frame
+// of the surface, the axes of its object or those of the view, which is head
+// on like the rest of what Mirai programs see of it: looking down the normal.
 @(private)
 transform_vector :: proc(e:^Evaluator,o:Object,scope:i32) -> Value {
     g:=e.g
-    TANGENT,LOCAL,WORLD,INSTANCE :: 0,1,2,6
+    TANGENT,LOCAL,WORLD,VIEW,CAMERA,PARTICLE,INSTANCE :: 0,1,2,3,4,5,6
     source:=prop_enum(o,"TransformSourceType",TRANSFORM_SOURCES,TANGENT)
     target:=prop_enum(o,"TransformType",TRANSFORM_TARGETS,WORLD)
     v,connected:=pin(e,o,"Input",scope)
@@ -908,17 +909,31 @@ transform_vector :: proc(e:^Evaluator,o:Object,scope:i32) -> Value {
     if source==TANGENT && width_of(g,v)==1 {v=append_values(g,constant(g,{},2),v)}
     v=convert(g,v,3)
     if source==target {return nodes(v)}
-    known :: proc(space:int) -> bool {return space==TANGENT || space==LOCAL || space==WORLD || space==INSTANCE}
-    if !known(source) || !known(target) {return untranslated(e,o,"Mirai programs see the tangent frame, the object and the world, not the view or particles")}
+    if source==PARTICLE || target==PARTICLE {return untranslated(e,o,"Mirai programs see the tangent frame, the object, the world and the view, not particles")}
     t,b,n:=tangent_frame(e)
+    // Right, up and forward of the view.
+    view :: proc(e:^Evaluator,o:Object,t:u32) -> (right,up,forward:u32) {
+        g:=e.g
+        note(e,"%s: the view is taken at normal incidence, the surface seen head on",object_name(o))
+        forward=binary(g,.Mul,context_value(g,.Pixel_Normal,3),scalar(g,-1))
+        right=unary(g,.Normalize,binary(g,.Sub,t,binary(g,.Mul,forward,binary(g,.Dot,t,forward))))
+        return right,binary(g,.Cross,forward,right),forward
+    }
+    along :: proc(g:^Graph,v,x,y,z:u32) -> u32 {return append_values(g,append_values(g,binary(g,.Dot,v,x),binary(g,.Dot,v,y)),binary(g,.Dot,v,z))}
     world:=v
     switch source {
     case TANGENT:world=frame_vector(g,v,t,b,n)
     case LOCAL,INSTANCE:world=frame_vector(g,v,object_axis(e,0),object_axis(e,1),object_axis(e,2))
+    case VIEW,CAMERA:
+        right,up,forward:=view(e,o,t)
+        world=frame_vector(g,v,right,up,forward)
     }
     switch target {
-    case TANGENT:return nodes(append_values(g,append_values(g,binary(g,.Dot,world,t),binary(g,.Dot,world,b)),binary(g,.Dot,world,n)))
+    case TANGENT:return nodes(along(g,world,t,b,n))
     case LOCAL,INSTANCE:return nodes(object_vector(e,world))
+    case VIEW,CAMERA:
+        right,up,forward:=view(e,o,t)
+        return nodes(along(g,world,right,up,forward))
     }
     return nodes(world)
 }
