@@ -52,13 +52,14 @@ CENTIMETRE :: f32(0.01)
 particles_translate :: proc(c:^unreal_scene.Context,actors:[]int) -> int {
     unreal_scene.zone(c,"vfx.translate")
     d:=c.d
-    systems:=make(map[string]Particles_Written,context.temp_allocator)
-    translated,index:=0,0
+    written:=particles_import(c)
+    if written==nil {return 0}
+    translated:=0
     for a in actors {
         root:=d.actors[a].root
         if root<0 {continue}
         niagara:=level.actor_native_class(d,a).name=="NiagaraActor"
-        if particles_place(c,a,root,niagara,0,&systems,&index) {translated+=1}
+        if particles_place(c,a,root,niagara,0,&written.systems,&written.index) {translated+=1}
         if c.failed {break}
     }
     return translated
@@ -69,10 +70,29 @@ particles_translate :: proc(c:^unreal_scene.Context,actors:[]int) -> int {
 @(private)
 particles_component :: proc(c:^unreal_scene.Context,a,k:int,e:base.Entity_Id) {
     unreal_scene.zone(c,"vfx.component")
-    systems:=make(map[string]Particles_Written,context.temp_allocator)
-    index:=0
-    particles_place(c,a,k,c.d.components[k].class.name=="NiagaraComponent",e,&systems,&index)
+    if written:=particles_import(c);written!=nil {
+        particles_place(c,a,k,c.d.components[k].class.name=="NiagaraComponent",e,&written.systems,&written.index)
+    }
 }
+
+// The systems an import wrote, by path, and the index of its next effect:
+// one for the actors and the components of every Blueprint that show them.
+@(private)
+Particles_Import :: struct {systems:map[string]Particles_Written,index:int}
+
+// The Particles_Import of the import of c; nil without memory for it.
+@(private)
+particles_import :: proc(c:^unreal_scene.Context) -> ^Particles_Import {
+    if kept,found:=c.kept[PARTICLES_KEPT];found {return (^Particles_Import)(kept)}
+    written:=new(Particles_Import,context.temp_allocator)
+    if written==nil {return nil}
+    written.systems=make(map[string]Particles_Written,context.temp_allocator)
+    c.kept[PARTICLES_KEPT]=written
+    return written
+}
+
+@(private)
+PARTICLES_KEPT :: "vfx.particles"
 
 // The effects of the emitters of a system, written once for every component that shows it.
 @(private)

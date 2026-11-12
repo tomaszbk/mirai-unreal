@@ -186,6 +186,7 @@ Context :: struct {
     instanced_hidden:int,        // instanced components hidden in game, left out
     takes_instanced:bool,        // a translator takes the instanced components
     tallies:map[string]int,      // what translators say of each scene, counted (tally)
+    kept:map[string]rawptr,      // what a translator keeps for the whole import, by a key of its own, in the temp allocator
     types:^asset.Types,
     options:importer.Import_Options, // root is the project
     report:^Level_Report,
@@ -386,6 +387,7 @@ document_import :: proc(d:^level.Document,source:string,size,hash:u64,options:im
     c.actor_sections=make([]int,len(d.actors),scratch)
     c.instanced.allocator=scratch
     c.tallies=make(map[string]int,scratch)
+    c.kept=make(map[string]rawptr,scratch)
 
     translate_zone:=importer.zone_begin(options,"level.translate")
     level_translate(&c,translators)
