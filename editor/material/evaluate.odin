@@ -310,6 +310,15 @@ expression_build :: proc(e:^Evaluator,o:Object,output:i32,scope:i32) -> Value {
         if found:=override_find(e,name,.Mask,scope);found!=nil {mask={found.value.x!=0,found.value.y!=0,found.value.z!=0,found.value.w!=0}}
         input,_:=pin(e,o,"Input",scope)
         return nodes(mask_apply(g,input,mask))
+    case "ChannelMaskParameter":
+        // The input, as four components, dotted with a vector parameter that picks one: red by default.
+        name:=prop_name(o,"ParameterName","")
+        default:=prop_vector(o,"DefaultValue",{1,0,0,0})
+        value:=default
+        if found:=override_find(e,name,.Vector,scope);found!=nil {value=found.value}
+        input,connected:=pin(e,o,"Input",scope)
+        if !connected {return untranslated(e,o,"it masks no input")}
+        return nodes(binary(g,.Dot,convert(g,input,4),parameter(g,parameter_name(e,name,scope),4,value,default)))
     case "ComponentMask":
         input,_:=pin(e,o,"Input",scope)
         return nodes(mask_apply(g,input,{prop_bool(o,"R",false),prop_bool(o,"G",false),prop_bool(o,"B",false),prop_bool(o,"A",false)}))

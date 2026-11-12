@@ -723,6 +723,38 @@ set_material_attributes_keeps_the_attributes_it_does_not_set :: proc(t:^testing.
     testing.expect(t,abs(translated.info.metallic-0.7)<1e-6,"the displacement Break gives")
 }
 
+// A channel mask is the channel of its input its parameter picks, red when
+// it keeps no value.
+@(test)
+a_channel_mask_is_the_channel_its_parameter_picks :: proc(t:^testing.T) {
+    b:=material_begin("M_Channels")
+    w:=fx.writer(&b.p)
+    fx.color_put(&w,"Constant",{0.2,0.4,0.6,0.8})
+    channels:=expression(&b,"Constant4Vector","Channels",&w)
+    w=fx.writer(&b.p)
+    fx.input_put(&w,"Input","ExpressionInput",{expression=channels})
+    fx.name_property_put(&w,"ParameterName","Rough")
+    fx.color_put(&w,"DefaultValue",{0,0,1,0})
+    blue:=expression(&b,"ChannelMaskParameter","Blue",&w)
+    w=fx.writer(&b.p)
+    fx.input_put(&w,"Input","ExpressionInput",{expression=channels})
+    fx.name_property_put(&w,"ParameterName","Metal")
+    red:=expression(&b,"ChannelMaskParameter","Red",&w)
+    m:=fx.writer(&b.p)
+    fx.input_put(&m,"Roughness","ScalarMaterialInput",{expression=blue})
+    fx.input_put(&m,"Metallic","ScalarMaterialInput",{expression=red})
+    b.p.exports[0].data=fx.finish(&m)
+    lib:Library
+    library_with(&lib,{"/Game/M/M_Channels",fx.package_bytes(&b.p,"/Game/M/M_Channels")})
+    defer library_destroy(&lib)
+    material,_:=object_find(&lib,"/Game/M/M_Channels")
+    translated,error:=translate(&lib,material)
+    if !testing.expect_value(t,error.code,Error_Code.None) {return}
+    defer translated_destroy(&translated)
+    testing.expect_value(t,len(translated.untranslated),0)
+    testing.expect(t,abs(translated.info.roughness-0.6)<1e-6 && abs(translated.info.metallic-0.2)<1e-6,"blue, then red by default")
+}
+
 // Without virtual textures, Unreal takes the branch of a platform that has
 // none; a Landscape draws where its terrain has no holes.
 @(test)
