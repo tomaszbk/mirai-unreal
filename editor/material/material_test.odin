@@ -1117,8 +1117,9 @@ vertex_colors_as_data_are_read_by_a_program :: proc(t:^testing.T) {
 }
 
 // Translated whole for a terrain, a landscape material weighs each of its
-// layers by the weight of the layer of the terrain that shows it, and its
-// coordinates come from the place of the point in the world.
+// layers by the weight of the layer of the terrain that shows it, read from
+// the maps each piece of the terrain gives, whichever of up to LAYERS_MAX it
+// is; its coordinates come from the place of the point in the world.
 @(test)
 a_landscape_material_whole_reads_the_weights_of_its_terrain :: proc(t:^testing.T) {
     b:=material_begin("M_Landscape")
@@ -1148,20 +1149,23 @@ a_landscape_material_whole_reads_the_weights_of_its_terrain :: proc(t:^testing.T
     library_with(&lib,{"/Game/M/M_Landscape",fx.package_bytes(&b.p,"/Game/M/M_Landscape")})
     defer library_destroy(&lib)
     material,_:=object_find(&lib,"/Game/M/M_Landscape")
-    // The terrain shows Rock in its first layer and Grass in its second; Sand it does not have.
-    mapping:=Landscape_Mapping{layers={"Rock","Grass","",""},coordinates={{0.01,0,0,8},{0,-0.01,0,16}}}
+    // The terrain shows Rock in its fifth layer and Grass in its sixth; Sand it does not have.
+    mapping:=Landscape_Mapping{layers={"Dirt","Snow","Mud","Gravel","Rock","Grass"},coordinates={{0.01,0,0,8},{0,-0.01,0,16}}}
     translated,error:=translate(&lib,material,{landscape=&mapping})
     if !testing.expect_value(t,error.code,Error_Code.None) {return}
     defer translated_destroy(&translated)
     if !testing.expect(t,!translated_is_standard(&translated)) {return}
     source:=translated.program.source
-    testing.expect(t,strings.contains(source,"float4(ctx.uv0,ctx.uv1)"),"the weights of the terrain")
-    testing.expect(t,strings.contains(source,").x") && strings.contains(source,").y"),"each layer by the weight of its layer of the terrain")
+    testing.expect(t,strings.contains(source,"#include \"terrain_surface.slang\"") && strings.contains(source,"terrain_weights_at(control,"),"the weights of the maps of the terrain")
+    testing.expect(t,strings.contains(source,"//! parameter control {\"kind\":\"texture\"}") && strings.contains(source,"struct Parameters {uint control;uint normal;uint paint;"),"the maps each piece gives")
+    testing.expect(t,strings.contains(source,"unreal_layer_weight(landscape,4u)") && strings.contains(source,"unreal_layer_weight(landscape,5u)"),"each layer by the weight of its layer of the terrain")
+    for p in translated.program.parameters {testing.expect(t,p.piece==(p.name=="control" || p.name=="normal" || p.name=="paint" || p.name=="piece" || p.name=="palette"),p.name)}
     testing.expect(t,!strings.contains(source,"ctx.uv0;"),"no uv set is the coordinates of the landscape")
     testing.expect(t,strings.contains(source,"ctx.world_position"),"its coordinates from the world")
-    branch:=strings.index(source,"if (")
-    sampled:=strings.index(source,"mirai_sample_texture(ctx,")
-    testing.expect(t,branch>=0 && sampled>branch && sampled<strings.index(source[branch:],"    }\n")+branch,"Rock is read only where its layer is painted")
+    body:=source[max(strings.index(source,"Mirai_Surface evaluate("),0):]
+    branch:=strings.index(body,"if (")
+    sampled:=strings.index(body,"mirai_sample_texture(ctx,")
+    testing.expect(t,branch>=0 && sampled>branch && sampled<strings.index(body[branch:],"    }\n")+branch,"Rock is read only where its layer is painted")
     for n in translated.notes {testing.expect(t,!strings.contains(n,"shown as its layer"),n)}
 }
 

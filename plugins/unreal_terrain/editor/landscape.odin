@@ -10,11 +10,11 @@ import mm "mirai:std/math"
 import terrain "plugins:terrain/runtime"
 
 // A landscape of an Unreal level as a Heightfield source: its heights, its
-// holes and up to LAYERS_MAX of its paint layers. A landscape with more
-// layers keeps the ones of most weight and adds the weight of each other to
-// the kept layer it blends with most (the one whose weights overlap its own
-// the most), so every sample keeps its full weight and an edge between two
-// layers stays an edge.
+// holes and its paint layers, in their order, up to LAYERS_MAX. A landscape
+// with more layers keeps the ones of most weight and adds the weight of each
+// other to the kept layer it blends with most (the one whose weights overlap
+// its own the most; the heaviest when it overlaps none), so every sample
+// keeps its full weight and an edge between two layers stays an edge.
 
 Landscape_Options :: struct {
     chunk_cells:int,           // 0: Unreal's subsections, within CHUNK_CELLS_MIN..CHUNK_CELLS_MAX
@@ -62,7 +62,7 @@ landscape_terrain :: proc(dst:^terrain.Source,l:^landscape.Landscape,options:Lan
             if !terrain.source_layer_set(&s,layer,source_layer) {delete(result.folded,allocator);return}
         }
         for j in 0..<l.samples.y {for i in 0..<l.samples.x {
-            f:[4]f32
+            f:terrain.Layer_Mix
             for layer in 0..<total {f[result.folded[layer]]+=f32(l.weights[layer*count+i+l.samples.x*j])}
             if !terrain.grid_put(&s.weights,{i,0,j},terrain.weights_quantize(f,kept),allocator) {delete(result.folded,allocator);return}
         }}
@@ -73,8 +73,8 @@ landscape_terrain :: proc(dst:^terrain.Source,l:^landscape.Landscape,options:Lan
     return result,true
 }
 
-// The layers of the source: the LAYERS_MAX heaviest, and where each layer
-// of the landscape goes. How many there are.
+// The layers of the source: the LAYERS_MAX heaviest, in the order of the
+// landscape, and where each layer of the landscape goes. How many there are.
 @(private)
 layers_choose :: proc(l:^landscape.Landscape,folded:[]int,layers:^[terrain.LAYERS_MAX]int) -> int {
     count:=l.samples.x*l.samples.y
@@ -88,9 +88,11 @@ layers_choose :: proc(l:^landscape.Landscape,folded:[]int,layers:^[terrain.LAYER
         for k:=i;k>0 && weight[order[k]]>weight[order[k-1]];k-=1 {order[k],order[k-1]=order[k-1],order[k]}
     }
     kept:=min(total,terrain.LAYERS_MAX)
-    for slot in 0..<kept {layers[slot]=order[slot];folded[order[slot]]=slot}
+    chosen:=slice.clone(order[:kept],context.temp_allocator)
+    slice.sort(chosen)
+    for at,slot in chosen {layers[slot]=at;folded[at]=slot}
     for dropped in order[kept:] {
-        best,best_overlap:=0,u64(0)
+        best,best_overlap:=folded[order[0]],u64(0)
         for slot in 0..<kept {
             overlap:=u64(0)
             a,b:=l.weights[dropped*count:][:count],l.weights[layers[slot]*count:][:count]
@@ -105,8 +107,11 @@ layers_choose :: proc(l:^landscape.Landscape,folded:[]int,layers:^[terrain.LAYER
 // How the material of a landscape, translated whole, sees the terrain: the
 // paint layer of each layer of the source, and the affine map from a point of
 // the world (Unreal's centimetres) to the coordinates of the landscape.
-landscape_mapping :: proc(l:^landscape.Landscape,result:^Landscape_Terrain) -> (mapping:material.Landscape_Mapping) {
-    for at,slot in result.layers {if at>=0 {mapping.layers[slot]=l.layers[at].name}}
+landscape_mapping :: proc(l:^landscape.Landscape,result:^Landscape_Terrain,allocator:=context.temp_allocator) -> (mapping:material.Landscape_Mapping) {
+    kept:=0
+    for at in result.layers {if at>=0 {kept+=1}}
+    mapping.layers=make([]string,kept,allocator)
+    for at,slot in result.layers[:kept] {mapping.layers[slot]=l.layers[at].name}
     mapping.coordinates=landscape.coordinates_of(l.local)
     return
 }

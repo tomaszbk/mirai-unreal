@@ -56,7 +56,8 @@ shows it.
   the options say otherwise. Cells are square: a landscape scaled differently in X than in Y is the
   grid of its X scale on an entity stretched sideways (the transform's x scale), which drawing,
   collision and residency already compose.
-- The layers are the `LAYERS_MAX` with the most total weight. Each of the others adds its weight to
+- The layers are every paint layer, in the landscape's order, up to `LAYERS_MAX`; past it, those
+  with the most total weight. Each of the others adds its weight to
   the kept layer it overlaps most (the sum of the minimums of their per-sample weights; with no
   overlap, the one with the most weight): an edge between two layers stays an edge and each sample
   keeps its whole weight. A sample with no weight goes to the first layer.
@@ -247,7 +248,7 @@ the area the Blueprint simulates; at 1, those of the mesh. `PressureDivergenceBu
 ## Verification
 
 - Tests of `plugins/unreal_terrain/editor`:
-  `a_landscape_becomes_a_heightfield_that_keeps_four_layers_and_folds_the_rest`,
+  `a_landscape_becomes_a_heightfield_with_every_layer_up_to_the_most_a_source_holds`,
   `the_landscape_of_an_unreal_level_is_a_terrain_of_its_scene`,
   `a_landscape_maps_the_world_to_its_coordinates_and_its_layers_to_those_of_the_terrain` and
   `a_landscape_of_unequal_scales_is_a_square_heightfield_on_a_stretched_entity`.

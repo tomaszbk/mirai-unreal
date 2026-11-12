@@ -480,7 +480,8 @@ layer_materials :: proc(c:^Context,path:string,label:="",mapping:^material.Lands
     }
     if mapping!=nil {
         kept:=mapping^
-        for &name in kept.layers {name=strings.clone(name,context.temp_allocator)}
+        kept.layers=make([]string,len(mapping.layers),context.temp_allocator)
+        for name,i in mapping.layers {kept.layers[i]=strings.clone(name,context.temp_allocator)}
         if entry.wholes.allocator.procedure==nil {entry.wholes.allocator=context.temp_allocator}
         append(&entry.wholes,Landscape_Whole{label=strings.clone(label,context.temp_allocator),mapping=kept})
     }

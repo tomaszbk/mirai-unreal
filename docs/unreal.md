@@ -442,10 +442,13 @@ it names). Everything lives in the library's arena.
   `LandscapeVisibilityMask` is 1: holes belong to the terrain. Without a layer, `translate` shows
   the first.
 - **Whole Landscape** (`Options.landscape`, a `Landscape_Mapping`): the program the terrain shows
-  with its layers. Each layer weighs what the terrain layer that shows it does (the terrain's
-  `uv0` and `uv1`, `Layer_Weights`) and one the terrain lacks is left out, like one a component
-  does not paint; `LandscapeLayerBlend` sums the weight and height ones over their sum when it
-  exceeds 1 and puts the alpha ones on top, as Unreal does without
+  with its layers. Each layer weighs what the terrain layer that shows it does (`Layer_Weight`,
+  read from the maps each piece of the terrain gives as the terrain's own layers program reads
+  them, any of its layers; a piece of a Volume, from the palette of its vertices) and one the
+  terrain lacks is left out, like one a component does not paint. The normal of the point is that
+  of the maps and what is painted over the terrain tints it. `LandscapeLayerBlend` sums the weight
+  and height ones over their sum when it exceeds 1 and puts the alpha ones on top, as Unreal does
+  without
   `landscape.UseLegacyLayerBlendMaterialExpressionBehavior`. The Landscape's coordinates (every UV
   set) come from the world position through the actor's transform, and the tangent frame follows
   its axes over the normal, not the terrain's tangents. What only a layer reads (its input and

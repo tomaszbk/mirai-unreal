@@ -358,9 +358,14 @@ material_build :: proc(b:^Builder,t:^material.Translated_Material,decoder:^krake
         }
         m.images[kind]=key
     }
-    parameters:=make([]asset.Material_Parameter,len(t.program.parameters),b.allocator)
-    images:=make([]string,len(t.program.parameters),b.allocator)
-    for &p,i in t.program.parameters {
+    // What a terrain gives each piece the material holds no value of.
+    held:=0
+    for p in t.program.parameters {if !p.piece {held+=1}}
+    parameters:=make([]asset.Material_Parameter,held,b.allocator)
+    images:=make([]string,held,b.allocator)
+    i:=0
+    for &p in t.program.parameters {
+        if p.piece {continue}
         row:=&parameters[i]
         asset.text_set(row.name[:],p.name)
         row.kind,row.components=p.kind,p.components
@@ -369,6 +374,7 @@ material_build :: proc(b:^Builder,t:^material.Translated_Material,decoder:^krake
             ref:=g.textures[p.texture]
             images[i]=texture_image(b,ref.path,ref.name,decoder)
         }
+        i+=1
     }
     m.parameters,m.parameter_images=parameters,images
     return
