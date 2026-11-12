@@ -108,7 +108,9 @@ the_landscape_of_an_unreal_level_is_a_terrain_of_its_scene :: proc(t:^testing.T)
     if !testing.expect_value(t,level.document_open(&d,&lib,map_index).code,unreal.Error_Code.None) {return}
     defer level.document_destroy(&d)
     provider:=terrain_unreal_default().provider
-    source:=fmt.tprintf("%s/Map.umap",root)
+    os.make_directory_all(fmt.tprintf("%s/assets",root))
+    source:=fmt.tprintf("%s/assets/Map.umap",root)
+    _=os.write_entire_file(source,"map")
     ids:[2]base.Asset_Id
     for pass in 0..<2 {
         report,error:=unreal_scene.document_import(&d,source,100,7,{root=root},provider.translators[:provider.count])
@@ -116,7 +118,7 @@ the_landscape_of_an_unreal_level_is_a_terrain_of_its_scene :: proc(t:^testing.T)
         defer unreal_scene.level_report_destroy(&report)
         written:importer.Written
         for a in report.imports.assets {if a.kind==terrain.KIND {written=a}}
-        testing.expect(t,strings.has_suffix(written.path,"/assets/levels/Map/Landscape.terrain"),written.path)
+        testing.expect(t,strings.has_suffix(written.path,"/assets/Map/Landscape.terrain"),written.path)
         ids[pass]=written.id
         types:asset.Types;asset.types_init(&types);defer asset.types_destroy(&types)
         _,info,imported,peek_error:=asset.import_peek(written.path,&types)

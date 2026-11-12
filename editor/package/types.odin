@@ -51,6 +51,7 @@ Summary :: struct {
     import_count,import_offset:i32,
     export_count,export_offset:i32,
     soft_path_count,soft_path_offset:i32, // the soft object paths that properties name by index (UE5 1008 on)
+    soft_package_count,soft_package_offset:i32, // the packages its properties name softly: a name each
     custom_versions:Span,
     custom_version_count:i32,
     custom_versions_named:bool, // UE4 saves before legacy version -6 name each custom version

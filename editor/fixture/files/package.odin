@@ -23,14 +23,19 @@ package_bytes :: proc(w:^Writer) -> []u8 {
     put_text(&b,w.desc.package_name)
     put_u32(&b,0)
     // The names of the tables are known once every export was added.
-    for item in w.imports {name(w,item.class_package);name(w,item.class_name);name(w,item.name)}
+    for item in w.imports {
+        for text in ([3]string{item.class_package,item.class_name,item.name}) {plain,_:=name_split(text);name(w,plain)}
+    }
+    for text in w.soft_packages {plain,_:=name_split(text);name(w,plain)}
     names_at:=len(b.data);put_u32(&b,0);put_u32(&b,0)
     if ue5>=1008 {put_zeros(&b,8)}
     put_u32(&b,0)
     put_zeros(&b,8)
     put_u32(&b,u32(len(w.exports)));exports_at:=len(b.data);put_u32(&b,0)
     put_u32(&b,u32(len(w.imports)));imports_at:=len(b.data);put_u32(&b,0)
-    put_zeros(&b,20)
+    put_zeros(&b,4)
+    soft_at:=len(b.data);put_u32(&b,u32(len(w.soft_packages)));put_u32(&b,0)
+    put_zeros(&b,8)
     put_zeros(&b,16)
     put_zeros(&b,16)
     put_u32(&b,0)
@@ -68,6 +73,10 @@ package_bytes :: proc(w:^Writer) -> []u8 {
         if ue5>=1003 {put_u32(&b,0)}
         put_zeros(&b,20)
         if ue5>=1010 {put_u64(&b,0);put_u64(&b,u64(item.script_end))}
+    }
+    if len(w.soft_packages)>0 {
+        patch_u32(&b,soft_at+4,u32(len(b.data)))
+        for text in w.soft_packages {put_name(&b,w,text)}
     }
     patch_u32(&b,header_at,u32(len(b.data)))
     for item,i in w.exports {

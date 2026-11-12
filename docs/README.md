@@ -38,15 +38,18 @@ The plugin's storages (`unreal.odin`, `api.odin`) are providers the editor reads
 library:
 
 - `Unreal_Format` is an `Import_Format_Provider` for the `.uasset` format (`model.FORMAT`): a
-  package is imported like the engine's models (File > Import, the content browser's Import
-  button, or dropping the file on the window) into `models/<name without prefix>/`, with its mesh,
-  materials, textures and prefab, or its clips and skeleton. Its `prepare` gives it the `reads` of
-  the library's `Translator_Provider`s (`model.Options.reads`).
+  package in the assets is imported like the engine's models, into `<name without prefix>/` beside
+  it, with its mesh, materials, textures and prefab, or its clips and skeleton; the packages its
+  materials read are the inputs of its import. Its `prepare` gives it the `reads` of the library's
+  `Translator_Provider`s (`model.Options.reads`).
 - `Unreal_Maps` is an `Import_Source_Provider` that claims a `.umap` by its extension and
-  signature. `prepare` (editor thread) collects the translators and `reads` of the
-  `Translator_Provider`s of all the library's plugins, and `run` (import thread) calls
-  `scene.level_import`: the scene lands in `levels/<map>.scene`, with its per-cell sections if the
-  map uses World Partition, and what the translators write in `levels/<map>/`.
+  signature. A map from outside the assets comes in with `bring` (`scene.level_bring`): the map and
+  the packages of `/Game` it reads (`scene.level_packages`, never its build data) are copied into
+  the folder of the browser, each at its path under `/Game`. `prepare` collects the translators and
+  `reads` of the `Translator_Provider`s of the library's plugins, and `run` calls
+  `scene.level_import`: one import that owns everything it writes, in `<map>/` beside the map.
+  The build rebuilds what it keeps in the imported folder from the map and those packages, its
+  inputs.
 - `Unreal_Api` registers `unreal.inspect` ([diagnostic](unreal.md#diagnostics-inspect)).
 - Importing again gives the same ids. An import that writes Surface programs publishes the
   project's programs so its materials render.
@@ -66,8 +69,9 @@ library:
   (`Limits`), rejects a damaged package with `Error{code,offset,field}` and a version it does not
   know, and never reads or writes outside its slices. What it cannot translate is a warning with a
   count, not an invented value.
-- **The same bytes give the same assets.** Imported ids come from the actor and component path,
-  not from a numbering, and reimporting keeps what the previous import wrote.
+- **The same bytes give the same assets.** The ids of an import are those its sidecar keeps;
+  those of the entities of a scene come from the actor and component path, not from a numbering;
+  reimporting keeps what the previous import wrote.
 - **Without Unreal installed.** What a package names from `/Engine` is read if an installation is
   mounted and otherwise replaced by something from the engine with a warning.
 - **No real asset enters the repository.** Tests use synthetic packages (`fixture`); the real

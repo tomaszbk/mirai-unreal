@@ -63,7 +63,6 @@ Read :: struct {
     running:bool,              // atomic: started and not done
     formats:[]importer.Format,
     options:importer.Import_Options,
-    known:^importer.Known,
     done:sync.Sema,
     model:importer.Imported_Model,
     error:importer.Error, // its message in the memory of the job system
@@ -100,7 +99,7 @@ reads_begin :: proc(c:^Context,natives:[]level.Class,owners:[]int,sections:[][dy
         info,error:=os.stat(file,context.temp_allocator)
         if error!=nil {return}
         read:=new(Read,context.temp_allocator)
-        read^={file=strings.clone(file,context.temp_allocator),index=len(c.reads.order),cost=int(info.size)*READ_COST,formats=c.formats[:],options=c.options,known=&c.known}
+        read^={file=strings.clone(file,context.temp_allocator),index=len(c.reads.order),cost=int(info.size)*READ_COST,formats=c.formats[:],options=c.options}
         c.reads.by_file[read.file]=read
         append(&c.reads.order,read)
     }
@@ -172,7 +171,7 @@ reads_fill :: proc(c:^Context) {
         intrinsics.atomic_store(&read.running,true)
         r.started+=1
         r.next+=1
-        if len(read.materials)>0 {jobs.run(js,c.options.worker.worker,materials_run,read)} else {jobs.run(js,c.options.worker.worker,read_run,read)}
+        if len(read.materials)>0 {jobs.run(js,c.options.worker.worker,.Background,materials_run,read)} else {jobs.run(js,c.options.worker.worker,.Background,read_run,read)}
     }
 }
 
@@ -200,7 +199,7 @@ read_run :: proc(read:^Read,worker:int) {
         read.error={error.code,strings.clone(error.message,allocator)}
         return
     }
-    importer.model_cook(&model,options,read.known)
+    importer.model_cook(&model,options)
     read.model=model
 }
 
@@ -262,7 +261,7 @@ reads_take :: proc(c:^Context,file:string) -> (model:importer.Imported_Model,err
         reads_fill(c)
         importer.zone(c.options,"level.read")
         model,error=importer.import_model(file,c.formats[:],c.options,c.report.allocator)
-        if error.code==.None {importer.model_cook(&model,c.options,&c.known)}
+        if error.code==.None {importer.model_cook(&model,c.options)}
         return
     }
     wait_zone:=importer.zone_begin(c.options,"level.wait")

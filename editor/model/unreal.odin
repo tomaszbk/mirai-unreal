@@ -126,6 +126,7 @@ read :: proc(r:^importer.Reader,bytes:[]u8) -> bool {
         c.library=&own
     }
     defer if c.library==&own {material.library_destroy(&own)}
+    defer if c.library==&own {files_note(r,&own)}
     c.materials.allocator=context.temp_allocator
     own_images:material_write.Builder
     c.images=options.images
@@ -450,6 +451,23 @@ defaults_add :: proc(r:^importer.Reader,name:string) -> int {
     return importer.material_add(r,name,len(r.materials),asset.MATERIAL_DEFAULTS,images)
 }
 
+// The packages of /Game the read opened besides its own, which its assets
+// are made from: the inputs of its import.
+@(private="file")
+files_note :: proc(r:^importer.Reader,lib:^material.Library) {
+    for _,opened in lib.packages {
+        if opened.error.code!=.None || !strings.has_prefix(opened.name,"/Game/") {continue}
+        for extension in ([2]string{".uasset",".umap"}) {
+            file,error:=upackage.source_package_path(opened.name,lib.mounts,context.temp_allocator,extension)
+            if error.code!=.None || !os.exists(file) {continue}
+            own,_:=filepath.clean(r.path,context.temp_allocator)
+            other,_:=filepath.clean(file,context.temp_allocator)
+            if !strings.equal_fold(own,other) {append(&r.files,file)}
+            break
+        }
+    }
+}
+
 // The folder of models/ the import of a package goes to: its name without
 // the prefix of its type, as the assets it holds.
 model_folder :: proc(file:string) -> string {
@@ -485,7 +503,7 @@ mounts_find :: proc(path:string,options:Options,p:^upackage.Package=nil,allocato
         } else {
             // A package renamed apart from its file: the packages it imports find the mount.
             for item in p.imports {
-                name:=upackage.name_plain(p,item.object_name)
+                name:=upackage.name_text(p,item.object_name,context.temp_allocator)
                 if item.outer!=0 || !strings.has_prefix(name,"/Game/") {continue}
                 if near,found:=upackage.source_mount_near(path,name,allocator);found {append(&mounts,near);break}
             }

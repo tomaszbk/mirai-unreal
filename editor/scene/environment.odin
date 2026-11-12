@@ -9,7 +9,6 @@ import importer "mirai:cook/import"
 import material_write "project:plugins/unreal/editor/material/write"
 import "project:plugins/unreal/editor/level"
 import unreal "project:plugins/unreal/editor/package"
-import gpu "mirai:render"
 import render "mirai:engine/render"
 import volume "mirai:engine/volume"
 import "mirai:project"
@@ -94,7 +93,7 @@ exposure_from :: proc(c:^Context,s:^Struct_Chain,aperture:f32) -> (e:render.Expo
     // luminance_max·2^EV100), else a luminance.
     ev100 :: proc(c:^Context,value:f64) -> f32 {
         white:=c.extended_luminance?c.luminance_max*math.pow(2,value):value
-        return f32(math.log2(max(white,1e-6)*f64(gpu.MIDDLE_GRAY)*100/f64(gpu.LIGHT_METER_K)))
+        return render.ev100_white(f32(white))
     }
     if overridden(s,"AutoExposureMinBrightness") {
         any=true
@@ -146,7 +145,9 @@ post_process_add :: proc(c:^Context,a:int) {
     unbound,_:=level.bool_of(d,ref,"bUnbound",false)
     priority,_:=level.real_of(d,ref,"Priority",0)
     blend,_:=level.real_of(d,ref,"BlendRadius",100)
-    place:=volume.Volume{priority=i32(math.round(priority)),blend=max(f32(blend)/100,0)}
+    look:=render.VIEW_VOLUME_DEFAULT
+    look.zone.priority,look.zone.blend=i32(math.round(priority)),max(f32(blend)/100,0)
+    place:=volume.world()
     if !unbound {
         builder:=-1
         for k in d.actors[a].first_component..<d.actors[a].first_component+d.actors[a].component_count {
@@ -160,7 +161,7 @@ post_process_add :: proc(c:^Context,a:int) {
         x,_:=level.real_of(d,d.components[builder].ref,"X",200)
         y,_:=level.real_of(d,d.components[builder].ref,"Y",200)
         z,_:=level.real_of(d,d.components[builder].ref,"Z",200)
-        place.shape,place.extents=.Box,{f32(y)/200,f32(z)/200,f32(x)/200}
+        place=volume.box({f32(y)/200,f32(z)/200,f32(x)/200})
     }
     settings:=struct_chain(d,ref,"Settings")
     others:=make([dynamic]string,context.temp_allocator)
@@ -181,13 +182,13 @@ post_process_add :: proc(c:^Context,a:int) {
     }
     exposure,any:=exposure_from(c,&settings,0)
     if !any {return}
-    look:=render.View_Volume{exposure=exposure,tint={1,1,1}}
+    look.exposure=exposure
     world,_,error:=level.actor_world(d,a)
     if error.code!=.None {return}
-    if place.shape==.Box {place.extents=blend_beyond(place.extents,place.blend,world.scale)}
+    if place.shape==.Box {place.extents=blend_beyond(place.extents,look.zone.blend,world.scale)}
     e,made:=entity_make(c,0,actor_key(c,a),label,world)
     if !made || !component_set(c,e,"View_Volume",&look) {return}
-    if place.shape!=.Unbounded || place.priority!=0 {component_set(c,e,"Volume",&place)}
+    if place.shape!=.Unbounded {component_set(c,e,"Volume",&place)}
 }
 
 // Unreal blends a bound volume over its blend radius beyond its brush, and
@@ -252,17 +253,14 @@ sky_image_write :: proc(c:^Context,path:string) -> (id:base.Asset_Id,ok:bool) {
         warn(c,"its cubemap %s is not under the mounts of the level",path)
         return
     }
-    folder:=project.path(c.assets,"materials",allocator=context.temp_allocator)
     textures,_:=decoder(c)
-    report:importer.Import_Report
     error:importer.Error
-    id,report,error=material_write.sky_write(c.lib,path,file,folder,c.options,c.report.allocator,&c.images,&c.library_lock,textures)
+    id,error=material_write.sky_write(c.lib,path,&c.outputs,package_prefix(c,file),c.options,context.temp_allocator,&c.images,&c.library_lock,textures)
     defer images_trim(c)
     if error.code!=.None {
         warn(c,"the sky of the cubemap %s could not be written: %s",path,error.message)
         return
     }
-    importer.report_take(&c.outputs.report,&report)
     return id,id!={}
 }
 

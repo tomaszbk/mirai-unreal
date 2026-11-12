@@ -3,5 +3,6 @@
   "version": "0.1.0",
   "dependencies": [],
   "parts": ["Editor", "Shaders"],
-  "icon": "icon.png"
+  "icon": "icon.png",
+  "import_sources": [".uasset", ".umap"]
 }

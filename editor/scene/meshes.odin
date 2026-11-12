@@ -12,7 +12,6 @@ import material_write "project:plugins/unreal/editor/material/write"
 import unreal_mesh "project:plugins/unreal/editor/mesh"
 import "project:plugins/unreal/editor/level"
 import unreal "project:plugins/unreal/editor/package"
-import "mirai:cook/prefab"
 import render "mirai:engine/render"
 import "mirai:project"
 import "mirai:std/base"
@@ -106,7 +105,7 @@ variants_finish :: proc(c:^Context) {
         }
         if len(translated)==0 {continue}
         // Those the level keeps go with its other assets: maps keep ones of the same name.
-        ids,written:=materials_write(c,file,translated[:],strings.has_suffix(file,".umap")?c.folder:"")
+        ids,written:=materials_write(c,file,translated[:])
         if !written {continue}
         for u,i in uses {
             if use_rows[i]<0 {continue}
@@ -182,7 +181,7 @@ instanced_material :: proc(c:^Context,path:string,custom:[]f32) -> (id:base.Asse
     defer material.translated_destroy(&t)
     if name!="" {t.name=name}
     if len(custom)>0 {t.name=fmt.tprintf("%s_%08x",t.name,u32(hash))}
-    ids:=materials_write(c,file,{t},strings.has_suffix(file,".umap")?c.folder:"") or_return
+    ids:=materials_write(c,file,{t}) or_return
     return ids[0],true
 }
 
@@ -332,13 +331,14 @@ clip_import :: proc(c:^Context,path:string) -> (clip:Clip_Import,ok:bool) {
         warn(c,"the animation %s is not under a mount of the level; what plays it stands at its bind pose",path)
         return
     }
-    folder:=project.path(c.assets,"models",uasset.model_folder(file),allocator=context.temp_allocator)
-    report,error:=prefab.model_import(file,folder,c.formats[:],c.options,c.report.allocator)
+    model,error:=importer.import_model(file,c.formats[:],c.options,context.temp_allocator)
+    defer importer.model_destroy(&model)
+    report:importer.Import_Report
+    if error.code==.None {report,error=model_parts_write(c,&model,file)}
     if error.code!=.None {
         warn(c,"the animation %s could not be imported: %s; what plays it stands at its bind pose",path,error.message)
         return
     }
-    defer importer.report_take(&c.outputs.report,&report)
     if report.animation_id=={} {
         warn(c,"%s has no AnimSequence; what plays it stands at its bind pose",path)
         return
@@ -374,27 +374,25 @@ mesh_import :: proc(c:^Context,path:string) -> (m:Mesh_Import,ok:bool) {
         warn(c,"the mesh %s is not under a mount of the level; what shows it is left out",path)
         return
     }
-    folder:=project.path(c.assets,"models",uasset.model_folder(file),allocator=context.temp_allocator)
     model,error:=reads_take(c,file)
     defer importer.model_destroy(&model)
     defer images_trim(c)
+    row:=-1
+    for mesh,i in model.meshes {
+        if mesh.name==unreal.asset_name(object) {row=i;break}
+    }
+    if row<0 && len(model.meshes)==1 {row=0}
     report:importer.Import_Report
     if error.code==.None {
-        import_zone:=importer.zone_begin(c.options,"level.mesh")
-        report,error=prefab.model_write(&model,file,folder,c.options,c.report.allocator)
+        import_zone:=importer.zone_begin(c.options,"level.mesh_import")
+        report,error=model_parts_write(c,&model,file)
         base.profile_end(import_zone)
     }
     if error.code!=.None {
         warn(c,"the mesh %s could not be imported: %s",path,error.message)
         return
     }
-    defer importer.report_take(&c.outputs.report,&report)
     c.report.meshes+=1
-    row:=-1
-    for mesh,i in model.meshes {
-        if mesh.name==unreal.asset_name(object) {row=i;break}
-    }
-    if row<0 && len(model.meshes)==1 {row=0}
     if row<0 || row>=len(report.mesh_ids) {
         warn(c,"%s has no mesh named %s",file,object)
         return
@@ -525,25 +523,46 @@ layer_materials :: proc(c:^Context,path:string,label:="",mapping:^material.Lands
 
 
 @(private)
-materials_write :: proc(c:^Context,file:string,translated:[]material.Translated_Material,folder:="") -> (ids:[]base.Asset_Id,ok:bool) {
-    folder:=folder
-    if folder=="" {folder=project.path(c.assets,"materials",allocator=context.temp_allocator)}
+materials_write :: proc(c:^Context,file:string,translated:[]material.Translated_Material) -> (ids:[]base.Asset_Id,ok:bool) {
     write_zone:=importer.zone_begin(c.options,"level.materials")
     textures,_:=decoder(c)
-    // The writes of one package each give their materials indices of their own.
-    options:=c.options
-    options.material_index=c.material_indices[file]
-    c.material_indices[strings.clone(file,context.temp_allocator)]=options.material_index+len(translated)
-    report,error:=material_write.materials_write(c.lib,translated,file,folder,c.shaders,options,c.report.allocator,&c.images,&c.library_lock,textures)
+    report,error:=material_write.materials_write(c.lib,translated,&c.outputs,package_prefix(c,file),c.shaders,c.options,context.temp_allocator,&c.images,&c.library_lock,textures)
     base.profile_end(write_zone)
     defer images_trim(c)
     if error.code!=.None {
         warn(c,"the materials of %s could not be written: %s",file,error.message)
         return
     }
-    ids=slice.clone(report.material_ids,context.temp_allocator)
-    importer.report_take(&c.outputs.report,&report)
+    ids=report.material_ids[:]
     return ids,len(ids)==len(translated)
+}
+
+// The folder of the parts of the package in file among those of the level:
+// its name without the prefix of its type, apart from another package of
+// the same name; "" for the map, whose own parts are at the root of its import.
+package_prefix :: proc(c:^Context,file:string) -> string {
+    if file==c.source {return ""}
+    if prefix,seen:=c.prefixes[file];seen {return prefix}
+    name:=uasset.model_folder(file)
+    prefix:=fmt.tprintf("%s/",name)
+    for at:=2;;at+=1 {
+        taken:=false
+        for _,other in c.prefixes {taken||=other==prefix}
+        if !taken {break}
+        prefix=fmt.tprintf("%s (%d)/",name,at)
+    }
+    c.prefixes[strings.clone(file,context.temp_allocator)]=prefix
+    return prefix
+}
+
+// Writes the model of the package in file as parts of the level: its
+// meshes, materials, textures, skeletons and clips under the folder of the
+// package. The scene places the meshes itself: the package gives no prefab.
+// The report gives their ids by row, in the temp allocator.
+model_parts_write :: proc(c:^Context,model:^importer.Imported_Model,file:string) -> (report:importer.Import_Report,error:importer.Error) {
+    material_write.names_prefix(model,package_prefix(c,file),context.temp_allocator)
+    model.nodes=nil
+    return importer.output_model(&c.outputs,model,context.temp_allocator)
 }
 
 // The file of a package under the mounts of the level, a map's too; "" when

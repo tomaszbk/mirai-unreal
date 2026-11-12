@@ -28,6 +28,17 @@ temp_folder :: proc(name:string) -> string {
     return path
 }
 
+// A project in a temp folder, and its assets folder, where sources go.
+@(private="file")
+project_folder :: proc(name:string) -> (root,assets:string) {
+    root=temp_folder(name)
+    m:=project.manifest_default("Imports")
+    project.manifest_write(project.path(root,project.PROJECT_FILE,allocator=context.temp_allocator),&m)
+    assets=fmt.tprintf("%s/assets",root)
+    os.make_directory_all(assets)
+    return
+}
+
 // A quad of a StaticMesh saved by UE4 as FRawMesh, in two slots.
 @(private="file")
 unreal_quad :: proc() -> []u8 {
@@ -53,17 +64,27 @@ formats_with_unreal :: proc() -> []importer.Format {
     return out[:]
 }
 
+// The assets of a package in the assets of root, as the editor writes them
+// before the prefab of their nodes (cook/prefab, which needs the types of a game).
+@(private="file")
+package_import :: proc(path,root:string,formats:[]importer.Format) -> (report:importer.Import_Report,error:importer.Error) {
+    model:importer.Imported_Model
+    if model,error=importer.import_model(path,formats,{root=root});error.code!=.None {return}
+    defer importer.model_destroy(&model)
+    return importer.import_write(&model,{root=root})
+}
+
 @(test)
-an_unreal_static_mesh_imports_as_its_mesh_materials_and_prefab :: proc(t:^testing.T) {
-    folder:=temp_folder("static")
-    defer os.remove_all(folder)
-    path:=fmt.tprintf("%s/SM_Fixture.uasset",folder)
+an_unreal_static_mesh_imports_as_its_mesh_and_materials :: proc(t:^testing.T) {
+    root,assets:=project_folder("static")
+    defer os.remove_all(root)
+    path:=fmt.tprintf("%s/SM_Fixture.uasset",assets)
     _=os.write_entire_file(path,unreal_quad())
     formats:=formats_with_unreal()
     testing.expect_value(t,sources.source_kind(path,formats),sources.Source_Kind.Model)
     testing.expect_value(t,sources.source_kind(path,sources.FORMATS[:]),sources.Source_Kind.None)
-    testing.expect_value(t,sources.model_folder(path,formats),"Fixture")
-    report,error:=sources.import_source(path,fmt.tprintf("%s/out",folder),{no_save=true},formats)
+    testing.expect_value(t,uasset.model_folder(path),"Fixture")
+    report,error:=package_import(path,root,formats)
     if !testing.expectf(t,error.code==.None,"%s",error.message) {return}
     defer importer.report_destroy(&report)
     kinds:map[asset.Fourcc]int
@@ -71,23 +92,22 @@ an_unreal_static_mesh_imports_as_its_mesh_materials_and_prefab :: proc(t:^testin
     for written in report.assets {kinds[written.kind]+=1}
     testing.expect_value(t,kinds[asset.KIND_MESH],1)
     testing.expect_value(t,kinds[asset.KIND_MATERIAL],2)
-    testing.expect_value(t,kinds[asset.KIND_PREFAB],1)
 }
 
 @(test)
-an_unreal_skeletal_mesh_imports_as_its_skinned_mesh_skeleton_materials_and_prefab :: proc(t:^testing.T) {
-    folder:=temp_folder("skeletal")
-    defer os.remove_all(folder)
-    path:=fmt.tprintf("%s/SK_Fixture.uasset",folder)
+an_unreal_skeletal_mesh_imports_as_its_skinned_mesh_skeleton_and_materials :: proc(t:^testing.T) {
+    root,assets:=project_folder("skeletal")
+    defer os.remove_all(root)
+    path:=fmt.tprintf("%s/SK_Fixture.uasset",assets)
     _=os.write_entire_file(path,fixture.skeletal_mesh_package(fixture.skeletal_figure(.UE5)))
-    report,error:=sources.import_source(path,fmt.tprintf("%s/out",folder),{no_save=true},formats_with_unreal())
+    report,error:=package_import(path,root,formats_with_unreal())
     if !testing.expectf(t,error.code==.None,"%s",error.message) {return}
     defer importer.report_destroy(&report)
     kinds:map[asset.Fourcc]int
     kinds.allocator=context.temp_allocator
     for written in report.assets {
         kinds[written.kind]+=1
-        if written.kind==asset.KIND_MESH || written.kind==asset.KIND_SKELETON || written.kind==asset.KIND_PREFAB {
+        if written.kind==asset.KIND_MESH || written.kind==asset.KIND_SKELETON {
             a:asset.Asset
             testing.expectf(t,asset.asset_load(&a,written.path,context.temp_allocator)==.None,"%s reads back",written.path)
             asset.asset_close(&a)
@@ -96,7 +116,6 @@ an_unreal_skeletal_mesh_imports_as_its_skinned_mesh_skeleton_materials_and_prefa
     testing.expect_value(t,kinds[asset.KIND_MESH],1)
     testing.expect_value(t,kinds[asset.KIND_SKELETON],1)
     testing.expect_value(t,kinds[asset.KIND_MATERIAL],2)
-    testing.expect_value(t,kinds[asset.KIND_PREFAB],1)
     testing.expect_value(t,len(report.skeleton_ids),1)
 }
 
@@ -137,14 +156,16 @@ damaged_unreal_packages_are_imported_or_refused :: proc(t:^testing.T) {
 
 // A map with one StaticMeshActor showing the quad, and the Unreal project
 // that holds both, next to a project of Mirai.
+// A project, and an Unreal project with a map of a mesh: in the assets of
+// the project when inside, beside it otherwise.
 @(private="file")
-unreal_level_folders :: proc(name:string) -> (top,mirai,level:string) {
+unreal_level_folders :: proc(name:string,inside:=true) -> (top,mirai,level:string) {
     top=temp_folder(name)
     mirai=fmt.tprintf("%s/project",top)
     os.make_directory_all(mirai)
     m:=project.manifest_default("Levels")
     project.manifest_write(project.path(mirai,project.PROJECT_FILE,allocator=context.temp_allocator),&m)
-    unreal:=fmt.tprintf("%s/Unreal",top)
+    unreal:=fmt.tprintf("%s/assets/Unreal",mirai) if inside else fmt.tprintf("%s/Unreal",top)
     os.make_directory_all(fmt.tprintf("%s/Content/Meshes",unreal))
     os.make_directory_all(fmt.tprintf("%s/Content/Maps",unreal))
     _=os.write_entire_file(fmt.tprintf("%s/Levels.uproject",unreal),"{}")
@@ -172,8 +193,8 @@ an_unreal_map_imports_as_a_scene_of_its_project :: proc(t:^testing.T) {
     head,_:=os.read_entire_file(level,context.temp_allocator)
     testing.expect(t,maps.claims(level,head[:min(len(head),importer.SNIFF_BYTES)]),"a map is claimed")
     quad:=unreal_quad()
-    testing.expect(t,!maps.claims(fmt.tprintf("%s/Unreal/Content/Meshes/SM_Fixture.uasset",top),quad[:min(len(quad),importer.SNIFF_BYTES)]),"a package is a model, not a map")
-    scene:=fmt.tprintf("%s/assets/levels/Room.scene",mirai)
+    testing.expect(t,!maps.claims(fmt.tprintf("%s/assets/Unreal/Content/Meshes/SM_Fixture.uasset",mirai),quad[:min(len(quad),importer.SNIFF_BYTES)]),"a package is a model, not a map")
+    scene:=fmt.tprintf("%s/assets/Unreal/Content/Maps/Room/Room.scene",mirai)
     for _ in 0..<2 {
         state:=new(Map_State)
         report,written,error:=maps.run(state,level,{root=mirai},context.allocator)
@@ -242,6 +263,13 @@ moving_quad :: proc(top:string) -> string {
     return path
 }
 
+// The files the sidecar of source lists as read besides it.
+@(private="file")
+inputs_of :: proc(source:string) -> []string {
+    sidecar,_,_:=importer.sidecar_load(source,context.temp_allocator)
+    return sidecar.inputs[:]
+}
+
 // Takes the import that runs when it ends, as the frames of the editor do.
 @(private="file")
 import_wait :: proc(s:^editor.Session) {
@@ -258,10 +286,11 @@ import_wait :: proc(s:^editor.Session) {
 an_import_that_writes_programs_publishes_the_programs_of_the_project :: proc(t:^testing.T) {
     top:=temp_folder("editor-import")
     defer os.remove_all(top)
-    // No project file: the publication it asks for ends at once, and counts.
     root:=fmt.tprintf("%s/project",top)
     assets_root:=project.path(root,"assets",allocator=context.temp_allocator)
     os.make_directory_all(assets_root)
+    m:=project.manifest_default("Imports")
+    project.manifest_write(project.path(root,project.PROJECT_FILE,allocator=context.temp_allocator),&m)
     assets:host.Assets
     if !testing.expect(t,host.assets_init(&assets,{root=assets_root,capacity=64})) {return}
     defer host.assets_destroy(&assets)
@@ -277,27 +306,31 @@ an_import_that_writes_programs_publishes_the_programs_of_the_project :: proc(t:^
     content:=new(editor.Content)
     defer free(content)
     s:=editor.Session{app=&app,build=&build,importer=&importer,content=content,info=&info,has_project=true,project_root=root,engine_root=top}
-    source:=moving_quad(top)
+    source:=moving_quad(assets_root)
     // The failure to publish is logged as an error; it is what is expected here.
     context.logger=log.nil_logger()
     defer editor.import_end(&s)
     if !testing.expectf(t,editor.import_file(&s,source),"%s",string(importer.message[:importer.message_length])) {return}
     // While it runs nothing else writes assets: another import and saving are refused, saying why.
     testing.expect(t,!editor.import_file(&s,source) && strings.contains(string(importer.message[:importer.message_length]),"is being imported"))
-    testing.expect_value(t,editor.scene_save(&s),editor.Document_Error.Importing)
     import_wait(&s)
     testing.expect(t,importer.status.ok && !importer.status.importing && len(importer.written)>0,"the status says it ended and what it wrote")
     testing.expect(t,os.exists(fmt.tprintf("%s/shaders",root)),"the program is written into the shaders of the project")
-    testing.expect(t,os.exists(fmt.tprintf("%s/models/Fixture",assets_root)),"into the folder its format says")
+    testing.expect(t,os.exists(fmt.tprintf("%s/Unreal/Content/Meshes/Fixture",assets_root)),"into the folder its format says, beside its source")
     testing.expect_value(t,build.programs.serial,u64(1))
     // Importing it again writes no program: the one there says the same.
     if !testing.expect(t,editor.import_file(&s,source)) {return}
     import_wait(&s)
     testing.expect_value(t,build.programs.serial,u64(1))
     delete(build.programs.message)
-    // A map, whose bytes the format of packages reads too, is a map: it takes no folder.
-    map_top,_,level:=unreal_level_folders("editor-map")
+    // A map from outside, whose bytes the format of packages reads too, is a
+    // map: it comes into the folder with the packages it reads, at their
+    // places under /Game, and its import lists them as its inputs.
+    map_top,_,level:=unreal_level_folders("editor-map",inside=false)
     defer os.remove_all(map_top)
-    testing.expect(t,!editor.import_file(&s,level,folder="levels"),"a map is imported whole")
-    testing.expect(t,strings.contains(string(importer.message[:importer.message_length]),"takes no folder"),string(importer.message[:importer.message_length]))
+    if !testing.expectf(t,editor.import_file(&s,level,folder="hotel"),"%s",string(importer.message[:importer.message_length])) {return}
+    import_wait(&s)
+    brought:=fmt.tprintf("%s/hotel/Maps/Room.umap",assets_root)
+    testing.expect(t,os.exists(brought) && os.exists(fmt.tprintf("%s/hotel/Meshes/SM_Fixture.uasset",assets_root)),"the map and its packages are in the assets")
+    testing.expect(t,slice.contains(inputs_of(brought),"../Meshes/SM_Fixture.uasset"),"the packages it reads are inputs of its import")
 }

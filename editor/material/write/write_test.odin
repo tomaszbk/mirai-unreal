@@ -13,6 +13,7 @@ import importer "mirai:cook/import"
 import "project:plugins/unreal/editor/kraken"
 import material "project:plugins/unreal/editor/material"
 import fx "project:plugins/unreal/editor/material/fixture"
+import "mirai:project"
 import "mirai:std/base"
 import "mirai:std/serial"
 
@@ -88,6 +89,19 @@ mat_read :: proc(t:^testing.T,types:^asset.Types,path:string,file:^asset.Asset) 
     return view,testing.expect_value(t,error,asset.Error.None)
 }
 
+// materials_write as the one write of an import of source, in the project at root.
+@(private="file")
+import_materials :: proc(lib:^material.Library,translated:[]material.Translated_Material,source,shaders,root:string) -> (report:importer.Import_Report,error:importer.Error) {
+    bytes,_:=os.read_entire_file(source,context.temp_allocator)
+    o:importer.Outputs
+    if error=importer.outputs_begin(&o,source,"",u64(len(bytes)),base.hash64(bytes),importer.import_version(1),{root=root});error.code!=.None {return}
+    if _,error=materials_write(lib,translated,&o,"",shaders,allocator=context.temp_allocator);error.code!=.None {
+        importer.outputs_end(&o,true)
+        return
+    }
+    return importer.outputs_end(&o,false),{}
+}
+
 @(private="file")
 written_find :: proc(report:^importer.Import_Report,name:string,kind:asset.Fourcc) -> ^importer.Written {
     for &w in report.assets {if w.name==name && w.kind==kind {return &w}}
@@ -102,7 +116,10 @@ written_find :: proc(report:^importer.Import_Report,name:string,kind:asset.Fourc
 translated_materials_are_written_with_their_images_and_programs :: proc(t:^testing.T) {
     folder:=temp_folder("write")
     defer os.remove_all(folder)
-    source,_:=filepath.join({folder,"M_Materials.uasset"},context.temp_allocator)
+    m:=project.manifest_default("Materials")
+    project.manifest_write(project.path(folder,project.PROJECT_FILE,allocator=context.temp_allocator),&m)
+    os.make_directory_all(fmt.tprintf("%s/assets",folder))
+    source,_:=filepath.join({folder,"assets","M_Materials.uasset"},context.temp_allocator)
     bytes:=materials_package()
     testing.expect_value(t,serial.file_write_atomic(source,bytes),serial.File_Error.None)
     lib:material.Library
@@ -122,9 +139,8 @@ translated_materials_are_written_with_their_images_and_programs :: proc(t:^testi
     }
     defer for &tr in translated {material.translated_destroy(&tr)}
     testing.expect(t,material.translated_is_standard(&translated[0]) && !material.translated_is_standard(&translated[1]))
-    assets_folder,_:=filepath.join({folder,"assets"},context.temp_allocator)
     shaders,_:=filepath.join({folder,"shaders"},context.temp_allocator)
-    report,error:=materials_write(&lib,translated[:],source,assets_folder,shaders,{root=folder})
+    report,error:=import_materials(&lib,translated[:],source,shaders,folder)
     if !testing.expect_value(t,error.code,importer.Error_Code.None) {return}
     defer importer.report_destroy(&report)
     albedo:=written_find(&report,"Albedo",asset.KIND_TEXTURE)
@@ -169,7 +185,7 @@ translated_materials_are_written_with_their_images_and_programs :: proc(t:^testi
     asset.asset_close(&flow_file)
     asset.asset_close(&still_file)
     testing.expect_value(t,asset.material_save(flow_path,&types,desc),asset.Error.None)
-    again,again_error:=materials_write(&lib,translated[:],source,assets_folder,shaders,{root=folder})
+    again,again_error:=import_materials(&lib,translated[:],source,shaders,folder)
     if !testing.expect_value(t,again_error.code,importer.Error_Code.None) {return}
     defer importer.report_destroy(&again)
     reread,reread_ok:=mat_read(t,&types,flow_path,&flow_file)

@@ -233,9 +233,9 @@ only textures, each a `.tex` with its layers, faces and the precision of its sou
 arrives with its cause and offset.
 
 - **Space.** Centimeters, +Z up, +X forward, +Y right and left-handed, with V from the top: the
-  engine's +X is Unreal's +Y, its +Y is +Z and its -Z, the front of everything, is +X. It is a mirror: Unreal's
-  triangles, which run opposite to its axes, enter the builder with inverted corners and the
-  mirror turns them again.
+  engine's +X is Unreal's +Y, its +Y is +Z and its -Z, the front of everything, is +X. It is a
+  mirror: Unreal's triangles, which run opposite to its axes, enter the builder with inverted
+  corners and the mirror turns them again.
 - **Slots.** One per `StaticMaterials` slot that a section uses: its id is the slot index plus one
   (what an Unreal component overrides by index) and its label the slot name; a section without a
   valid material goes to slot 0, without material.
@@ -449,9 +449,9 @@ it names). Everything lives in the library's arena.
   cutoff of its base color is the material's: what a package writes does not depend on which
   package of the level shared the `Builder` before.
 - `reader_material` adds the material and its images to a format's `Reader` (for a mesh's slots);
-  the notes are model warnings. `materials_write` writes `.mat` and `.tex` with
-  `importer.import_write`, like a source import, and each program into `shaders` without rewriting
-  an identical one.
+  the notes are model warnings. `materials_write` writes `.mat` and `.tex` as parts of an
+  `importer.Outputs` (`importer.output_model`), under a prefix of their names, and each program into
+  `shaders` without rewriting an identical one.
 
 ## Levels (`level`)
 
@@ -579,68 +579,75 @@ entity, the imported meshes and the time.
   the map stores of itself), `/Engine` of the Unreal install and that install's plugins. Without
   `/Engine` mounted (`engine.odin`), an Unreal basic shape is the Mirai primitive of its
   `Mesh_Renderer` and a missing `/Engine` material, the engine grid, written with the materials
-  the level stores in `levels/<map>/`.
+  the level stores. What is read from `/Engine` is not an input of the import.
 - **Names.** What is imported from Unreal is named without the prefix its conventions give each
   type (`SM_`, `SK_`, `M_`, `MI_`, `T_`, `BP_`...): `asset_name` is the only place that knows them.
-  `SM_Rock.uasset` writes `Rock.mesh` and `Rock.prefab` in `models/Rock/` (`model_folder`), and a
-  material `MI_Rock`, `Rock.mat`; two that end up equal in a folder take `(2)`. What is looked up
-  inside a package keeps using the Unreal name.
-- **Files.** The scene in the assets' `levels/<map>.scene`; each `StaticMesh` the level names is
-  its package's import, as the `model` format gives it (mesh, slot materials, textures and prefab,
-  in `models/<package without prefix>/`); materials a component overrides, its package's import in
-  `materials/`; what plugins write, in `levels/<map>/`. A single `material.Library` and a single
-  `write.Builder` serve the whole level: each package is opened and each texture decoded once,
-  while memory allows. The packages of meshes and overridden materials are read ahead
-  ([read-ahead](#read-ahead)).
+  `SM_Rock.uasset` writes `Rock.mesh` in `Rock/` (`model_folder`), and a material `MI_Rock`,
+  `Rock.mat`; two packages of the same name take `Rock (2)/`. What is looked up inside a package
+  keeps using the Unreal name.
+- **Sources.** The map is a source in the assets, and the packages of `/Game` it reads
+  (`level_packages`: what its imports and soft references name and theirs, and the World Partition
+  packages of its actors and objects, never its build data) sit at their paths under `/Game` with
+  it: `level_bring` copies them there from outside. They are the inputs of its import
+  (`importer.output_input`), so a changed package or a clone without the imported folder makes the
+  build import the map again.
+- **Files.** One import owns everything the map makes, in the folder of its import (`<map>/`
+  beside it, or what its sidecar says): the scene, and as parts named `<package>/<name>` (under
+  `<package>/`) what each package the level names gives as the `model` format reads it (meshes,
+  slot materials, textures, clips; no prefab: the scene places the meshes), the materials
+  components override and the sky, and at the root what the level stores and plugins write.
+  A single `material.Library` and a single `write.Builder` serve the whole level: each package is
+  opened and each texture decoded once, while memory allows. The packages of meshes and overridden
+  materials are read ahead ([read-ahead](#read-ahead)).
 - **Identity.** The scene is the root of the map's import (`importer.output_root`) and the sections
-  and what plugins write, its parts by name (`importer.output_part`). Sections take file and id
-  when written, only those with something and all at once (`importer.output_parts`): each first
-  finds the previous one of its name. Each entity's id is the hash of its actor's path in the map
-  (with its package if external: two World Partition packages can have actors of the same name)
-  and of its component's name, which Unreal keeps even if the label changes: reimporting gives the
-  same scene with the same ids.
+  and what plugins write, its parts by name (`importer.output_part`, `importer.output_model`).
+  Sections take file and id when written, only those with something and all at once
+  (`importer.output_parts`): each first finds the previous one of its name. Each entity's id is the
+  hash of its actor's path in the map (with its package if external: two World Partition packages
+  can have actors of the same name) and of its component's name, which Unreal keeps even if the
+  label changes: reimporting gives the same scene with the same ids.
 - **Sections.** A World Partition map is the map's scene and one scene per cell
-  ([partition](#levels-level)) in `levels/<map>/<cell>.scene`, each referenced from the map's scene
-  by an entity named after the cell, at the center of its box, with a `Spatial` `Scene_Reference`
-  of that box: the `streaming` plugin loads it by where the players are. What is at a section's
-  root is where it is from that center. What loads with the map, what the level gives once (sky,
-  exposure) and what translators with `root` write (terrain, which loads its pages itself) stays
-  in the map's scene; a cell that gives nothing is not written. Each grid's loading range is a
-  warning: Mirai loads sections within the project's `Streaming_Settings` distances.
+  ([partition](#levels-level)) in `<cell>.scene` of the folder of the import, each referenced from
+  the map's scene by an entity named after the cell, at the center of its box, with a `Spatial`
+  `Scene_Reference` of that box: the `streaming` plugin loads it by where the players are. What is
+  at a section's root is where it is from that center. What loads with the map, what the level gives
+  once (sky, exposure) and what translators with `root` write (terrain, which loads its pages
+  itself) stays in the map's scene; a cell that gives nothing is not written. Each grid's loading
+  range is a warning: Mirai loads sections within the project's `Streaming_Settings` distances.
 - **Entities.** An actor that shows something is an entity with its label where its
   `RootComponent` is, and what each component shows, a child entity with its placement relative to
   the actor (`transform_relative`, exact for Mirai's composition). A single-component actor is
   that entity, without a group on top. Actors go to the scene root.
-- **Blueprints.** Actors of a Blueprint class are instances of a class prefab in `levels/<map>/`,
+- **Blueprints.** Actors of a Blueprint class are instances of a class prefab of the import,
   made of the first one's entities with the root at the origin and the class name. What each actor
   shows differently (what its construction script chose, its transforms, its label) are overrides
   of its instance, and editing the prefab changes all. An actor whose components differ from the
   first's stays apart, with a warning.
-- **Meshes.** `StaticMeshComponent` is `Mesh_Renderer` with the imported mesh and, per slot row,
-  the material of `OverrideMaterials[index]` (the slot id is Unreal's index plus one); one equal to
-  the mesh's, or of a slot the mesh does not draw, does not count. A material the level stores
-  inside an actor (a construction script's `MaterialInstanceDynamic`) is translated from its
-  `.umap`, named by the objects that contain it and goes to `levels/<map>/`, together with the
-  level's others in a single import at the end, after the translators: it reads by UV the textures
-  they added (`texture_read_add`, the render target a Niagara component gives its system). Writes
-  of one package in an import number their materials after the previous ones (`material_index`):
-  the importer pairs by index a material it does not recognize by name.
-  Instanced components (`InstancedStaticMeshComponent`, the hierarchical one and the foliage one,
-  and those PCG and packed level actors bake) are never one entity per instance: the translator
-  with `instanced` in its scene takes them, the `foliage` one, as foliage batches
+- **Meshes.** `StaticMeshComponent` is `Mesh_Renderer` with the imported mesh and, per slot row, the
+  material of `OverrideMaterials[index]` (the slot id is Unreal's index plus one); one equal to the
+  mesh's, or of a slot the mesh does not draw, does not count. A material the level stores inside an
+  actor (a construction script's `MaterialInstanceDynamic`) is translated from its `.umap`, named by
+  the objects that contain it and goes to the root of the import, together with the level's others
+  in a single import at the end, after the translators: it reads by UV the textures they added
+  (`texture_read_add`, the render target a Niagara component gives its system). Writes of one
+  package in an import number their materials after the previous ones (`material_index`): the
+  importer pairs by index a material it does not recognize by name. Instanced components
+  (`InstancedStaticMeshComponent`, the hierarchical one and the foliage one, and those PCG and
+  packed level actors bake) are never one entity per instance: the translator with `instanced` in
+  its scene takes them, the `foliage` one, as foliage batches
   ([foliage](translators.md#foliage-unreal_foliage)); without it, their actor is a warning saying
-  how to import it. Those hidden in game are left out, with a warning. Their instance matrices
-  come from the `PerInstanceSMData` array of their native payload, which follows what
+  how to import it. Those hidden in game are left out, with a warning. Their instance matrices come
+  from the `PerInstanceSMData` array of their native payload, which follows what
   `UStaticMeshComponent` stores (LODs and painted vertices, of variable length depending on the
-  save): it is found by size, count and a first matrix of row vectors (`level.instances_read`,
-  which the foliage check also uses). A `SplineMeshComponent` is not translated: it is a warning.
+  save): it is found by size, count and a first matrix of row vectors (`level.instances_read`, which
+  the foliage check also uses). A `SplineMeshComponent` is not translated: it is a warning.
   `SkeletalMeshComponent` (of a `SkeletalMeshActor` or any Blueprint, such as a character) is the
   same with the skinned mesh (`SkeletalMesh`, which wins as in Unreal, or `SkinnedAsset`), drawn in
   its bind pose as its import's prefab draws it. In `AnimationSingleNode` it plays the clip of the
-  `AnimSequence` of its `AnimationData` (its package's import in `models/<package>/`): `Animation`
-  with `bSavedLooping`, `bSavedPlaying`, `SavedPlayRate` as `speed` and `bUpdateAnimationInEditor`
-  as `preview`, and `SavedPosition` as its `Animation_Progress` (over the `RateScale` the clip's
-  times have). The single-node instance takes no root motion from a sequence: one that forces its
+  `AnimSequence` of its `AnimationData` (its package's parts in `<package>/`): `Animation` with
+  `bSavedLooping`, `bSavedPlaying`, `SavedPlayRate` as `speed` and `bUpdateAnimationInEditor` as
+  `preview`, and `SavedPosition` as its `Animation_Progress` (over the `RateScale` the clip's times
+  have). The single-node instance takes no root motion from a sequence: one that forces its
   `bForceRootLock` stays in place (`In_Place`). An Animation Blueprint (`AnimClass`) is logic: a
   warning and the bind pose. False `bVisible` or `bHiddenInGame` are `Hidden`; the actor's
   `bHidden`, `Hidden` on its entity.
@@ -685,7 +692,7 @@ entity, the imported meshes and the time.
   layers are the terrain's), a Landscape's Nanite and proxy components, the PCG graph and a packed
   level actor's level (its instances show it) are omitted without a warning.
 - **Texts.** `TextRenderComponent` is a fixed `World_Widget` on the component's entity, facing
-  where the text faces in Unreal (its +X, Mirai's -Z), with its own `.ui` in `levels/<map>/`: a
+  where the text faces in Unreal (its +X, Mirai's -Z), with its own `.ui` in the import: a
   line measures `WorldSize` times `YScale`, in its color, aligned as Unreal aligns it and with
   `<br>` as line break; equal texts share the `.ui`. `TextProperty` is read as the text it shows
   in the source culture (`None` and `Base` histories).

@@ -103,7 +103,7 @@ partition_folders :: proc(name:string) -> (f:Partition_Folders) {
     os.make_directory_all(f.mirai)
     m:=project.manifest_default("Partition")
     project.manifest_write(project.path(f.mirai,project.PROJECT_FILE,allocator=context.temp_allocator),&m)
-    unreal:=fmt.tprintf("%s/Unreal",f.top)
+    unreal:=fmt.tprintf("%s/assets/Unreal",f.mirai)
     for folder in ([?]string{"Meshes","Maps"}) {os.make_directory_all(fmt.tprintf("%s/Content/%s",unreal,folder))}
     _=os.write_entire_file(fmt.tprintf("%s/Partition.uproject",unreal),"{}")
     _=os.write_entire_file(fmt.tprintf("%s/Content/Meshes/SM_Quad.uasset",unreal),quad())
@@ -156,7 +156,7 @@ a_map_of_world_partition_is_a_scene_that_references_a_section_for_each_cell :: p
     placed,_:=asset.scene_get(&scene,reference_id,"Transform",core.Transform)
     section_path:=""
     for a in report.imports.assets {if a.id==reference.scene {section_path=a.path}}
-    testing.expect(t,strings.has_suffix(section_path,"/levels/World/MainGrid_L0_X0_Y0_Z0.scene"),section_path)
+    testing.expect(t,strings.has_suffix(section_path,"/World/MainGrid_L0_X0_Y0_Z0.scene"),section_path)
     section:asset.Scene
     if !testing.expect_value(t,asset.scene_load(&section,&types,section_path),asset.Error.None) {return}
     defer asset.scene_destroy(&section)

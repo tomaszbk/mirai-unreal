@@ -32,13 +32,13 @@ library (`editor.provided_all`).
   target a component gives) for the materials the level stores, and the provider gives the fixed
   ones in `reads` (a texture parameter by name); the `unreal` plugin passes them to every Unreal
   import: a map's and a package's, such as a model.
-- The `Context` gives the level document (`c.d`), the level's package and texture library
-  (`c.lib`, `decoder`), `mesh_import`, `material_import` and `mesh_renderer` (the mesh and the
-  materials of a component's slots) by Unreal object path, `mesh_body` (the collision of a
-  `StaticMesh`'s `BodySetup`: simple shapes in imported-mesh space, `CollisionTraceFlag` and the
-  profile of its `DefaultInstance`), `layer_materials` (layers of a Landscape material),
-  `asset_place` and `asset_write` (the id, file and `Import_Info` of a level asset, in
-  `levels/<map>/`), `entity_make` (at the root of a section, where the world transform puts it),
+- The `Context` gives the level document (`c.d`), the level's package and texture library (`c.lib`,
+  `decoder`), `mesh_import`, `material_import` and `mesh_renderer` (the mesh and the materials of a
+  component's slots) by Unreal object path, `mesh_body` (the collision of a `StaticMesh`'s
+  `BodySetup`: simple shapes in imported-mesh space, `CollisionTraceFlag` and the profile of its
+  `DefaultInstance`), `layer_materials` (layers of a Landscape material), `asset_place` and
+  `asset_write` (the id, file and `Import_Info` of a level asset, in the folder of the map's
+  import), `entity_make` (at the root of a section, where the world transform puts it),
   `actor_entity`, `actor_key` and `component_set` (the scene), and `warn`.
 - A bridge is declared like any editor plugin: a storage with the provider and its default
   (`Terrain_Unreal`, `Foliage_Unreal`, `Physics_Unreal`, `Fog_Unreal`, `Navigation_Unreal`,
@@ -63,10 +63,10 @@ shows it.
 - Each layer's material is the `.mat` the caller gives per Unreal layer; `folded` says which layer
   each one went to.
 - **When importing a level**, the `Terrain_Unreal` translator writes each landscape (the actor and
-  its proxies of one `LandscapeGuid`) as a `.terrain` in `levels/<map>/` with its `Import_Info`,
-  shown by an entity labeled with the actor. The layers take the materials of the landscape
-  material's layers, by name; a material without layers, which blends with its own splat maps, is
-  slot 0. The whole material, translated as the program that blends the source's layers
+  its proxies of one `LandscapeGuid`) as a `.terrain` in the folder of the map's import with its
+  `Import_Info`, shown by an entity labeled with the actor. The layers take the materials of the
+  landscape material's layers, by name; a material without layers, which blends with its own splat
+  maps, is slot 0. The whole material, translated as the program that blends the source's layers
   (`landscape_mapping`: each one's Unreal layer and the landscape coordinates from the world), is
   its `layers_material`; if it gives no program, the layers blend their materials with a warning.
   The layers and whole materials of each landscape are a single import of the material's package
@@ -102,9 +102,9 @@ in the space of an entity at the scene origin.
   is written on request (`instanced_material`), because no entity takes it when the level ends;
   the instances of each set of per-instance floats (`PerInstanceSMCustomData`) are a batch showing
   the variant, with those values, of the materials that read them (the wall color of a blueprint).
-- **When importing a level**, the `Foliage_Unreal` translator writes per scene a `.foliage` in
-  `levels/<map>/` with its `Import_Info`, named after the World Partition cell (`Foliage` in the
-  map's scene), and a `Foliage` entity at its origin.
+- **When importing a level**, the `Foliage_Unreal` translator writes per scene a `.foliage` in the
+  folder of the map's import with its `Import_Info`, named after the World Partition cell (`Foliage`
+  in the map's scene), and a `Foliage` entity at its origin.
 
 ## Physics (`unreal_physics`)
 
@@ -152,9 +152,9 @@ Translates `Emitter` (Cascade) and `NiagaraActor` actors, and the `ParticleSyste
 Its Editor and Shaders parts bring `shaders/niagara.slang`, the prelude of the translated programs,
 which uses `shaders/unreal_noise.slang`.
 
-- Each emitter of a system is a `.particle` in `levels/<map>/`, written once per system; an actor
-  (or component) is an entity with a `Particle_Emitter` (`bAutoActivate` is `active`), or a group
-  with one per emitter.
+- Each emitter of a system is a `.particle` in the folder of the map's import, written once per
+  system; an actor (or component) is an entity with a `Particle_Emitter` (`bAutoActivate` is
+  `active`), or a group with one per emitter.
 - **Cascade** (`unreal_cascade.odin`). The modules of the first LOD and their distributions:
   constant, uniform or curve (its keys), or the values the package baked from it. Centimeters and
   Z up become meters and Y up; a color above one gives its peak to `intensity`; `EmitterLoops`

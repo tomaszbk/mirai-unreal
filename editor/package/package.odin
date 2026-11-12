@@ -179,6 +179,23 @@ decimal_digits :: proc(value:u32) -> int {
     return count
 }
 
+// The names of the packages p references softly (its SoftPackageReferenceList:
+// what its properties name by path without importing it), in allocator.
+// A table that does not read is an error, with the names read before it.
+soft_packages :: proc(p:^Package,allocator:=context.allocator) -> (names:[]string,error:Error) {
+    count:=int(p.summary.soft_package_count)
+    if count<=0 {return}
+    r:=Reader{bytes=p.bytes,at=int(p.summary.soft_package_offset),end=len(p.bytes)}
+    if r.at<0 || r.at>r.end {return nil,{.Malformed,i64(p.summary.soft_package_offset),"soft package reference offset"}}
+    out:=make([dynamic]string,0,count,allocator)
+    for _ in 0..<count {
+        name:=name_read(&r,p,"soft package reference")
+        if r.error.code!=.None {return out[:],r.error}
+        append(&out,name_text(p,name,allocator))
+    }
+    return out[:],{}
+}
+
 @(private)
 name_read :: proc(r:^Reader,p:^Package,field:string) -> (name:Name_Ref) {
     name={i32_read(r,field),i32_read(r,field)}

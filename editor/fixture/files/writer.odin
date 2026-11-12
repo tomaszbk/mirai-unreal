@@ -32,6 +32,7 @@ Writer :: struct {
     tail:[dynamic]u8,       // bulk data at the end of the file, offsets relative to its start
     trailer:[dynamic]u8,    // the payloads of the trailer
     trailer_entries:[dynamic]Trailer_Entry,
+    soft_packages:[dynamic]string, // the packages it names softly (SoftPackageReferenceList)
     allocator:mem.Allocator,
 }
 
@@ -39,7 +40,7 @@ Trailer_Entry :: struct {id:[20]u8,offset,size,raw:u64}
 
 writer_make :: proc(desc:Package_Desc,allocator:=context.temp_allocator) -> Writer {
     w:=Writer{desc=desc,allocator=allocator}
-    w.names.allocator=allocator;w.name_rows.allocator=allocator;w.imports.allocator=allocator
+    w.names.allocator=allocator;w.name_rows.allocator=allocator;w.imports.allocator=allocator;w.soft_packages.allocator=allocator
     w.exports.allocator=allocator;w.tail.allocator=allocator;w.trailer.allocator=allocator
     w.trailer_entries.allocator=allocator
     name(&w,"None")
@@ -105,7 +106,25 @@ put_text :: proc(b:^Bytes,text:string) {
     append(&b.data,..transmute([]u8)text)
     append(&b.data,0)
 }
-put_name :: proc(b:^Bytes,w:^Writer,text:string) {put_u32(b,name(w,text));put_u32(b,0)}
+put_name :: proc(b:^Bytes,w:^Writer,text:string) {
+    plain,number:=name_split(text)
+    put_u32(b,name(w,plain));put_u32(b,number)
+}
+
+// A package path as Unreal keeps it in a name table: "/Game/M/SM_Wall_10"
+// is "/Game/M/SM_Wall" with number 11, a suffix without leading zeros its
+// number less one; any other name is as it is, with number 0.
+name_split :: proc(text:string) -> (plain:string,number:u32) {
+    under:=strings.last_index_byte(text,'_')
+    digits:=text[under+1:]
+    if len(text)==0 || text[0]!='/' || under<0 || len(digits)==0 || len(digits)>9 || len(digits)>1 && digits[0]=='0' {return text,0}
+    value:u32
+    for c in digits {
+        if c<'0' || c>'9' {return text,0}
+        value=value*10+u32(c-'0')
+    }
+    return text[:under],value+1
+}
 patch_u32 :: proc(b:^Bytes,at:int,value:u32) {for i in 0..<4 {b.data[at+i]=u8(value>>uint(i*8))}}
 patch_u64 :: proc(b:^Bytes,at:int,value:u64) {patch_u32(b,at,u32(value));patch_u32(b,at+4,u32(value>>32))}
 

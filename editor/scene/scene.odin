@@ -82,7 +82,7 @@ Instanced :: struct {actor,component:int}
 // cell is. What a section holds is where it is from the center of that box.
 Section :: struct {
     cell:int,          // of c.partition; -1 for the scene of the map
-    name:string,       // of the cell: its scene is levels/<map>/<name>.scene
+    name:string,       // of the cell: its scene is <name>.scene in the folder of the import
     origin:[3]f32,     // where its reference is in the world
     extents:[3]f32,    // half the box of the cell
     scene:asset.Scene,
@@ -189,7 +189,7 @@ Context :: struct {
     types:^asset.Types,
     options:importer.Import_Options, // root is the project
     report:^Level_Report,
-    assets,folder,shaders:string, // the assets folder of the project, that of the assets of the level, the shaders of the project
+    assets,shaders:string,       // the assets and shaders folders of the project
     source:string,               // the file of the map
     outputs:importer.Outputs,
     formats:[1]importer.Format,
@@ -202,7 +202,7 @@ Context :: struct {
     materials:map[string]base.Asset_Id, // by object path; a variant (instanced_material) by its name
     slot_paths:map[string][]string,     // the materials of the slots of each mesh, by Unreal's index
     custom_reads:map[string]bool,       // whether a material reads PerInstanceCustomData, by object path
-    material_indices:map[string]int,    // the index of the next material written of each package, by file
+    prefixes:map[string]string,         // the folder of the parts of each package the level writes, by file ("" for the map)
     variant_uses:[dynamic]Variant_Use,  // the slots whose material is written at the end of the level
     held:[dynamic]Held_Slot,            // of the component being translated: its slots that name a material the level keeps
     texts:map[u64]base.Asset_Id,        // the .ui of each text, by its text, size, color and alignment
@@ -218,7 +218,6 @@ Context :: struct {
     notes:[Note]int,
     left:map[string]int, // components that were not translated, by class
     reads:Reads,                // the packages of meshes read ahead (reads.odin)
-    known:importer.Known,       // what earlier imports wrote that the meshes read ahead keep
     library_lock:sync.Mutex,    // held while lib and images are used
     decoder:kraken.Decoder,     // of the translators, made when first asked for
     decoder_ready:bool,
@@ -238,10 +237,12 @@ Landscape_Whole :: struct {label:string,mapping:material.Landscape_Mapping}
 // The materials written of a landscape material, and the wholes in its import.
 Layered_Entry :: struct {layered:Layered,wholes:[dynamic]Landscape_Whole,done:bool}
 
-// Imports the map at path into the project at options.root: the scene in
-// levels/<map>.scene of its assets (or where an earlier import of the map put
-// it), the meshes in models/<package>, the materials the components override
-// in materials/ and what plugins write in levels/<map>/. translators are those
+// Imports the map at path, a source in the assets of the project at
+// options.root, as one import that owns everything it writes: the scene, and
+// as its parts the meshes, materials, textures and clips of the packages it
+// reads (each under the folder of its package) and what plugins write, in
+// the folder of the import (<map>/ beside it, or what its sidecar says).
+// The packages it reads are its inputs (level_packages). translators are those
 // of the plugins of the project; without them, their actors are warnings that
 // say how to import them. reads are the textures the plugins' systems write
 // as they run (Translator_Provider).
@@ -273,17 +274,19 @@ level_import :: proc(path:string,options:importer.Import_Options,translators:[]T
         return {},importer.error_make(.Unsupported,"%s: %v at 0x%x: %s",path,document_error.code,document_error.offset,document_error.field,allocator=caller)
     }
     defer level.document_destroy(&d)
+    inputs,inputs_error:=level_packages(absolute,mounts,scratch)
+    if inputs_error.code!=.None {return {},importer.error_make(inputs_error.code,"%s",inputs_error.message,allocator=caller)}
     base.profile_end(open_zone)
     context.temp_allocator=caller
-    report,error=document_import(&d,path,u64(len(bytes)),base.hash64(bytes),options,translators,reads,allocator)
+    report,error=document_import(&d,path,u64(len(bytes)),base.hash64(bytes),options,translators,reads,inputs,allocator)
     if error.code==.None {report.seconds=time.duration_seconds(time.tick_since(started))}
     return
 }
 
 // The scene of a level read already, as level_import writes it: source is
 // the map it names, of size and hash, whose packages d reads through the
-// mounts of its library.
-document_import :: proc(d:^level.Document,source:string,size,hash:u64,options:importer.Import_Options,translators:[]Translator={},reads:[]material.Texture_Read={},allocator:=context.allocator) -> (report:Level_Report,error:importer.Error) {
+// mounts of its library; inputs, the files of those packages.
+document_import :: proc(d:^level.Document,source:string,size,hash:u64,options:importer.Import_Options,translators:[]Translator={},reads:[]material.Texture_Read={},inputs:[]string={},allocator:=context.allocator) -> (report:Level_Report,error:importer.Error) {
     caller:=context.temp_allocator
     arena:mem.Dynamic_Arena
     mem.dynamic_arena_init(&arena,allocator,allocator,block_size=1<<20,out_band_size=1<<20)
@@ -310,7 +313,7 @@ document_import :: proc(d:^level.Document,source:string,size,hash:u64,options:im
     c:=Context{d=d,lib=&materials,types=&types,options=options,report=&report}
     c.meshes.allocator,c.materials.allocator,c.layers.allocator,c.left.allocator=scratch,scratch,scratch,scratch
     c.clips.allocator,c.bodies.allocator,c.slot_paths.allocator,c.custom_reads.allocator=scratch,scratch,scratch,scratch
-    c.material_indices.allocator=scratch
+    c.prefixes.allocator=scratch
     c.variant_uses.allocator,c.texts.allocator,c.held.allocator=scratch,scratch,scratch
     c.translators=translators
     c.texture_reads.allocator=scratch
@@ -319,8 +322,6 @@ document_import :: proc(d:^level.Document,source:string,size,hash:u64,options:im
     c.sky=render.SKY_DEFAULT
     c.assets=project.folder_path(root,.Assets,scratch)
     stem:=filepath.stem(source)
-    levels:=project.path(c.assets,"levels",allocator=scratch)
-    c.folder=project.path(levels,importer.safe_name(stem),allocator=scratch)
     c.source=source
     c.shaders=project.folder_path(root,.Shaders,scratch)
     engine:=""
@@ -331,19 +332,21 @@ document_import :: proc(d:^level.Document,source:string,size,hash:u64,options:im
     c.format_options={engine_content=engine,library=&materials,images=&c.images,lock=&c.library_lock,reads=reads}
 
     c.formats[0]=uasset.format(&c.format_options)
-    c.options.into={}
-    // Each package the level writes looks for what earlier imports wrote: the assets are read once.
-    c.options.earlier_cache=importer.earlier_cache_make(allocator)
-    defer importer.earlier_cache_destroy(c.options.earlier_cache)
+    // The packages the level imports find their documents in one scan of the assets.
+    registry:asset.Registry
+    if options.registry==nil {
+        asset.registry_init(&registry,c.assets,"",scratch,project.imported_path(root,scratch))
+        asset.registry_scan(&registry)
+        c.options.registry=&registry
+    }
+    defer if options.registry==nil {asset.registry_destroy(&registry)}
     c.extended_luminance,c.luminance_max=luminance_range(mounts,level.library_package(d.library,int(d.levels[0].ref.pkg)))
 
     outputs_zone:=importer.zone_begin(options,"level.outputs")
-    outputs_options:=options
-    outputs_options.earlier_cache=c.options.earlier_cache
-    if begin_error:=importer.outputs_begin(&c.outputs,source,levels,size,hash,importer.import_version(LEVEL_VERSION),outputs_options,allocator);begin_error.code!=.None {
+    if begin_error:=importer.outputs_begin(&c.outputs,source,asset.safe_name(stem),size,hash,importer.import_version(LEVEL_VERSION),c.options,allocator);begin_error.code!=.None {
         return {},fail(caller,begin_error.code,"%s",begin_error.message)
     }
-    c.known=importer.outputs_known(&c.outputs,scratch)
+    for file in inputs {importer.output_input(&c.outputs,file)}
     scene_id,scene_path,root_error:=importer.output_root(&c.outputs,asset.KIND_SCENE,stem,".scene")
     if root_error.code!=.None {
         message:=fail(caller,root_error.code,"%s",root_error.message)
@@ -368,7 +371,7 @@ document_import :: proc(d:^level.Document,source:string,size,hash:u64,options:im
     }
     c.sections=make([]Section,1+len(partition.cells),scratch)
     c.sections[0]={cell=-1,id=scene_id,path=scene_path,open=true,orders=make(map[base.Entity_Id]int,scratch)}
-    if asset.scene_init(&c.sections[0].scene,&types,asset.KIND_SCENE,scene_id,scratch)!=.None {
+    if asset.scene_init(&c.sections[0].scene,&types,scene_id,scratch)!=.None {
         importer.outputs_end(&c.outputs,true)
         return {},fail(caller,.Write,"no memory for the scene of %s",source)
     }
@@ -400,7 +403,7 @@ document_import :: proc(d:^level.Document,source:string,size,hash:u64,options:im
     if !c.failed {sections_finish(&c)}
     base.profile_end(sections_zone)
 
-    scene_zone:=importer.zone_begin(options,"level.scene")
+    scene_zone:=importer.zone_begin(options,"level.scene_write")
     if !c.failed {
         section_use(&c,0)
         info:=importer.output_info(&c.outputs,stem,0)
@@ -713,7 +716,7 @@ section_use :: proc(c:^Context,s:int) -> (previous:int) {
     section:=&c.sections[s]
     if !section.open {
         section.orders=make(map[base.Entity_Id]int,context.temp_allocator)
-        if asset.scene_init(&section.scene,c.types,asset.KIND_SCENE,{},context.temp_allocator)!=.None {
+        if asset.scene_init(&section.scene,c.types,{},context.temp_allocator)!=.None {
             fail_write(c,"the scene of the section %s",section.name)
             return
         }
@@ -735,7 +738,7 @@ section_origin :: proc(c:^Context) -> (origin:[3]f32,name:string) {
 // and in the scene of the map an entity that references each where the box
 // of its cell is: a Spatial section, which the plugin streaming loads by
 // where the players are. The scene of a cell is a part of the import of the
-// map, in levels/<map>/: those written take the files and ids of the earlier
+// map: those written take the files and ids of the earlier
 // import by the names of their cells, before any takes one by index.
 @(private)
 sections_finish :: proc(c:^Context) {
@@ -746,7 +749,7 @@ sections_finish :: proc(c:^Context) {
         append(&written,s)
         append(&names,section.name)
     }
-    ids,paths:=importer.output_parts(&c.outputs,asset.KIND_SCENE,names[:],0,".scene",c.folder)
+    ids,paths:=importer.output_parts(&c.outputs,asset.KIND_SCENE,names[:],0,".scene")
     for s,i in written {
         section:=&c.sections[s]
         section.id,section.path=ids[i],paths[i]
@@ -943,9 +946,9 @@ clone :: proc(c:^Context,text:string) -> string {return strings.clone(text,c.rep
 
 // The id, file and Import_Info of an asset of the level other than its
 // scene (a .terrain, a .foliage): those an earlier import of the map gave it
-// under that name, else new ones in levels/<map>/.
+// under that name, else new ones in the folder of its import.
 asset_place :: proc(c:^Context,kind:asset.Fourcc,name:string,index:int,extension:string) -> (id:base.Asset_Id,path:string,info:asset.Import_Info) {
-    id,path=importer.output_part(&c.outputs,kind,name,index,extension,c.folder)
+    id,path=importer.output_part(&c.outputs,kind,name,index,extension)
     info=importer.output_info(&c.outputs,name,index)
     return
 }

@@ -88,7 +88,11 @@ summary_read :: proc(r:^Reader,limits:Limits) -> (s:Summary,package_name:Seriali
     if s.version_ue5>=1015 {_=take(r,16,"verse cell tables")}
     if s.version_ue5>=1014 {_=take(r,4,"metadata offset")}
     _=take(r,4,"dependency offset")
-    if ue4>=UE4_SOFT_PACKAGE_REFERENCES {_=take(r,8,"soft package references")}
+    if ue4>=UE4_SOFT_PACKAGE_REFERENCES {
+        s.soft_package_count=i32_read(r,"soft package reference count")
+        s.soft_package_offset=i32_read(r,"soft package reference offset")
+        if s.soft_package_count<0 || u32(s.soft_package_count)>limits.table_entries {bad(r,.Limit,"soft package reference count");return}
+    }
     if ue4>=UE4_SEARCHABLE_NAMES {_=take(r,4,"searchable names offset")}
     _=take(r,4,"thumbnail table offset")
     if s.version_ue5>=1018 {_=take(r,8,"import type hierarchy table")}

@@ -10,7 +10,7 @@ import "mirai:std/base"
 subtree_places_tell_apart_siblings_that_share_a_name :: proc(t:^testing.T) {
     types:asset.Types;asset.types_init(&types);defer asset.types_destroy(&types)
     scene:asset.Scene
-    if !testing.expect_value(t,asset.scene_init(&scene,&types,asset.KIND_SCENE,{},context.temp_allocator),asset.Error.None) {return}
+    if !testing.expect_value(t,asset.scene_init(&scene,&types,{},context.temp_allocator),asset.Error.None) {return}
     defer asset.scene_destroy(&scene)
     room,first,second,bulb:=base.Entity_Id(1),base.Entity_Id(2),base.Entity_Id(3),base.Entity_Id(4)
     asset.scene_entity_add(&scene,room,0,"Room")

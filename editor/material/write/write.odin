@@ -433,24 +433,24 @@ builder_bytes :: proc(b:^Builder) -> int {
     return total
 }
 
-// An empty model of an import of the Unreal package at source.
-@(private)
-model_of :: proc(lib:^material.Library,source:string,allocator:mem.Allocator) -> (model:importer.Imported_Model,error:importer.Error) {
-    bytes,read_error:=serial.file_read(source,allocator,limit=i64(lib.limits.source_bytes))
-    if read_error!=.None {return {},importer.error_make(.Read,"%s could not be read: %v",source,read_error)}
-    absolute,_:=filepath.abs(source,allocator)
-    model.source,_=strings.replace_all(absolute,"\\","/",allocator)
-    model.source_size=u64(len(bytes))
-    model.source_hash=base.hash64(bytes)
-    model.format="Unreal"
-    model.version=importer.import_version(1)
-    return
+// Puts prefix before the name of every part of a model, and of the model:
+// the parts of several packages written by one import stay apart, each
+// under the folder of its package.
+names_prefix :: proc(model:^importer.Imported_Model,prefix:string,allocator:mem.Allocator) {
+    if prefix=="" {return}
+    named :: proc(prefix,name:string,allocator:mem.Allocator) -> string {return strings.concatenate({prefix,name},allocator)}
+    model.name=named(prefix,model.name,allocator)
+    for &m in model.meshes {m.name=named(prefix,m.name,allocator)}
+    for &m in model.materials {m.name=named(prefix,m.name,allocator)}
+    for &m in model.images {m.name=named(prefix,m.name,allocator)}
+    for &m in model.skeletons {m.name=named(prefix,m.name,allocator)}
+    for &m in model.animations {m.name=named(prefix,m.name,allocator)}
 }
 
-// Writes into folder the sky of the Unreal cube texture at path, whose
-// package is the file source, as one .tex named after it: the image of a
-// Sky (texture.sky_of_cube). shared, lock and decoder as materials_write.
-sky_write :: proc(lib:^material.Library,path,source,folder:string,options:importer.Import_Options={},allocator:=context.allocator,shared:^Builder=nil,lock:^sync.Mutex=nil,decoder:^kraken.Decoder=nil) -> (id:base.Asset_Id,report:importer.Import_Report,error:importer.Error) {
+// Writes the sky of the Unreal cube texture at path as one .tex of the
+// import of outputs, named prefix and the texture: the image of a Sky
+// (texture.sky_of_cube). shared, lock and decoder as materials_write.
+sky_write :: proc(lib:^material.Library,path:string,outputs:^importer.Outputs,prefix:string,options:importer.Import_Options={},allocator:=context.allocator,shared:^Builder=nil,lock:^sync.Mutex=nil,decoder:^kraken.Decoder=nil) -> (id:base.Asset_Id,error:importer.Error) {
     arena:mem.Dynamic_Arena
     mem.dynamic_arena_init(&arena,allocator,allocator,block_size=1<<20,out_band_size=1<<20)
     defer mem.dynamic_arena_destroy(&arena)
@@ -463,7 +463,6 @@ sky_write :: proc(lib:^material.Library,path,source,folder:string,options:import
     }
     defer if b==&own {builder_destroy(&own)}
     model:importer.Imported_Model
-    if model,error=model_of(lib,source,scratch);error.code!=.None {return}
     image:importer.Imported_Image
     {
         if lock!=nil {sync.mutex_lock(lock)}
@@ -474,26 +473,29 @@ sky_write :: proc(lib:^material.Library,path,source,folder:string,options:import
         notes:=make([]string,len(b.warnings),scratch)
         for w,i in b.warnings {notes[i]=strings.clone(w,scratch)}
         clear(&b.warnings)
-        if !cube.ok {return {},{},importer.error_make(.Read,"texture %s could not be read: %s",path,strings.join(notes,"; ",context.temp_allocator))}
+        if !cube.ok {return {},importer.error_make(.Read,"texture %s could not be read: %s",path,strings.join(notes,"; ",context.temp_allocator))}
         sky,sky_error:=texture.sky_of_cube(cube.input.source,cube.usage==.Color,scratch)
-        if sky_error.code!=.None {return {},{},importer.error_make(.Unsupported,"texture %s is not a cube: the sky is drawn from a cube",path)}
+        if sky_error.code!=.None {return {},importer.error_make(.Unsupported,"texture %s is not a cube: the sky is drawn from a cube",path)}
         name:=strings.concatenate({unreal.asset_name(path[strings.last_index_any(path,"./")+1:]),"_Sky"},scratch)
         image={name=name,made=sky,srgb=cube.usage==.Color,keep_precision=cube.input.options.keep_precision}
         model.warnings=notes
     }
     model.images=slice.clone([]importer.Imported_Image{image},scratch)
-    report,error=importer.import_write(&model,folder,options,allocator)
+    names_prefix(&model,prefix,scratch)
+    report:importer.Import_Report
+    report,error=importer.output_model(outputs,&model,scratch)
     if error.code==.None && len(report.image_ids)>0 {id=report.image_ids[0]}
     return
 }
 
 // Writes translated materials as .mat files, with the .tex of their images,
-// into folder, as an import of the Unreal package at source; their programs
-// go to shaders, the shaders folder of the project. Importing the same
-// source again updates the same files and keeps what was changed in them.
-// shared, a builder over lib, keeps the textures it decodes for the next;
-// lock, when given, is held while lib and the builder are used.
-materials_write :: proc(lib:^material.Library,translated:[]material.Translated_Material,source,folder,shaders:string,options:importer.Import_Options={},allocator:=context.allocator,shared:^Builder=nil,lock:^sync.Mutex=nil,decoder:^kraken.Decoder=nil) -> (report:importer.Import_Report,error:importer.Error) {
+// as parts of the import of outputs, named prefix and their names; their
+// programs go to shaders, the shaders folder of the project. Importing the
+// same source again updates the same files and keeps what was changed in
+// them. shared, a builder over lib, keeps the textures it decodes for the
+// next; lock, when given, is held while lib and the builder are used. The
+// report gives the ids by row, in allocator.
+materials_write :: proc(lib:^material.Library,translated:[]material.Translated_Material,outputs:^importer.Outputs,prefix,shaders:string,options:importer.Import_Options={},allocator:=context.allocator,shared:^Builder=nil,lock:^sync.Mutex=nil,decoder:^kraken.Decoder=nil) -> (report:importer.Import_Report,error:importer.Error) {
     arena:mem.Dynamic_Arena
     mem.dynamic_arena_init(&arena,allocator,allocator,block_size=1<<20,out_band_size=1<<20)
     defer mem.dynamic_arena_destroy(&arena)
@@ -507,7 +509,6 @@ materials_write :: proc(lib:^material.Library,translated:[]material.Translated_M
     defer if b==&own {builder_destroy(&own)}
 
     model:importer.Imported_Model
-    if model,error=model_of(lib,source,scratch);error.code!=.None {return}
     built:=make([]Built_Material,len(translated),scratch)
     programs:=make([dynamic]string,scratch)
     // The images of the builder stay where they are while the materials are written.
@@ -555,12 +556,13 @@ materials_write :: proc(lib:^material.Library,translated:[]material.Translated_M
     }
     model.warnings=warnings[:]
     model.programs=programs[:]
-    if held==nil {return importer.import_write(&model,folder,options,allocator)}
+    names_prefix(&model,prefix,scratch)
+    if held==nil {return importer.output_model(outputs,&model,allocator)}
     // The images are written from the builder without its lock: what it holds stays.
     b.outside+=1
     sync.mutex_unlock(held)
     held=nil
-    report,error=importer.import_write(&model,folder,options,allocator)
+    report,error=importer.output_model(outputs,&model,allocator)
     sync.mutex_lock(lock)
     b.outside-=1
     sync.cond_broadcast(&b.decoded)

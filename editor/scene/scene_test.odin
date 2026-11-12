@@ -161,7 +161,7 @@ folders_make :: proc(name:string) -> (f:Fixture_Folders) {
     top:=fmt.tprintf("%s/mirai-unreal-scene-%d-%s",directory,os.get_pid(),name)
     os.remove_all(top)
     f.mirai=fmt.tprintf("%s/project",top)
-    f.unreal=fmt.tprintf("%s/Unreal",top)
+    f.unreal=fmt.tprintf("%s/assets/Unreal",f.mirai)
     os.make_directory_all(f.mirai)
     m:=project.manifest_default("Levels")
     project.manifest_write(project.path(f.mirai,project.PROJECT_FILE,allocator=context.temp_allocator),&m)
@@ -203,7 +203,7 @@ a_map_becomes_a_scene_of_entities_meshes_lights_and_cameras_in_the_units_of_mira
     report,error:=level_import(f.map_path,{root=f.mirai},engine_content="-")
     if !testing.expectf(t,error.code==.None,"%v: %s",error.code,error.message) {return}
     defer level_report_destroy(&report)
-    testing.expect(t,strings.has_suffix(report.scene_path,"/assets/levels/Map.scene"),report.scene_path)
+    testing.expect(t,strings.has_suffix(report.scene_path,"/Maps/Map/Map.scene"),report.scene_path)
     testing.expect_value(t,report.meshes,1)
 
     types:asset.Types;asset.types_init(&types);defer asset.types_destroy(&types)
@@ -225,7 +225,7 @@ a_map_becomes_a_scene_of_entities_meshes_lights_and_cameras_in_the_units_of_mira
     renderer,has_renderer:=asset.scene_get(&scene,shown,"Mesh_Renderer",render.Mesh_Renderer)
     testing.expect(t,has_renderer && renderer.mesh!={})
     red_id:base.Asset_Id
-    for a in report.imports.assets {if a.kind==asset.KIND_MATERIAL && a.name=="Red" {red_id=a.id}}
+    for a in report.imports.assets {if a.kind==asset.KIND_MATERIAL && a.name=="Red/Red" {red_id=a.id}}
     testing.expect(t,red_id!={} && renderer.materials[0]==red_id,"OverrideMaterials[0] is the material of slot 1, the first")
     moss,moss_parent,_:=entity_named(&scene,"Moss")
     testing.expect_value(t,moss_parent,rock)
@@ -269,23 +269,30 @@ a_map_becomes_a_scene_of_entities_meshes_lights_and_cameras_in_the_units_of_mira
     // its shade hidden on its own.
     lamp,_,lamp_found:=entity_named(&scene,"Lamp")
     lamp2,_,lamp2_found:=entity_named(&scene,"Lamp2")
-    if testing.expect(t,lamp_found && lamp2_found && len(scene.instances)==2,"each lamp is an instance") {
-        prefab_id:=scene.instances[0].prefab
-        testing.expect(t,prefab_id!={} && scene.instances[1].prefab==prefab_id,"of one prefab")
-        testing.expect(t,scene.instances[0].root==lamp && scene.instances[1].root==lamp2)
+    first_lamp,first_found:=asset.scene_instance(&scene,lamp)
+    second_lamp,second_found:=asset.scene_instance(&scene,lamp2)
+    if testing.expect(t,lamp_found && lamp2_found && first_found && second_found && len(asset.scene_instance_roots(&scene))==2,"each lamp is an instance") {
+        prefab_id:=first_lamp.prefab
+        testing.expect(t,prefab_id!={} && second_lamp.prefab==prefab_id,"of one prefab")
+        members,_:=asset.scene_instance_members(&scene,lamp)
+        of_first :: proc(members:[]asset.Placed,e:base.Entity_Id) -> bool {
+            for m in members {if m.entity==e {return true}}
+            return false
+        }
         hidden_hash:=base.name_hash("Hidden")
         overrides:=[2]int{}
         for &o in scene.overrides {
             testing.expectf(t,o.component!=base.name_hash("Transform") || o.entity!=lamp && o.entity!=lamp2,"the placement of a root is its own, not an override")
-            overrides[o.instance==scene.instances[0].id?0:1]+=1
+            in_first:=o.entity==lamp || of_first(members,o.entity)
+            overrides[in_first?0:1]+=1
             name:=base.text_get(o.path[:])
-            testing.expect(t,o.component==0 && name=="name" && (o.entity==lamp || o.entity==lamp2) || o.component==hidden_hash && o.kind==.Added && o.instance==scene.instances[1].id,"each root keeps its label, the second shade its Hidden")
+            testing.expect(t,o.component==0 && name=="name" && (o.entity==lamp || o.entity==lamp2) || o.component==hidden_hash && o.kind==.Added && !in_first,"each root keeps its label, the second shade its Hidden")
         }
         // The first lamp is labeled as its prefab is named: only the second renames its root.
         testing.expect_value(t,overrides,[2]int{0,2})
         prefab_path:=""
         for a in report.imports.assets {if a.id==prefab_id {prefab_path=a.path}}
-        testing.expect(t,strings.has_suffix(prefab_path,"/levels/Map/Lamp.prefab"),prefab_path)
+        testing.expect(t,strings.has_suffix(prefab_path,"/Maps/Map/Lamp.scene"),prefab_path)
         prefab:asset.Scene
         if testing.expect_value(t,asset.scene_load(&prefab,&types,prefab_path),asset.Error.None) {
             defer asset.scene_destroy(&prefab)
@@ -352,8 +359,8 @@ fog_translate :: proc(c:^Context,actors:[]int) -> int {
         e,ok:=actor_entity(c,a)
         if !ok {return 0}
         density,_:=level.real_of(c.d,c.d.components[c.d.actors[a].root].ref,"FogDensity",0.02)
-        marker:=render.Tint{color={f32(density),0,0,1}}
-        if !component_set(c,e,"Tint",&marker) {return 0}
+        marker:=render.Material_Values{color={f32(density),0,0,1}}
+        if !component_set(c,e,"Material_Values",&marker) {return 0}
         id,path,info:=asset_place(c,asset.KIND_TEXTURE,c.d.actors[a].label,0,".tex")
         _=info
         if !asset_write(c,id,asset.KIND_TEXTURE,c.d.actors[a].label,path,{1,2,3}) {return 0}
@@ -372,13 +379,13 @@ a_translator_of_a_plugin_takes_the_actors_of_its_class_and_places_its_assets :: 
     testing.expect(t,!has_warning(&report,"ExponentialHeightFog"),"its actors are not warnings")
     placed:importer.Written
     for a in report.imports.assets {if a.name=="Fog" {placed=a}}
-    testing.expect(t,strings.has_suffix(placed.path,"/assets/levels/Map/Fog.tex"),placed.path)
+    testing.expect(t,placed.id!={} && placed.kind==asset.KIND_TEXTURE,"the fog writes its texture as a part of the map")
     types:asset.Types;asset.types_init(&types);defer asset.types_destroy(&types)
     scene:asset.Scene
     if !testing.expect_value(t,asset.scene_load(&scene,&types,report.scene_path),asset.Error.None) {return}
     defer asset.scene_destroy(&scene)
     fog,_,found:=entity_named(&scene,"Fog")
-    marker,marked:=asset.scene_get(&scene,fog,"Tint",render.Tint)
+    marker,marked:=asset.scene_get(&scene,fog,"Material_Values",render.Material_Values)
     testing.expect(t,found && marked && close(marker.color.r,0.05))
 }
 
@@ -388,11 +395,11 @@ a_translator_of_a_plugin_takes_the_actors_of_its_class_and_places_its_assets :: 
 mesh_mark :: proc(c:^Context,a,k:int,e:base.Entity_Id) {
     body,ok:=mesh_body(c,level.path_of(c.d,c.d.components[k].ref,"StaticMesh"))
     if !ok {return}
-    marker:=render.Tint{color={f32(len(body.shapes)),f32(body.trace),1,1}}
-    component_set(c,e,"Tint",&marker)
+    marker:=render.Material_Values{color={f32(len(body.shapes)),f32(body.trace),1,1}}
+    component_set(c,e,"Material_Values",&marker)
     if shown,found:=asset.scene_get(c.scene,e,"Mesh_Renderer",render.Mesh_Renderer);found && shown.mesh==body.mesh {
         marker.color.b=0
-        component_set(c,e,"Tint",&marker)
+        component_set(c,e,"Material_Values",&marker)
     }
 }
 
@@ -409,9 +416,9 @@ a_component_hook_of_a_plugin_adds_to_the_entity_of_each_mesh :: proc(t:^testing.
     if !testing.expect_value(t,asset.scene_load(&scene,&types,report.scene_path),asset.Error.None) {return}
     defer asset.scene_destroy(&scene)
     shown,_,found:=entity_named(&scene,"StaticMeshComponent0")
-    marker,marked:=asset.scene_get(&scene,shown,"Tint",render.Tint)
+    marker,marked:=asset.scene_get(&scene,shown,"Material_Values",render.Material_Values)
     // The mesh of the fixture keeps no BodySetup: no simple shapes, the default trace, and the mesh it shows.
-    testing.expect(t,found && marked && marker.color==render.Tint{color={0,0,0,1}}.color)
+    testing.expect(t,found && marked && marker.color==render.Material_Values{color={0,0,0,1}}.color)
 }
 
 @(test)
@@ -526,9 +533,9 @@ a_skeletal_mesh_of_a_level_is_the_skinned_mesh_of_its_import_with_its_overrides 
     mesh_id,skeleton_id,red_id:base.Asset_Id
     for a in report.imports.assets {
         switch {
-        case a.kind==asset.KIND_MESH && a.name=="Fixture":mesh_id=a.id
+        case a.kind==asset.KIND_MESH && a.name=="Fixture/Fixture":mesh_id=a.id
         case a.kind==asset.KIND_SKELETON:skeleton_id=a.id
-        case a.kind==asset.KIND_MATERIAL && a.name=="Red":red_id=a.id
+        case a.kind==asset.KIND_MATERIAL && a.name=="Red/Red":red_id=a.id
         }
     }
     testing.expect(t,mesh_id!={} && skeleton_id!={} && red_id!={},"the mesh, its skeleton and the override are imported")
@@ -868,7 +875,7 @@ instanced_components_show_the_materials_the_level_keeps_and_the_variants_of_thei
         return view.info.base_color,view_error==.None
     }
     held:=shown(&scene,"Plain 0")
-    testing.expectf(t,held!={} && strings.contains(materials[held],"/levels/Tiles/") && strings.contains(materials[held],"MID_M_Tint"),"the instance dynamic the actor keeps goes with the map, named after it: %s",materials[held])
+    testing.expectf(t,held!={} && strings.contains(materials[held],"/Tiles/") && strings.contains(materials[held],"MID_M_Tint"),"the instance dynamic the actor keeps goes with the map, named after it: %s",materials[held])
     gray,_:=color(&types,materials,held)
     testing.expectf(t,close3(gray,{0.5,0.5,0.5}),"the instance without custom data shows the default: %v",gray)
     red,blue:=shown(&scene,"Tinted 0"),shown(&scene,"Tinted 2")
@@ -877,4 +884,30 @@ instanced_components_show_the_materials_the_level_keeps_and_the_variants_of_thei
     red_color,_:=color(&types,materials,red)
     blue_color,_:=color(&types,materials,blue)
     testing.expectf(t,close3(red_color,{1,0,0}) && close3(blue_color,{0,0,1}),"each variant the color of its data: %v %v",red_color,blue_color)
+}
+
+// The packages of a map are those its imports and its soft references name,
+// and theirs, a name with its number as Unreal keeps it, never its build data.
+@(test)
+the_packages_of_a_map_follow_its_soft_references_but_not_its_build_data :: proc(t:^testing.T) {
+    f:=folders_make("packages")
+    defer folders_remove(f)
+    _=os.write_entire_file(fmt.tprintf("%s/Content/Meshes/SM_Soft.uasset",f.unreal),quad_package())
+    _=os.write_entire_file(fmt.tprintf("%s/Content/Meshes/SM_Wall_10.uasset",f.unreal),quad_package())
+    _=os.write_entire_file(fmt.tprintf("%s/Content/Maps/Map_BuiltData.uasset",f.unreal),quad_package())
+    l:=fixture.level_begin("/Game/Maps/Map")
+    append(&l.w.soft_packages,"/Game/Meshes/SM_Soft")
+    fixture.package_object(&l.w,"/Game/Meshes/SM_Wall_10","/Script/Engine","StaticMesh","SM_Wall_10")
+    fixture.package_object(&l.w,"/Game/Maps/Map_BuiltData","/Script/Engine","MapBuildDataRegistry","Map_BuiltData")
+    _=os.write_entire_file(f.map_path,fixture.level_bytes(&l))
+    content,_:=strings.replace_all(fmt.tprintf("%s/Content",f.unreal),"\\","/",context.temp_allocator)
+    files,error:=level_packages(f.map_path,{{"/Game",content}},context.temp_allocator)
+    if !testing.expectf(t,error.code==.None,"%s",error.message) {return}
+    soft,numbered,built:=false,false,false
+    for file in files {
+        soft||=strings.has_suffix(file,"/Meshes/SM_Soft.uasset")
+        numbered||=strings.has_suffix(file,"/Meshes/SM_Wall_10.uasset")
+        built||=strings.has_suffix(file,"_BuiltData.uasset")
+    }
+    testing.expectf(t,soft && numbered && !built,"the soft reference, the package of a numbered name and not the build data: %v",files)
 }
