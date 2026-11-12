@@ -11,7 +11,7 @@ import mm "mirai:std/math"
 
 // The landscapes of a level as a grid of heights in Mirai's space: Unreal's
 // components, sections, subsections and textures stay here. A landscape is
-// every ALandscape and ALandscapeProxy of one LandscapeGuid; their
+// every Landscape and LandscapeProxy of one LandscapeGuid; their
 // components tile one grid of quads.
 //
 // Mirai's x runs along Unreal's +Y and z along -X, so sample (i,j) of the
@@ -285,7 +285,7 @@ component_read :: proc(r:^Reader,ref:level.Ref) -> (c:Component,error:unreal.Err
     c.size_quads,error=int_property(d,ref,"ComponentSizeQuads",0);if error.code!=.None {return}
     c.subsection_quads,error=int_property(d,ref,"SubsectionSizeQuads",0);if error.code!=.None {return}
     c.subsections,error=int_property(d,ref,"NumSubsections",0);if error.code!=.None {return}
-    // ULandscapeComponent's default.
+    // LandscapeComponent's default.
     c.bias,error=vector4_property(d,ref,"HeightmapScaleBias",{0,0,0,1});if error.code!=.None {return}
     if c.subsections<1 || c.subsections>2 || c.subsection_quads<1 || c.size_quads!=c.subsection_quads*c.subsections || c.size_quads>4096 {
         return c,{.Malformed,0,"landscape component sizes"}
@@ -398,7 +398,7 @@ decoded_of :: proc(r:^Reader,ref:level.Ref) -> (decoded:^texture.Decoded,width,h
     return held,held.levels[0].width,held.levels[0].height,{}
 }
 
-// The texel of vertex v of a component, Unreal's VertexXYToTexelXY: each
+// The texel of vertex v of a component, as Unreal numbers them: each
 // subsection repeats the vertices of its edges.
 @(private)
 texel_of :: proc "contextless" (c:Component,v:int) -> int {

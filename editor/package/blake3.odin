@@ -4,7 +4,7 @@ import "base:intrinsics"
 import "core:encoding/endian"
 
 // BLAKE3 of a whole buffer: the content hash Unreal keeps for raw payloads
-// (FCompressedBuffer stores all 32 bytes, an IoHash the first 20). Whole
+// (CompressedBuffer stores all 32 bytes, an IoHash the first 20). Whole
 // chunks go four at a time, one in each lane of a vector: each operation does
 // the work of four, which is what keeps the hash fast without the optimizer.
 

@@ -12,7 +12,7 @@ import unreal "project:plugins/unreal/editor/package"
 // (centimeters, +Z up, +X forward, +Y right, left-handed, v from the top).
 //
 //   mesh_read     the properties of the export and where its payload is
-//   mesh_decode   the payload: FRawMesh of UE4 or FMeshDescription
+//   mesh_decode   the payload: RawMesh of UE4 or MeshDescription
 
 MAX_UVS :: 8
 
@@ -30,7 +30,7 @@ Source_Model :: enum u8 {
 
 Layout :: enum u8 {Raw_Mesh,Mesh_Description}
 
-// Where the source model is stored: an FCompressedBuffer (UE5), or the raw
+// Where the source model is stored: an CompressedBuffer (UE5), or the raw
 // bytes of UE4 bulk data, those optionally in zlib chunks.
 Payload_Encoding :: enum u8 {Raw,Zlib,Compressed_Buffer}
 Payload :: struct {span:unreal.Span,encoding:Payload_Encoding,raw_size:i64}
@@ -42,7 +42,7 @@ Material_Slot :: struct {
     path:string,          // object path of the material, "/Game/M/M_Rock.M_Rock"; "" without one
 }
 
-// The FMeshBuildSettings of the source model that change what is drawn.
+// The MeshBuildSettings of the source model that change what is drawn.
 Build_Settings :: struct {
     scale:[3]f32,
     recompute_normals:bool,      // the normals of the source are replaced by smooth ones
@@ -275,10 +275,10 @@ native_head :: proc(p:^unreal.Package,v:Versions,tail:unreal.Span,models:int,mes
     return
 }
 
-// The material of slot index of count from the FStaticMaterial array that a
+// The material of slot index of count from the StaticMaterial array that a
 // StaticMesh of UE4 writes last in its native tail, untagged: some UE4 saves keep
 // MaterialInterface only there. Each entry is the material, its slot name and
-// imported slot name, and FMeshUVChannelInfo (two bools and four densities).
+// imported slot name, and MeshUVChannelInfo (two bools and four densities).
 // 0 when the end of the export is not that array.
 @(private)
 native_material :: proc(p:^unreal.Package,properties:^unreal.Property_List,index,count:int) -> unreal.Object_Ref {
@@ -302,7 +302,7 @@ byte_payload :: proc(bulk:unreal.Byte_Bulk_Data) -> Payload {
     return {bulk.payload,bulk.flags&unreal.BULK_ZLIB!=0?.Zlib:.Raw,bulk.size}
 }
 
-// An FMeshDescriptionBulkData at span: the payload and how many bytes the struct takes.
+// An MeshDescriptionBulkData at span: the payload and how many bytes the struct takes.
 @(private)
 description_bulk_payload :: proc(p:^unreal.Package,v:Versions,span:unreal.Span) -> (payload:Payload,size:i64,error:unreal.Error) {
     if v.main<MAIN_VIRTUALIZED {
@@ -322,7 +322,7 @@ description_bulk_payload :: proc(p:^unreal.Package,v:Versions,span:unreal.Span) 
     return
 }
 
-// The payload of an export of class, a UMeshDescriptionBaseBulkData:
+// The payload of an export of class, a MeshDescriptionBaseBulkData:
 // StaticMeshDescriptionBulkData or SkeletalMeshDescriptionBulkData.
 @(private)
 description_object_payload :: proc(p:^unreal.Package,v:Versions,object:unreal.Object_Ref,class:string) -> (payload:Payload,error:unreal.Error) {
@@ -343,7 +343,7 @@ description_object_payload :: proc(p:^unreal.Package,v:Versions,object:unreal.Ob
 
 @(private)
 build_settings_read :: proc(p:^unreal.Package,v:Versions,model:^unreal.Property_List,out:^Build_Settings) -> (error:unreal.Error) {
-    // FMeshBuildSettings defaults: what a tagged struct leaves out.
+    // MeshBuildSettings defaults: what a tagged struct leaves out.
     out^={scale={1,1,1},recompute_normals=true,recompute_tangents=true,remove_degenerates=true}
     property:=unreal.property_find(p,model,"BuildSettings")
     if property==nil {return}
@@ -404,7 +404,7 @@ materials_read :: proc(p:^unreal.Package,properties:^unreal.Property_List,mesh:^
         }
         return
     }
-    // Saves before FStaticMaterial: one slot per material, named after it.
+    // Saves before StaticMaterial: one slot per material, named after it.
     property:=unreal.property_find(p,properties,"Materials")
     if property==nil {return}
     view:unreal.Array_View
@@ -437,7 +437,7 @@ materials_read :: proc(p:^unreal.Package,properties:^unreal.Property_List,mesh:^
     return
 }
 
-// A FMeshSectionInfoMap: a map of (LOD << 16 | section) to FMeshSectionInfo; only the material of LOD 0 matters here.
+// A MeshSectionInfoMap: a map of (LOD << 16 | section) to MeshSectionInfo; only the material of LOD 0 matters here.
 @(private)
 section_materials_read :: proc(p:^unreal.Package,properties:^unreal.Property_List,name:string,allocator:mem.Allocator) -> (materials:[]i32,error:unreal.Error) {
     property:=unreal.property_find(p,properties,name)

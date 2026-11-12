@@ -8,7 +8,7 @@ import "core:strings"
 import unreal "project:plugins/unreal/editor/package"
 
 // Evaluating the expressions of an Unreal material into the Graph, as its
-// translator (MaterialExpressionsToMIR) builds them: each expression class is
+// translator builds them: each expression class is
 // one case, material functions are expanded where they are called, static
 // switches and the static parameters of the instances are resolved, and what
 // cannot be translated leaves NONE and is counted by its class.
@@ -29,7 +29,7 @@ ATTRIBUTE_NAMES := [Attribute]string{
     .Pixel_Depth_Offset="PixelDepthOffset",.Displacement="Displacement",
 }
 
-// What each output is when nothing is connected (FMaterialAttributeDefinitionMap).
+// What each output is when nothing is connected (MaterialAttributeDefinitionMap).
 @(rodata)
 ATTRIBUTE_DEFAULTS := [Attribute][4]f32{
     .Base_Color={0,0,0,0},.Metallic={},.Specular={0.5,0,0,0},.Roughness={0.5,0,0,0},.Anisotropy={},.Emissive={},
@@ -90,7 +90,7 @@ Scope :: struct {
     bound:[2]Value,
 }
 
-// A stack of material layers (FMaterialLayersFunctions): the functions of
+// A stack of material layers (MaterialLayersFunctions): the functions of
 // its layers and of the blends between them, of the package pkg, and which
 // layers are on.
 Layer_Stack :: struct {
@@ -813,7 +813,7 @@ custom_expression :: proc(e:^Evaluator,o:Object,output,scope:i32) -> Value {
 }
 
 // What custom HLSL may call: HLSL's intrinsics and types, the names the
-// program gives Unreal's (CUSTOM_PRELUDE) and Unreal's noise
+// program gives Unreal's prelude and Unreal's noise
 // (unreal_noise.slang). A call of anything else that the code does not
 // define is of Unreal's shader library.
 @(private)
@@ -1177,7 +1177,7 @@ function_expressions :: proc(function:Object,classes:[]string) -> []Object {
     return found[:]
 }
 
-// FMaterialLayersFunctions from its tagged struct: the layers, the blends
+// MaterialLayersFunctions from its tagged struct: the layers, the blends
 // and which layers are on (in UE5 in its editor-only data).
 @(private)
 layer_stack_read :: proc(pkg:^Opened,list:^unreal.Property_List,allocator:mem.Allocator) -> (stack:Layer_Stack,ok:bool) {
@@ -1411,7 +1411,7 @@ function_input :: proc(e:^Evaluator,o:Object,scope:i32) -> Value {
 break_output :: proc(e:^Evaluator,o:Object,output:i32) -> (Attribute,bool) {
     // The outputs of BreakMaterialAttributes, in its order; saves before
     // anisotropy (UE4 518) have neither Anisotropy nor Tangent. X: the
-    // eight customized UVs and the shading model, which have no attribute.
+    // eight customized Vs and the shading model, which have no attribute.
     X :: Attribute(255)
     modern:=[]Attribute{.Base_Color,.Metallic,.Specular,.Roughness,.Anisotropy,.Emissive,.Opacity,.Opacity_Mask,.Normal,.Tangent,
         .World_Position_Offset,.Subsurface_Color,.Clear_Coat,.Clear_Coat_Roughness,.Ambient_Occlusion,.Refraction,
@@ -1489,7 +1489,7 @@ set_attributes :: proc(e:^Evaluator,o:Object,scope:i32) -> Value {
     return {NONE,i32(len(e.aggregates)-1)}
 }
 
-// The inputs of an array of FExpressionInput saved natively.
+// The inputs of an array of ExpressionInput saved natively.
 @(private)
 inputs_elements :: proc(p:^unreal.Package,view:unreal.Array_View) -> []Input {
     out:=make([dynamic]Input,context.temp_allocator)

@@ -4,8 +4,8 @@ import "core:mem"
 import "core:strings"
 import unreal "project:plugins/unreal/editor/package"
 
-// Morph targets of LOD 0 of a skeletal mesh: the UMorphTarget exports its
-// MorphTargets names, whose FMorphTargetLODModel moves rows of the vertices of
+// Morph targets of LOD 0 of a skeletal mesh: the MorphTarget exports its
+// MorphTargets names, whose MorphTargetLODModel moves rows of the vertices of
 // the LOD model, or the "Morph-" attributes of a UE 5.4 mesh description,
 // which move its vertices and turn the normals of its vertex instances.
 
@@ -18,19 +18,19 @@ Morph_Target :: struct {
 }
 
 @(private) UE4_MORPH_TANGENT_Z_DELTA :: 348 // VER_UE4_MORPHTARGET_CPU_TANGENTZDELTA_FORMATCHANGE
-@(private) EDITOR_MORPH_SECTION_INDICES :: 23 // FEditorObjectVersion::AddedMorphTargetSectionIndices
-@(private) FORTNITE_MORPH_GENERATED_BY_ENGINE :: 6 // FFortniteMainBranchObjectVersion::SaveGeneratedMorphTargetByEngine
-@(private) FORTNITE_MORPH_CUSTOM_IMPORT :: 158 // FFortniteMainBranchObjectVersion::MorphTargetCustomImport
-@(private) FORTNITE_MORPH_COOKED_COMPRESSED :: 211 // FFortniteMainBranchObjectVersion::MorphTargetCookedCPUDataCompressed
-@(private) SPECIAL_MORPH_STRIP_SOURCE :: 8 // FUE5SpecialProjectStreamObjectVersion::StripMorphTargetSourceDataForCookedBuilds
-// FMorphTargetDelta: PositionDelta and TangentZDelta of three floats and SourceIdx; before
-// UE4_MORPH_TANGENT_Z_DELTA the tangent was an FDeprecatedSerializedPackedNormal of four bytes.
+@(private) EDITOR_MORPH_SECTION_INDICES :: 23 // EditorObjectVersion::AddedMorphTargetSectionIndices
+@(private) FORTNITE_MORPH_GENERATED_BY_ENGINE :: 6 // FortniteMainBranchObjectVersion::SaveGeneratedMorphTargetByEngine
+@(private) FORTNITE_MORPH_CUSTOM_IMPORT :: 158 // FortniteMainBranchObjectVersion::MorphTargetCustomImport
+@(private) FORTNITE_MORPH_COOKED_COMPRESSED :: 211 // FortniteMainBranchObjectVersion::MorphTargetCookedCPUDataCompressed
+@(private) SPECIAL_MORPH_STRIP_SOURCE :: 8 // UE5SpecialProjectStreamObjectVersion::StripMorphTargetSourceDataForCookedBuilds
+// MorphTargetDelta: PositionDelta and TangentZDelta of three floats and SourceIdx; before
+// UE4_MORPH_TANGENT_Z_DELTA the tangent was an DeprecatedSerializedPackedNormal of four bytes.
 @(private) MORPH_DELTA_BYTES :: 12+12+4
 @(private) MORPH_DELTA_PACKED_BYTES :: 12+4+4
 // The prefix of the morph target attributes of a mesh description.
 @(private) MORPH_ATTRIBUTE_PREFIX :: "Morph-"
 
-// The deltas of LOD 0 of a UMorphTarget export, over vertices rows of the LOD model.
+// The deltas of LOD 0 of a MorphTarget export, over vertices rows of the LOD model.
 @(private)
 morph_target_read :: proc(p:^unreal.Package,v:Versions,object:unreal.Object_Ref,vertices:int,allocator:mem.Allocator) -> (target:Morph_Target,error:unreal.Error) {
     if !export_of_class(p,object,"/Script/Engine","MorphTarget") {
@@ -57,7 +57,7 @@ morph_target_read :: proc(p:^unreal.Package,v:Versions,object:unreal.Object_Ref,
     count,size:=0,MORPH_DELTA_BYTES
     if lods>0 {
         special,_:=unreal.custom_version(p,unreal.UE5_SPECIAL_PROJECT_VERSION)
-        // FMorphTargetLODModel of LOD 0: Vertices first.
+        // MorphTargetLODModel of LOD 0: Vertices first.
         if v.editor>=EDITOR_MORPH_SECTION_INDICES && v.fortnite>=FORTNITE_MORPH_GENERATED_BY_ENGINE && special>=SPECIAL_MORPH_STRIP_SOURCE {
             if bool_read(&r,"morph target vertices stripped") {return {},{.Cooked,tail.offset,"morph target vertices were stripped when cooking"}}
         }

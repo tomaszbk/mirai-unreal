@@ -20,7 +20,7 @@ Mesh_Sockets :: struct {
     error:unreal.Error,
 }
 
-SPRING_ARM_SOCKET :: "SpringEndpoint" // the socket at the end of a USpringArmComponent
+SPRING_ARM_SOCKET :: "SpringEndpoint" // the socket at the end of a SpringArmComponent
 
 @(private)
 mesh_sockets_destroy :: proc(s:^Mesh_Sockets,allocator:=context.allocator) {
@@ -82,7 +82,7 @@ mesh_sockets_read :: proc(d:^Document,path:string) -> (s:Mesh_Sockets) {
     places:=make([dynamic]mm.Transform,context.temp_allocator)
     switch {
     case export_is(p,unreal.Object_Ref(at+1),"/Script/Engine","StaticMesh"):
-        // UStaticMeshSocket: relative to the component.
+        // StaticMeshSocket: relative to the component.
         f,f_error:=property(d,{i32(index),unreal.Object_Ref(at+1)},"Sockets")
         if f_error.code!=.None {s.error=f_error;return}
         if f.property==nil {break}
@@ -148,7 +148,7 @@ mesh_sockets_read :: proc(d:^Document,path:string) -> (s:Mesh_Sockets) {
     return
 }
 
-// The USkeleton at path, read in the temp allocator.
+// The Skeleton at path, read in the temp allocator.
 @(private)
 skeleton_of :: proc(d:^Document,path:string) -> (skeleton:umesh.Skeleton,error:unreal.Error) {
     dot:=strings.index_byte(path,'.')

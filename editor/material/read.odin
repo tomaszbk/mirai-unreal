@@ -7,7 +7,7 @@ import unreal "project:plugins/unreal/editor/package"
 // Reading the properties of material objects. A property that is not saved
 // has the value of the class default, which the callers pass.
 
-// An FExpressionInput: the output of another expression of the same package
+// An ExpressionInput: the output of another expression of the same package
 // that a pin reads, the channels it keeps, and for the inputs of a material
 // the constant used while nothing is connected.
 Input :: struct {
@@ -21,11 +21,11 @@ Input :: struct {
     name:string, // InputName: of an input of a function call, the name of the input of the function
 }
 
-// FCoreObjectVersion::MaterialInputNativeSerialize: inputs are saved natively; before, as tagged structs.
+// CoreObjectVersion::MaterialInputNativeSerialize: inputs are saved natively; before, as tagged structs.
 @(private) CORE_MATERIAL_INPUT_NATIVE :: 1
-// FFrameworkObjectVersion::PinsStoreFName: InputName is an FName.
+// FrameworkObjectVersion::PinsStoreFName: InputName is a Name.
 @(private) FRAMEWORK_PINS_STORE_FNAME :: 31
-// FFortniteMainBranchObjectVersion::MaterialInputUsesLinearColor: the constant of a color input is an FLinearColor, before an FColor.
+// FortniteMainBranchObjectVersion::MaterialInputUsesLinearColor: the constant of a color input is a LinearColor, before a Color.
 @(private) FORTNITE_MATERIAL_INPUT_LINEAR_COLOR :: 171
 
 // The tagged properties of o; nil when they cannot be read, which gives
@@ -198,7 +198,7 @@ Association :: enum u8 {Global,Layer,Blend}
 Layer_Ref :: struct {association:Association,index:i32}
 
 // The name of a parameter in a struct: ParameterInfo.Name, or ParameterName
-// in saves from before FMaterialParameterInfo, and the layer it is of.
+// in saves from before MaterialParameterInfo, and the layer it is of.
 list_parameter :: proc(p:^unreal.Package,list:^unreal.Property_List) -> (name:string,layer:Layer_Ref,ok:bool) {
     if info:=unreal.property_find(p,list,"ParameterInfo");info!=nil {
         inner,error:=unreal.property_tagged_struct(p,info,true,context.temp_allocator)

@@ -114,8 +114,8 @@ guid_put :: proc(w:^Writer,property:string,value:[16]u8) {
     append(&w.bytes,..value[:])
 }
 
-// A native FExpressionInput, or a material input with its constant (UE4:
-// an FColor for a color input).
+// A native ExpressionInput, or a material input with its constant (UE4:
+// a Color for a color input).
 Input :: struct {expression,output:i32,mask:[4]bool,use_constant:bool,constant:[4]f32}
 
 input_put :: proc(w:^Writer,property,kind:string,input:Input) {

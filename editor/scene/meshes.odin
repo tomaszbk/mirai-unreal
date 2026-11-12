@@ -279,7 +279,7 @@ animation_play :: proc(c:^Context,a,k:int,e:base.Entity_Id) {
     }
     if path=="" {path=level.path_of(d,ref,"AnimToPlay")}
     if path=="" {return}
-    // FSingleAnimationPlayData's defaults: looping and playing, at the start, at rate one.
+    // SingleAnimationPlayData's defaults: looping and playing, at the start, at rate one.
     looping,playing:=true,true
     if item,_:=chain_find(&chain,"bSavedLooping");item!=nil {looping=chain_bool(&chain,"bSavedLooping")}
     if item,_:=chain_find(&chain,"bSavedPlaying");item!=nil {playing=chain_bool(&chain,"bSavedPlaying")}

@@ -33,13 +33,13 @@ instance_custom :: proc(instances:Instances,i:int) -> []f32 {
 
 // The instances of the bulk arrays of PerInstanceSMData and
 // PerInstanceSMCustomData in a native payload.
-// An UInstancedStaticMeshComponent writes it after what
-// UStaticMeshComponent keeps (LODs, painted vertices: their length changes
+// An InstancedStaticMeshComponent writes it after what
+// StaticMeshComponent keeps (LODs, painted vertices: their length changes
 // with the save) and the flags bCooked and bHasSkipSerializationPropertiesData
 // of the saves that have them: the element size, the count and the elements,
 // then the bulk array of the custom data (floats). The array is where a size
 // and a count fit the payload and its first element is a matrix of row
-// vectors: FInstancedStaticMeshInstanceData is a matrix of floats (64 bytes),
+// vectors: InstancedStaticMeshInstanceData is a matrix of floats (64 bytes),
 // with the UV biases of UE4 after it (80), or a matrix of doubles (128). None
 // there is no instance: a component without them, or one that takes those
 // of its archetype.

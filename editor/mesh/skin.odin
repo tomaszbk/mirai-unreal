@@ -315,7 +315,7 @@ corners_weld :: proc(g:^Gather,chunk_of:[]int,skin:^Skin_Rows,weld:Weld_Settings
     return triangles_keep(g,keep)
 }
 
-// Points, normals and UVs are equal when every component is within the threshold.
+// Points, normals and Vs are equal when every component is within the threshold.
 @(private)
 within :: #force_inline proc "contextless" (a,b:[$N]f32,threshold:f32) -> bool {
     for i in 0..<N {if !(abs(a[i]-b[i])<=threshold) {return false}}

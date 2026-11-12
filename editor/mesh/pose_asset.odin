@@ -117,7 +117,7 @@ pose_asset_fill :: proc(p:^unreal.Package,index:int,a:^Animation) -> (error:unre
 @(private)
 Pose_Transform :: struct {position:[3]f32,rotation:[4]f32,scale:[3]f32}
 
-// The tagged FTransforms of an array property.
+// The tagged Transforms of an array property.
 @(private)
 transforms_of :: proc(p:^unreal.Package,property:^unreal.Property,error:^unreal.Error) -> []Pose_Transform {
     view,view_error:=unreal.property_array(p,property)
@@ -153,7 +153,7 @@ reals_of :: proc(p:^unreal.Package,list:^unreal.Property_List,name:string,error:
     return out
 }
 
-// The names of an array of FName.
+// The names of an array of Name.
 @(private)
 names_of :: proc(p:^unreal.Package,list:^unreal.Property_List,name:string,error:^unreal.Error) -> []unreal.Name_Ref {
     property:=unreal.property_find(p,list,name)
@@ -165,7 +165,7 @@ names_of :: proc(p:^unreal.Package,list:^unreal.Property_List,name:string,error:
     return names
 }
 
-// The names of the poses: PoseFNames, or the FSmartNames of PoseNames, which
+// The names of the poses: PoseFNames, or the SmartNames of PoseNames, which
 // keep their DisplayName alone.
 @(private)
 pose_names_read :: proc(p:^unreal.Package,list:^unreal.Property_List,error:^unreal.Error) -> []unreal.Name_Ref {
@@ -185,7 +185,7 @@ pose_names_read :: proc(p:^unreal.Package,list:^unreal.Property_List,error:^unre
     return out
 }
 
-// The names of the curves of a pose asset: the CurveName of each FAnimCurveBase, or its smart Name.
+// The names of the curves of a pose asset: the CurveName of each AnimCurveBase, or its smart Name.
 @(private)
 pose_curve_names_read :: proc(p:^unreal.Package,list:^unreal.Property_List,error:^unreal.Error) -> []string {
     property:=unreal.property_find(p,list,"Curves")

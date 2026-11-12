@@ -1,7 +1,7 @@
 package unreal
 
-// The source payload of an asset (FEditorBulkData): the raw bytes kept as an
-// FCompressedBuffer in the package trailer or, in older saves, after the exports.
+// The source payload of an asset (EditorBulkData): the raw bytes kept as an
+// CompressedBuffer in the package trailer or, in older saves, after the exports.
 
 EDITOR_BULK_VIRTUALIZED :: u32(1<<0)
 EDITOR_BULK_SIDECAR :: u32(1<<1)
@@ -16,11 +16,11 @@ Editor_Bulk_Data :: struct {
     id:Guid,
     content_id:Payload_Id, // first 20 bytes of the BLAKE3 of the raw payload
     raw_size:i64,
-    payload:Span,          // the FCompressedBuffer; empty when raw_size is zero
+    payload:Span,          // the CompressedBuffer; empty when raw_size is zero
     source:Span,           // the serialized struct in the export
 }
 
-// Reads the FEditorBulkData that starts at span.offset and locates its payload.
+// Reads the EditorBulkData that starts at span.offset and locates its payload.
 editor_bulk_data :: proc(p:^Package,span:Span) -> (data:Editor_Bulk_Data,error:Error) {
     if p==nil || !span_valid(p.bytes,span) {return {},{.Malformed,span.offset,"editor bulk data range"}}
     r:=Reader{bytes=p.bytes,at=int(span.offset),end=int(span.offset+span.size)}

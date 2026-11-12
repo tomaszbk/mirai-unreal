@@ -3,9 +3,9 @@ package fixture_files
 // A SkeletalMesh package with LOD 0 in each of the ways Unreal saves it, and
 // a Skeleton package.
 Skeletal_Layout :: enum u8 {
-    UE4,         // UE4: FSkeletalMeshLODModel with the import bulk data in it, bone indices and weights of 8 bits
+    UE4,         // UE4: SkeletalMeshLODModel with the import bulk data in it, bone indices and weights of 8 bits
     UE5,         // UE5 before 5.4: the LOD model with doubles, weights of 16 bits and user section data
-    Description, // UE 5.4: FMeshDescription with SkinWeights in a SkeletalMeshDescriptionBulkData, and the LOD model
+    Description, // UE 5.4: MeshDescription with SkinWeights in a SkeletalMeshDescriptionBulkData, and the LOD model
 }
 
 Skeletal_Bone :: struct {
@@ -22,7 +22,7 @@ Skeletal_Influence :: struct {bone:u16,weight:f32} // bone: row of the reference
 Skeletal_Morph :: struct {name:string,deltas:[]Skeletal_Morph_Delta}
 Skeletal_Morph_Delta :: struct {vertex:u32,position,normal:[3]f32}
 
-// A USkeletalMeshSocket; rotation is pitch, yaw and roll.
+// A SkeletalMeshSocket; rotation is pitch, yaw and roll.
 Skeletal_Socket :: struct {name,bone:string,location,rotation,scale:[3]f32}
 
 Skeletal_Section :: struct {
@@ -36,7 +36,7 @@ Skeletal_Section :: struct {
 Skeletal_Fixture :: struct {
     layout:Skeletal_Layout,
     name:string,               // SK_Fixture when ""
-    skeleton:string,           // package of its USkeleton, "" for none
+    skeleton:string,           // package of its Skeleton, "" for none
     bones:[]Skeletal_Bone,
     positions:[][3]f32,        // per vertex, Unreal's space
     normals:[][3]f32,
@@ -48,7 +48,7 @@ Skeletal_Fixture :: struct {
     slots:[]Mesh_Slot,
     lod_material_map:[]i32,
     bounds_min,bounds_max:[3]f32,
-    morphs:[]Skeletal_Morph,   // UMorphTarget exports, or the Morph- attributes of a description
+    morphs:[]Skeletal_Morph,   // MorphTarget exports, or the Morph- attributes of a description
     sockets:[]Skeletal_Socket, // of the mesh
     thresholds:Maybe([3]f32),  // ThresholdPosition, ThresholdTangentNormal and ThresholdUV of the build settings
     influence_limit:i32,       // BoneInfluenceLimit of the build settings; 0: none
@@ -192,7 +192,7 @@ skeletal_mesh_package :: proc(f:Skeletal_Fixture,allocator:=context.temp_allocat
     return package_bytes(&w)
 }
 
-// USkeletalMeshSocket exports of an outer.
+// SkeletalMeshSocket exports of an outer.
 @(private)
 sockets_add :: proc(w:^Writer,sockets:[]Skeletal_Socket,outer:i32,allocator:=context.temp_allocator) {
     for socket in sockets {
@@ -226,7 +226,7 @@ skeleton_package :: proc(layout:Skeletal_Layout,name:string,bones:[]Skeletal_Bon
     reference_skeleton(&b,&w,s,bones)
     put_u32(&b,0)
     put_zeros(&b,16)
-    // FSmartNameContainer: one mapping, AnimationCurves, with the FCurveMetaData of each curve.
+    // SmartNameContainer: one mapping, AnimationCurves, with the CurveMetaData of each curve.
     put_u32(&b,1)
     put_name(&b,&w,"AnimationCurves")
     put_u32(&b,u32(len(morph_curves)))
@@ -247,7 +247,7 @@ last_part :: proc(path:string) -> string {
     return path
 }
 
-// FReferenceSkeleton: bones with their export names, poses and the map of names.
+// ReferenceSkeleton: bones with their export names, poses and the map of names.
 @(private)
 reference_skeleton :: proc(b:^Bytes,w:^Writer,s:Skeletal_Versions,bones:[]Skeletal_Bone) {
     put_u32(b,u32(len(bones)))
@@ -267,7 +267,7 @@ reference_skeleton :: proc(b:^Bytes,w:^Writer,s:Skeletal_Versions,bones:[]Skelet
     for bone,i in bones {put_name(b,w,bone.name);put_u32(b,u32(i))}
 }
 
-// FSkeletalMeshModel with LOD 0, its sections and their soft vertices.
+// SkeletalMeshModel with LOD 0, its sections and their soft vertices.
 @(private)
 lod_model :: proc(b:^Bytes,w:^Writer,s:Skeletal_Versions,f:Skeletal_Fixture) {
     if s.fortnite>=22 {put_u8(b,0);put_u8(b,0)}

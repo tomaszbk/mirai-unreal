@@ -3,9 +3,9 @@ package unreal
 import "core:c"
 import stbi "vendor:stb/image"
 
-// UE4's bulk data (FByteBulkData): raw bytes inline after the struct or in the
+// UE4's bulk data (ByteBulkData): raw bytes inline after the struct or in the
 // section that starts at Summary.bulk_data_start, optionally zlib chunks. A
-// bulk data of other elements (FIntBulkData) counts elements of element_size bytes.
+// bulk data of other elements (IntBulkData) counts elements of element_size bytes.
 
 BULK_AT_END_OF_FILE :: u32(1<<0)
 BULK_ZLIB :: u32(1<<1)

@@ -3,7 +3,7 @@ package mesh
 import "core:mem"
 import unreal "project:plugins/unreal/editor/package"
 
-// FMeshDescription as its bulk data stores it, with names as FStrings and
+// MeshDescription as its bulk data stores it, with names as Strings and
 // with the versions of the package. Two layouts:
 //
 //   element map      UE5 (and the one release that wrote it early): a map of
@@ -193,7 +193,7 @@ element_arrays_read :: proc(r:^Reader,v:Versions,t:^Topology,scratch:mem.Allocat
     _=attributes_read(r,v,scratch)
 }
 
-// An FAttributesSetBase: its attribute arrays by name.
+// An AttributesSetBase: its attribute arrays by name.
 @(private)
 attributes_read :: proc(r:^Reader,v:Versions,scratch:mem.Allocator) -> []Attribute {
     list:=make([dynamic]Attribute,scratch)
@@ -334,7 +334,7 @@ channel_read :: proc(r:^Reader,v:Versions,type:Attribute_Type,scratch:mem.Alloca
     return
 }
 
-// Values of an FArchive TArray, skipped.
+// Values of an array, skipped.
 @(private)
 values_skip :: proc(r:^Reader,v:Versions,type:Attribute_Type,count:int) {
     if type==.Name {

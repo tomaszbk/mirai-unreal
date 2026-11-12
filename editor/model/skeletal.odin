@@ -15,7 +15,7 @@ import mm "mirai:std/math"
 INFLUENCES :: len(asset.Skin_Vertex{}.weights)
 
 // A SkeletalMesh: its reference skeleton as a skeleton of the model, named
-// after its USkeleton; LOD 0 as a mesh in bind space with a joint per bone,
+// after its Skeleton; LOD 0 as a mesh in bind space with a joint per bone,
 // whose inverse bind is that of the bone at rest; and a node. Bones and
 // inverse binds stay in Unreal's space here: the import turns them with the
 // geometry.
@@ -24,7 +24,7 @@ skeletal_add :: proc(c:^Context,name:string,source:^umesh.Skeletal_Mesh,geometry
     r:=c.r
     skeleton_name:=fmt.tprintf("%s skeleton",name)
     if source.skeleton!="" {_,skeleton_name=object_name_split(source.skeleton)}
-    // The sockets of a skeletal mesh: its own, then those of its USkeleton it does not name.
+    // The sockets of a skeletal mesh: its own, then those of its Skeleton it does not name.
     sockets:=make([dynamic]umesh.Socket,context.temp_allocator)
     append(&sockets,..source.sockets)
     if source.skeleton!="" {

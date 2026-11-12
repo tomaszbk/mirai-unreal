@@ -19,13 +19,13 @@ Animation_Track :: struct {
     scales:[][3]f32,    // none: a scale of one
 }
 
-// An FRichCurveKey; interpolation is ERichCurveInterpMode.
+// An RichCurveKey; interpolation is ERichCurveInterpMode.
 Animation_Curve_Key :: struct {time,value,arrive,leave:f32,interpolation:u8}
 
 Animation_Fixture :: struct {
     layout:Animation_Layout,
     name:string,      // MM_Fixture when ""
-    skeleton:string,  // package of its USkeleton, "" for none
+    skeleton:string,  // package of its Skeleton, "" for none
     keys,fps:int,
     tracks:[]Animation_Track,
     curve:string,
@@ -93,7 +93,7 @@ animation_package :: proc(f:Animation_Fixture,allocator:=context.temp_allocator)
         object_property(&b,&w,"DataModel",2)
     }
     none(&b,&w)
-    // UAnimationAsset: no object guid, the skeleton guid; UAnimSequence: strip flags.
+    // AnimationAsset: no object guid, the skeleton guid; AnimSequence: strip flags.
     put_u32(&b,0)
     put_zeros(&b,16)
     put_u8(&b,0);put_u8(&b,0)
@@ -144,7 +144,7 @@ animation_package :: proc(f:Animation_Fixture,allocator:=context.temp_allocator)
     return package_bytes(&w)
 }
 
-// FRawAnimSequenceTrack as operator<< writes it: each array bulk serialized.
+// RawAnimSequenceTrack as it is written natively: each array bulk serialized.
 @(private="file")
 raw_track :: proc(b:^Bytes,track:Animation_Track) {
     put_u32(b,12);put_u32(b,u32(len(track.positions)))
@@ -181,7 +181,7 @@ quats_property :: proc(b:^Bytes,w:^Writer,property:string,values:[][4]f32) {
     native_array_property(b,w,property,"Quat4f",len(values),data.data[:])
 }
 
-// FRichCurveKey keys, serialized natively.
+// RichCurveKey keys, serialized natively.
 @(private="file")
 rich_keys :: proc(keys:[]Animation_Curve_Key) -> []u8 {
     data:=bytes_make()
@@ -193,7 +193,7 @@ rich_keys :: proc(keys:[]Animation_Curve_Key) -> []u8 {
     return data.data[:]
 }
 
-// FloatCurves of one FFloatCurve, named by its FSmartName (the DisplayName first).
+// FloatCurves of one FloatCurve, named by its SmartName (the DisplayName first).
 @(private="file")
 curves_property :: proc(b:^Bytes,w:^Writer,f:Animation_Fixture) {
     item:=bytes_make()
@@ -246,7 +246,7 @@ export_complete :: proc(w:^Writer,class,outer:i32,name:string,properties:^Bytes)
     export_add(w,{class=class,outer=outer,name=name,data=b.data[:],script_end=end})
 }
 
-// FMovieSceneFloatChannel: its keys as their memory (FMovieSceneFloatValue of 28 bytes).
+// MovieSceneFloatChannel: its keys as their memory (MovieSceneFloatValue of 28 bytes).
 @(private="file")
 float_channel :: proc(times:[]i32,values:[]f32,interpolation:u8,leave:[]f32=nil,fps:int) -> []u8 {
     b:=bytes_make()
@@ -309,7 +309,7 @@ sequencer_package :: proc(w:^Writer,f:Animation_Fixture,name:string,skeleton:i32
 
     scene:=bytes_make(allocator)
     complete_tag(&scene,w,"Tracks",{{"ArrayProperty",1},{"ObjectProperty",0}},8);put_u32(&scene,1);put_i32(&scene,4)
-    // TRange<FFrameNumber>: [0, keys) as UMovieScene keeps the playback range.
+    // A range of frame numbers: [0, keys) as MovieScene keeps the playback range.
     complete_tag(&scene,w,"PlaybackRange",struct_type("MovieSceneFrameRange","/Script/MovieScene"),10,TAG_NATIVE)
     put_u8(&scene,1);put_i32(&scene,0);put_u8(&scene,0);put_i32(&scene,i32(f.keys))
     rate:=bytes_make(allocator)

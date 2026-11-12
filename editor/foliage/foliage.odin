@@ -121,7 +121,7 @@ foliage_read :: proc(d:^level.Document,allocator:=context.allocator,actors:[]int
     return
 }
 
-// The components of the level by the lazy GUID UObject saves for them,
+// The components of the level by the lazy GUID Object saves for them,
 // which foliage bases name.
 @(private)
 bases_collect :: proc(d:^level.Document,bases:^map[unreal.Guid]int) {
@@ -228,7 +228,7 @@ actor_read :: proc(d:^level.Document,actor_index:int,bases:^map[unreal.Guid]int,
     if !known || version<CROSS_LEVEL_BASE {return f,{.Unsupported_Version,payload.offset,"foliage saved before CrossLevelBase (foliage version 5)"}}
     fortnite,_:=unreal.custom_version(p,unreal.FORTNITE_MAIN_VERSION)
     wide:=p.summary.version_ue5>=UE5_LARGE_WORLD_COORDINATES
-    // FFoliageInstanceBaseCache: the bases instances were placed on.
+    // FoliageInstanceBaseCache: the bases instances were placed on.
     base_guids:=make(map[i32]unreal.Guid,64,context.temp_allocator)
     _=i32_take(&c) // next base id
     lazy:=fortnite<LAZY_TO_SOFT_POINTER
@@ -261,13 +261,13 @@ actor_read :: proc(d:^level.Document,actor_index:int,bases:^map[unreal.Guid]int,
         case .Static_Mesh:
             t.component=unreal.Object_Ref(i32_take(&c))
         case .Actor:
-            // FFoliageActor: the actor of each instance, then the class.
+            // FoliageActor: the actor of each instance, then the class.
             n:=count_take(&c,4)
             t.actors=make([]unreal.Object_Ref,n,context.temp_allocator)
             for &a in t.actors {a=unreal.Object_Ref(i32_take(&c))}
             t.actor_class=unreal.Object_Ref(i32_take(&c))
         case .ISM_Actor:
-            // FFoliageISMActor: its guid, its client handle (index and guid), the
+            // FoliageISMActor: its guid, its client handle (index and guid), the
             // transforms of its meshes by descriptor, then the class.
             take(&c,16);take(&c,4);take(&c,16)
             n:=count_take(&c,8)
@@ -410,7 +410,7 @@ interval_of :: proc(d:^level.Document,ref:level.Ref,name:string,default:[2]f32) 
     return out
 }
 
-// A foliage type, with UFoliageType's defaults for what neither it nor an archetype has.
+// A foliage type, with FoliageType's defaults for what neither it nor an archetype has.
 @(private)
 type_read :: proc(d:^level.Document,owner:level.Ref,type_ref:unreal.Object_Ref,t:^Foliage_Type,allocator:mem.Allocator) -> unreal.Error {
     p:=level.library_package(d.library,int(owner.pkg))
@@ -460,7 +460,7 @@ type_read :: proc(d:^level.Document,owner:level.Ref,type_ref:unreal.Object_Ref,t
     t.cull={cull[0]*0.01,cull[1]*0.01}
     t.casts_shadow,_=level.bool_of(d,ref,"CastShadow",true)
     t.ray_visible,_=level.bool_of(d,ref,"bVisibleInRayTracing",true)
-    // UFoliageType's BodyInstance is NoCollision unless a type says otherwise.
+    // FoliageType's BodyInstance is NoCollision unless a type says otherwise.
     profile:="NoCollision"
     enabled:=""
     if f,f_error:=level.property(d,ref,"BodyInstance");f_error.code==.None && f.property!=nil && f.origin==.Authored {

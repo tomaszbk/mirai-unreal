@@ -2,7 +2,7 @@ package unreal
 
 import "core:math"
 
-// The rotation of an FRotator in Unreal's axes: degrees of pitch about Y, yaw about Z and roll about X.
+// The rotation of a Rotator in Unreal's axes: degrees of pitch about Y, yaw about Z and roll about X.
 rotator_quaternion :: proc "contextless" (pitch,yaw,roll:f64) -> quaternion256 {
     half:=math.PI/360
     sp,cp:=math.sincos(math.mod(pitch,360)*half)

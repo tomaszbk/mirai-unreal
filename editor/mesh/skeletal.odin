@@ -10,14 +10,14 @@ import unreal "project:plugins/unreal/editor/package"
 //
 //   skeletal_read     the properties and the head of the native tail: bounds,
 //                     materials, reference skeleton and where LOD 0 is
-//   skeletal_decode   LOD 0: the FSkeletalMeshLODModel the build of Unreal
-//                     saved with the editor data, or the FMeshDescription with
+//   skeletal_decode   LOD 0: the SkeletalMeshLODModel the build of Unreal
+//                     saved with the editor data, or the MeshDescription with
 //                     skin weights a UE 5.4 mesh is built from
-//   skeleton_read     the reference skeleton of a USkeleton
+//   skeleton_read     the reference skeleton of a Skeleton
 
 Skeletal_Layout :: enum u8 {
-    Lod_Model,        // FSkeletalMeshLODModel in the native tail: what the build of Unreal made of the source
-    Mesh_Description, // FMeshDescription in a SkeletalMeshDescriptionBulkData: the source since UE 5.4
+    Lod_Model,        // SkeletalMeshLODModel in the native tail: what the build of Unreal made of the source
+    Mesh_Description, // MeshDescription in a SkeletalMeshDescriptionBulkData: the source since UE 5.4
 }
 
 // A bone of a reference skeleton with its pose at rest, relative to its parent.
@@ -33,15 +33,15 @@ Skeletal_Mesh :: struct {
     object:unreal.Object_Ref,
     layout:Skeletal_Layout,
     bones:[]Bone,                   // the reference skeleton of the mesh: its bind pose
-    skeleton:string,                // object path of its USkeleton, "" without one
-    materials:[]Material_Slot,      // FSkeletalMaterial: what sections and components name by index
+    skeleton:string,                // object path of its Skeleton, "" without one
+    materials:[]Material_Slot,      // SkeletalMaterial: what sections and components name by index
     section_materials:[]i32,        // LODMaterialMap of LOD 0: the material of each section, -1 to keep its own
     build:Build_Settings,           // of LOD 0: how a mesh description is built
     weld:Weld_Settings,             // of LOD 0: how the build welds its corners and limits their influences
-    model:unreal.Span,              // FSkeletalMeshModel in the native tail
+    model:unreal.Span,              // SkeletalMeshModel in the native tail
     payload:Payload,                // the mesh description, with that layout
-    morph_targets:[]unreal.Object_Ref, // MorphTargets: the UMorphTarget exports of a LOD model
-    sockets:[]Socket,               // its own; those of its USkeleton are in that package
+    morph_targets:[]unreal.Object_Ref, // MorphTargets: the MorphTarget exports of a LOD model
+    sockets:[]Socket,               // its own; those of its Skeleton are in that package
     bounds_min,bounds_max:[3]f32,   // ImportedBounds: of the mesh at rest
     allocator:mem.Allocator,
 }
@@ -55,23 +55,23 @@ Skeleton :: struct {
     allocator:mem.Allocator,
 }
 
-// A USkeletalMeshSocket: a named place relative to a bone, in its space.
+// A SkeletalMeshSocket: a named place relative to a bone, in its space.
 Socket :: struct {
     name,bone:string,
     location:[3]f64,
-    rotation:[3]f64, // FRotator: pitch, yaw, roll in degrees
+    rotation:[3]f64, // Rotator: pitch, yaw, roll in degrees
     scale:[3]f64,
 }
 
-// The FSkeletalMeshBuildSettings that weld the corners of a mesh description
+// The SkeletalMeshBuildSettings that weld the corners of a mesh description
 // into the vertices of its LOD model and limit their influences.
 Weld_Settings :: struct {
     position,normal,uv:f32, // ThresholdPosition, ThresholdTangentNormal, ThresholdUV
     influences:int,         // BoneInfluenceLimit: 0 takes that of the project
 }
 
-// THRESH_NORMALS_ARE_SAME and THRESH_UVS_ARE_SAME: FSkeletalMeshBuildSettings
-// defaults, with THRESH_POINTS_ARE_SAME for positions.
+// The thresholds of the normals and UVs: SkeletalMeshBuildSettings
+// defaults, with the one of positions.
 @(private) NORMALS_ARE_SAME :: 0.00002
 @(private) UVS_ARE_SAME :: 1.0/1024
 @(private) WELD_DEFAULTS :: Weld_Settings{position=DEGENERATE_DISTANCE,normal=NORMALS_ARE_SAME,uv=UVS_ARE_SAME}
@@ -145,7 +145,7 @@ skeletal_mesh_is :: proc(p:^unreal.Package,index:int) -> bool {return export_is(
 // Whether an export is a Skeleton of /Script/Engine.
 skeleton_is :: proc(p:^unreal.Package,index:int) -> bool {return export_is(p,index,"Skeleton")}
 
-// FSkeletalMeshCustomVersion::SplitModelAndRenderData: the oldest skeletal
+// SkeletalMeshCustomVersion::SplitModelAndRenderData: the oldest skeletal
 // mesh read; before it the LOD model kept render buffers of an older format.
 @(private) SKELETAL_SPLIT_MODEL :: 12
 @(private) SKELETAL_REMOVE_TRIANGLE_SORTING :: 13
@@ -183,14 +183,14 @@ skeleton_is :: proc(p:^unreal.Package,index:int) -> bool {return export_is(p,ind
 @(private) RECOMPUTE_TANGENT_VERTEX_MASK :: 2
 @(private) OVERLAPPING_DETECT :: 1
 
-// FStripDataFlags::Editor and ::AudioVisual.
+// StripDataFlags::Editor and ::AudioVisual.
 @(private) STRIP_EDITOR :: 1
 @(private) STRIP_AUDIO_VISUAL :: 2
 
-// FMeshUVChannelInfo: two bools of four bytes and TEXSTREAM_MAX_NUM_UVCHANNELS (4) densities.
+// MeshUVChannelInfo: two bools of four bytes and four densities.
 @(private) UV_CHANNEL_INFO_BYTES :: 2*4+4*4
 
-// The bones of FReferenceSkeleton are FBoneIndexType, 16 bits.
+// The bones of ReferenceSkeleton are BoneIndexType, 16 bits.
 MAX_BONES :: 1<<16
 
 // The properties of a SkeletalMesh export, its reference skeleton and
@@ -309,7 +309,7 @@ skeleton_read :: proc(p:^unreal.Package,index:int,allocator:=context.allocator) 
     return {object=unreal.Object_Ref(index+1),bones=bones,sockets=sockets,morph_curves=curves,curves_known=known,allocator=allocator},{}
 }
 
-// The thresholds and influence limit of the BuildSettings of an FSkeletalMeshLODInfo.
+// The thresholds and influence limit of the BuildSettings of an SkeletalMeshLODInfo.
 @(private)
 weld_settings_read :: proc(p:^unreal.Package,lod:^unreal.Property_List,out:^Weld_Settings) -> (error:unreal.Error) {
     property:=unreal.property_find(p,lod,"BuildSettings")
@@ -340,7 +340,7 @@ f32_of :: proc(p:^unreal.Package,list:^unreal.Property_List,name:string,default:
     return f32(read.real)
 }
 
-// The USkeletalMeshSocket exports of the Sockets of a SkeletalMesh or Skeleton.
+// The SkeletalMeshSocket exports of the Sockets of a SkeletalMesh or Skeleton.
 @(private)
 sockets_read :: proc(p:^unreal.Package,properties:^unreal.Property_List,allocator:mem.Allocator) -> (sockets:[]Socket,error:unreal.Error) {
     property:=unreal.property_find(p,properties,"Sockets")
@@ -361,7 +361,7 @@ sockets_read :: proc(p:^unreal.Package,properties:^unreal.Property_List,allocato
         if error.code!=.None {return}
         defer unreal.properties_destroy(&list)
         e:=&error
-        // USkeletalMeshSocket's defaults: at its bone, unscaled.
+        // SkeletalMeshSocket's defaults: at its bone, unscaled.
         socket:=Socket{scale={1,1,1}}
         socket.name=name_of(p,&list,"SocketName",allocator,e)
         socket.bone=name_of(p,&list,"BoneName",allocator,e)
@@ -374,7 +374,7 @@ sockets_read :: proc(p:^unreal.Package,properties:^unreal.Property_List,allocato
     return out[:],{}
 }
 
-// The TArray<FSkeletalMaterial> of the native tail of a SkeletalMesh.
+// The array of SkeletalMaterial of the native tail of a SkeletalMesh.
 @(private)
 skeletal_materials_read :: proc(r:^Reader,p:^unreal.Package,v:Versions,allocator:mem.Allocator) -> []Material_Slot {
     count:=count_read(r,4,"skeletal mesh material count")
@@ -413,7 +413,7 @@ slot_name_read :: proc(r:^Reader,p:^unreal.Package,field:string,allocator:mem.Al
     return unreal.name_text(p,name,allocator)
 }
 
-// FReferenceSkeleton: the bones, their poses and the map of their names. A
+// ReferenceSkeleton: the bones, their poses and the map of their names. A
 // parent always comes before its children.
 @(private)
 reference_skeleton_read :: proc(r:^Reader,p:^unreal.Package,v:Versions,allocator:mem.Allocator) -> []Bone {
@@ -473,7 +473,7 @@ int_array_of :: proc(p:^unreal.Package,list:^unreal.Property_List,name:string,al
 @(private)
 f32_read :: proc(r:^Reader,field:string) -> f32 {return transmute(f32)u32_read(r,field)}
 
-// A component of an FVector or FQuat: a double since large world coordinates, a float before.
+// A component of an Vector or Quat: a double since large world coordinates, a float before.
 @(private)
 real_read :: proc(r:^Reader,v:Versions,field:string) -> f64 {
     if v.ue5<UE5_LARGE_WORLD_COORDINATES {return f64(f32_read(r,field))}
@@ -482,7 +482,7 @@ real_read :: proc(r:^Reader,v:Versions,field:string) -> f64 {
     return f64_at(bytes,0)
 }
 
-// An FName: its row in the name table and its number.
+// A Name: its row in the name table and its number.
 @(private)
 name_read :: proc(r:^Reader,p:^unreal.Package,field:string) -> unreal.Name_Ref {
     name:=unreal.Name_Ref{i32_read(r,field),i32_read(r,field)}
@@ -490,6 +490,6 @@ name_read :: proc(r:^Reader,p:^unreal.Package,field:string) -> unreal.Name_Ref {
     return name
 }
 
-// A TArray of elements of size bytes, skipped.
+// An array of elements of size bytes, skipped.
 @(private)
 array_skip :: proc(r:^Reader,size:int,field:string) {_=take(r,count_read(r,size,field)*size,field)}

@@ -5,9 +5,9 @@ import "core:math"
 // A StaticMesh package with one source model, in each of the three ways
 // Unreal saves it.
 Mesh_Layout :: enum u8 {
-    Raw_Mesh,           // UE4 before FMeshDescription: FRawMesh in bulk data
-    Legacy_Description, // UE4: FMeshDescription of element arrays, zlib chunks at the end of the file
-    Description,        // UE5: FMeshDescription of element maps in a StaticMeshDescriptionBulkData, in the trailer
+    Raw_Mesh,           // UE4 before MeshDescription: RawMesh in bulk data
+    Legacy_Description, // UE4: MeshDescription of element arrays, zlib chunks at the end of the file
+    Description,        // UE5: MeshDescription of element maps in a StaticMeshDescriptionBulkData, in the trailer
 }
 
 Mesh_Slot :: struct {name,imported_name,material:string} // material: its package, "" for none
@@ -32,8 +32,8 @@ Mesh_Fixture :: struct {
     scale:[3]f32,             // build scale; zero: none
     bounds_min,bounds_max:[3]f32,
     has_bounds:bool,
-    fortnite:i32,             // FFortniteMainBranchObjectVersion of a description: 0 is 80
-    native_slots:bool,        // UE4: MaterialInterface only in the untagged FStaticMaterial array
+    fortnite:i32,             // FortniteMainBranchObjectVersion of a description: 0 is 80
+    native_slots:bool,        // UE4: MaterialInterface only in the untagged StaticMaterial array
     body:Body_Fixture,        // the AggGeom of its BodySetup; no shapes and no trace: no BodySetup
 }
 
@@ -64,7 +64,7 @@ static_mesh_package :: proc(f:Mesh_Fixture,allocator:=context.temp_allocator) ->
     switch f.layout {
     case .Raw_Mesh:versions={{EDITOR,17},{RENDERING,15}}
     case .Legacy_Description:
-        // FEditorObjectVersion::MeshDescriptionTriangles is 35.
+        // EditorObjectVersion::MeshDescriptionTriangles is 35.
         editor:=i32(len(f.polygon_sizes)>0?34:40)
         versions={{EDITOR,editor},{RELEASE,43},{ENTERPRISE,10},{RENDERING,45},{FORTNITE,47}}
     case .Description:ue5=1008;versions={{EDITOR,40},{RELEASE,44},{MAIN,88},{ENTERPRISE,10},{RENDERING,45},{FORTNITE,fortnite}}
@@ -181,7 +181,7 @@ raw_mesh_bytes :: proc(f:Mesh_Fixture,allocator:=context.temp_allocator) -> []u8
     for tangent,i in f.tangents {
         n:=f.normals[i]
         tangent_x[i]=tangent.xyz
-        // FRawMesh keeps the binormal, Unreal's cross product times the sign.
+        // RawMesh keeps the binormal, Unreal's cross product times the sign.
         tangent_y[i]=[3]f32{n.y*tangent.z-n.z*tangent.y,n.z*tangent.x-n.x*tangent.z,n.x*tangent.y-n.y*tangent.x}*tangent.w
     }
     vectors(&b,tangent_x);vectors(&b,tangent_y);vectors(&b,f.normals)
@@ -311,7 +311,7 @@ description_bytes :: proc(w:^Writer,f:Mesh_Fixture,element_map:bool,fortnite:i32
     vertices:=make([dynamic]Attribute,allocator)
     append(&vertices,position_attribute)
     if skin!=nil {append(&vertices,Attribute{name="SkinWeights",type=4,extent=0,raw=skin_weights(skin,allocator)})}
-    // FSkeletalMeshAttributes: a morph target moves vertices and turns the normals of their instances.
+    // SkeletalMeshAttributes: a morph target moves vertices and turns the normals of their instances.
     for morph in morphs {
         moved:=make([][3]f32,len(f.positions),allocator)
         turned:=make([][3]f32,len(f.positions),allocator)
@@ -385,14 +385,14 @@ description_bytes :: proc(w:^Writer,f:Mesh_Fixture,element_map:bool,fortnite:i32
     return b.data[:]
 }
 
-// sRGB bytes as the linear color FMeshDescription keeps.
+// sRGB bytes as the linear color MeshDescription keeps.
 @(private)
 linear :: proc(c:u8) -> f32 {
     x:=f32(c)/255
     return x<=0.04045?x/12.92:math.pow((x+0.055)/1.055,2.4)
 }
 
-// UBodySetup: its AggGeom, trace flag and default instance, and its native
+// BodySetup: its AggGeom, trace flag and default instance, and its native
 // tail without cooked data.
 @(private)
 body_setup_bytes :: proc(w:^Writer,f:Body_Fixture,allocator:=context.temp_allocator) -> []u8 {

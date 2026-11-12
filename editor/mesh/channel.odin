@@ -4,7 +4,7 @@ import "core:math"
 import "core:mem"
 import unreal "project:plugins/unreal/editor/package"
 
-// FMovieSceneFloatChannel of the sequencer, as it is serialized and
+// MovieSceneFloatChannel of the sequencer, as it is serialized and
 // evaluated: keys at frames of its tick resolution, each
 // going to the next as its interpolation says, and the extrapolations before
 // and after them.
@@ -25,17 +25,17 @@ Float_Channel :: struct {
     has_default:bool,
 }
 
-// sizeof(FMovieSceneFloatValue): Value, FMovieSceneTangentData (four floats,
+// The size of MovieSceneFloatValue: Value, MovieSceneTangentData (four floats,
 // the weight mode and three bytes of padding), InterpMode, TangentMode and
 // a padding byte, aligned to four. A channel of values of this size keeps
 // them as their memory.
 @(private) FLOAT_VALUE_BYTES :: 28
-// FMovieSceneFloatValue one by one: the value, four
+// MovieSceneFloatValue one by one: the value, four
 // floats of tangents and four bytes.
 @(private) FLOAT_VALUE_SERIALIZED_BYTES :: 24
 @(private) FRAME_NUMBER_BYTES :: 4
 
-// The channel of a struct property of FMovieSceneFloatChannel.
+// The channel of a struct property of MovieSceneFloatChannel.
 @(private)
 float_channel_read :: proc(p:^unreal.Package,v:Versions,property:^unreal.Property,allocator:mem.Allocator) -> (c:Float_Channel,error:unreal.Error) {
     bytes,_:=unreal.span_bytes(p,property.data)
@@ -81,7 +81,7 @@ float_channel_read :: proc(p:^unreal.Package,v:Versions,property:^unreal.Propert
     return
 }
 
-// Whether an FMovieSceneFloatChannel has keys or a default.
+// Whether an MovieSceneFloatChannel has keys or a default.
 @(private)
 float_channel_has_data :: proc(c:^Float_Channel) -> bool {return len(c.times)>0 || c.has_default}
 
@@ -142,7 +142,7 @@ float_channel_evaluate :: proc(c:^Float_Channel,frame:int) -> (value:f64,weighte
     switch interpolation {
     case .Linear:return offset+v1+(v2-v1)*t,false,true
     case .Cubic:
-        // FCubicBezierInterpolation: the controls a third of the segment along the tangents.
+        // CubicBezierInterpolation: the controls a third of the segment along the tangents.
         p1,p2:=v1+f64(a.leave)*dx/3,v2-f64(b.arrive)*dx/3
         s:=1-t
         return offset+s*s*s*v1+3*s*s*t*p1+3*s*t*t*p2+t*t*t*v2,a.weighted || b.weighted,true

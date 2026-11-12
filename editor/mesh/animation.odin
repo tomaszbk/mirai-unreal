@@ -41,7 +41,7 @@ Curve_Interpolation :: enum u8 {Linear,Constant,Cubic,None}
 // ERichCurveExtrapolation.
 Curve_Extrapolation :: enum u8 {Cycle,Cycle_With_Offset,Oscillate,Linear,Constant,None}
 
-// An FRichCurveKey; the tangents are per second.
+// An RichCurveKey; the tangents are per second.
 Curve_Key :: struct {
     time,value:f32,
     arrive,leave:f32,
@@ -58,13 +58,13 @@ Float_Curve :: struct {
     has_default:bool,
 }
 
-// FAnimSyncMarker.
+// AnimSyncMarker.
 Sync_Marker :: struct {name:string,time:f32}
 
 Animation :: struct {
     object:unreal.Object_Ref,
     layout:Animation_Layout,
-    skeleton:string,      // object path of its USkeleton, "" without one
+    skeleton:string,      // object path of its Skeleton, "" without one
     keys:int,             // of each track that changes: one per frame, the first at 0 and the last at the length
     interval:f64,         // seconds from a key to the next
     tracks:[]Bone_Track,
@@ -102,16 +102,16 @@ animation_is :: proc(p:^unreal.Package,index:int) -> bool {return export_is(p,in
 @(private) UE4_SKELETON_GUID :: 338              // VER_UE4_SKELETON_GUID_SERIALIZATION
 @(private) UE4_RICH_CURVE_KEY :: 366             // VER_UE4_SERIALIZE_RICH_CURVE_KEY
 @(private) UE4_TRACK_CURVES :: 417               // VER_UE4_ANIMATION_ADD_TRACKCURVES
-@(private) MAIN_REMOVE_SOURCE_ANIMATION :: 3     // FUE5MainStreamObjectVersion::RemovingSourceAnimationData
-@(private) RELEASE_RAW_TRACK_SERIALIZER :: 39   // FUE5ReleaseStreamObjectVersion::RawAnimSequenceTrackSerializer
-@(private) SEQUENCER_FLOAT_CHANNEL :: 12         // FSequencerObjectVersion::SerializeFloatChannelCompletely
-@(private) FORTNITE_CHANNEL_SHOW_CURVE :: 53     // FFortniteMainBranchObjectVersion::SerializeFloatChannelShowCurve
+@(private) MAIN_REMOVE_SOURCE_ANIMATION :: 3     // UE5MainStreamObjectVersion::RemovingSourceAnimationData
+@(private) RELEASE_RAW_TRACK_SERIALIZER :: 39   // UE5ReleaseStreamObjectVersion::RawAnimSequenceTrackSerializer
+@(private) SEQUENCER_FLOAT_CHANNEL :: 12         // SequencerObjectVersion::SerializeFloatChannelCompletely
+@(private) FORTNITE_CHANNEL_SHOW_CURVE :: 53     // FortniteMainBranchObjectVersion::SerializeFloatChannelShowCurve
 
 // EAnimAssetCurveFlags::AACF_DriveMorphTarget_DEPRECATED: the curve drives a morph target.
 @(private) AACF_DRIVE_MORPH_TARGET :: 1
-// The default FFrameRate: what a frame rate that keeps no numerator or denominator has.
+// The default FrameRate: what a frame rate that keeps no numerator or denominator has.
 @(private) FRAME_RATE_DEFAULT :: [2]i64{60000,1}
-// FRichCurveKey: three enums of a byte and six floats.
+// RichCurveKey: three enums of a byte and six floats.
 @(private) RICH_CURVE_KEY_BYTES :: 3+6*4
 // The control of a bone in an FK control rig is its name in lower case and this.
 @(private) FK_CONTROL_SUFFIX :: "_CONTROL"
@@ -199,7 +199,7 @@ animation_fill :: proc(p:^unreal.Package,index:int,a:^Animation) -> (error:unrea
 }
 
 // UE4: RawAnimationData in the native tail of an AnimSequence, after the
-// skeleton guid of UAnimationAsset and the strip flags; SourceRawAnimationData,
+// skeleton guid of AnimationAsset and the strip flags; SourceRawAnimationData,
 // in saves that have it, wins when it has tracks. Their names are
 // AnimationTrackNames and their keys NumFrames, or as many as the longest
 // track has, as Unreal corrects them on load.
@@ -256,7 +256,7 @@ raw_tracks_read :: proc(p:^unreal.Package,v:Versions,properties:^unreal.Property
     return
 }
 
-// TArray<FRawAnimSequenceTrack>: each key array bulk serialized, with the
+// An array of RawAnimSequenceTrack: each key array bulk serialized, with the
 // size of its element first.
 @(private)
 raw_track_array_read :: proc(r:^Reader,v:Versions,allocator:mem.Allocator) -> []Bone_Track {
@@ -272,7 +272,7 @@ raw_track_array_read :: proc(r:^Reader,v:Versions,allocator:mem.Allocator) -> []
     return tracks
 }
 
-// A TArray of float vectors, bulk serialized: the size of an element, the count and the elements.
+// An array of float vectors, bulk serialized: the size of an element, the count and the elements.
 @(private)
 bulk_vectors_read :: proc(r:^Reader,$N:int,field:string,allocator:mem.Allocator) -> [][N]f32 {
     size:=i32_read(r,field)
@@ -286,8 +286,8 @@ bulk_vectors_read :: proc(r:^Reader,$N:int,field:string,allocator:mem.Allocator)
     return out
 }
 
-// UAnimDataModel: BoneAnimationTracks of tagged FBoneAnimationTrack, each
-// with its FRawAnimSequenceTrack of float vectors; the keys of NumberOfKeys
+// AnimDataModel: BoneAnimationTracks of tagged BoneAnimationTrack, each
+// with its RawAnimSequenceTrack of float vectors; the keys of NumberOfKeys
 // at FrameRate; CurveData.
 @(private)
 data_model_read :: proc(p:^unreal.Package,index:int,a:^Animation) -> (error:unreal.Error) {
@@ -366,7 +366,7 @@ vector_array_of :: proc(p:^unreal.Package,list:^unreal.Property_List,name:string
     return
 }
 
-// UAnimationSequencerDataModel: its MovieScene holds a control rig track whose
+// AnimationSequencerDataModel: its MovieScene holds a control rig track whose
 // section of an FK control rig keeps one transform control per bone, as
 // float channels of translation, rotation (Euler degrees) and scale. Each
 // frame is the channels evaluated at it, the rotation made from the Euler
@@ -405,7 +405,7 @@ sequencer_read :: proc(p:^unreal.Package,index:int,a:^Animation) -> (error:unrea
     a.interval=f64(rate[1])/f64(rate[0])
     frames:=1
     if range:=unreal.property_find(p,&scene_properties,"PlaybackRange");range!=nil {
-        // TRange<FFrameNumber>: each bound its ERangeBoundTypes and its frame.
+        // A range of frame numbers: each bound its ERangeBoundTypes and its frame.
         bytes,_:=unreal.span_bytes(p,range.data)
         r:=reader_make(bytes,range.data.offset)
         _=u8_read(&r,"playback range lower bound")
@@ -537,9 +537,9 @@ tracks_check :: proc(a:^Animation,at:i64) -> unreal.Error {
     return {}
 }
 
-// FloatCurves of an FRawCurveTracks or FAnimationCurveData: each FFloatCurve
-// named by CurveName (since UE 5.3) or by the DisplayName of its FSmartName,
-// with the keys of its FRichCurve.
+// FloatCurves of an RawCurveTracks or AnimationCurveData: each FloatCurve
+// named by CurveName (since UE 5.3) or by the DisplayName of its SmartName,
+// with the keys of its RichCurve.
 @(private)
 float_curves_read :: proc(p:^unreal.Package,v:Versions,list:^unreal.Property_List,allocator:mem.Allocator) -> (curves:[]Float_Curve,error:unreal.Error) {
     property:=unreal.property_find(p,list,"FloatCurves")
@@ -547,7 +547,7 @@ float_curves_read :: proc(p:^unreal.Package,v:Versions,list:^unreal.Property_Lis
     view:unreal.Array_View
     view,error=unreal.property_array(p,property)
     if error.code!=.None {return}
-    // FFloatCurve declares a native Serialize, which the tag records, but it
+    // FloatCurve declares a native Serialize, which the tag records, but it
     // defers to the tagged properties.
     view.native=false
     items:unreal.Struct_Array
@@ -561,7 +561,7 @@ float_curves_read :: proc(p:^unreal.Package,v:Versions,list:^unreal.Property_Lis
         curve:=&curves[i]
         curve.name=name_of(p,&item,"CurveName",allocator,e)
         if curve.name=="" && error.code==.None {
-            // An FSmartName keeps its DisplayName first.
+            // An SmartName keeps its DisplayName first.
             if smart:=unreal.property_find(p,&item,"Name");smart!=nil {
                 bytes,_:=unreal.span_bytes(p,smart.data)
                 r:=reader_make(bytes,smart.data.offset)
@@ -580,7 +580,7 @@ float_curves_read :: proc(p:^unreal.Package,v:Versions,list:^unreal.Property_Lis
     return
 }
 
-// FRichCurve: its keys, serialized natively,
+// RichCurve: its keys, serialized natively,
 // its default value and how it goes on before and after them.
 @(private)
 rich_curve_read :: proc(p:^unreal.Package,v:Versions,property:^unreal.Property,curve:^Float_Curve,allocator:mem.Allocator) -> (error:unreal.Error) {
@@ -592,7 +592,7 @@ rich_curve_read :: proc(p:^unreal.Package,v:Versions,property:^unreal.Property,c
     EXTRAPOLATIONS :: []string{"RCCE_Cycle","RCCE_CycleWithOffset","RCCE_Oscillate","RCCE_Linear","RCCE_Constant","RCCE_None"}
     curve.pre=Curve_Extrapolation(enum_of(p,&list,"PreInfinityExtrap",EXTRAPOLATIONS,int(Curve_Extrapolation.Constant),e))
     curve.post=Curve_Extrapolation(enum_of(p,&list,"PostInfinityExtrap",EXTRAPOLATIONS,int(Curve_Extrapolation.Constant),e))
-    // FRealCurve: MAX_flt is a curve without a default value.
+    // RealCurve: MAX_flt is a curve without a default value.
     curve.default_value=f32(real_of(p,&list,"DefaultValue",f64(max(f32)),e))
     curve.has_default=curve.default_value!=max(f32)
     if error.code!=.None {return}
@@ -628,7 +628,7 @@ sync_markers_read :: proc(p:^unreal.Package,list:^unreal.Property_List,allocator
     view:unreal.Array_View
     view,error=unreal.property_array(p,property)
     if error.code!=.None {return}
-    // An FAnimSyncMarker keeps its tagged properties, but the tag records it as native.
+    // An AnimSyncMarker keeps its tagged properties, but the tag records it as native.
     view.native=false
     items:unreal.Struct_Array
     items,error=unreal.array_tagged_structs(p,view,true,context.temp_allocator)
@@ -644,7 +644,7 @@ sync_markers_read :: proc(p:^unreal.Package,list:^unreal.Property_List,allocator
     return
 }
 
-// An FFrameRate property: numerator and denominator, positive.
+// An FrameRate property: numerator and denominator, positive.
 @(private)
 frame_rate_of :: proc(p:^unreal.Package,list:^unreal.Property_List,name:string) -> (rate:[2]i64,error:unreal.Error) {
     rate=FRAME_RATE_DEFAULT

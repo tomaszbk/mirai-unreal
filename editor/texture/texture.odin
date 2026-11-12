@@ -22,7 +22,7 @@ Usage :: enum u8 {
     Normal, // tangent-space normal map
 }
 
-// Where the source pixels are stored in the package: an FCompressedBuffer
+// Where the source pixels are stored in the package: an CompressedBuffer
 // (UE5) or the raw bytes of UE4 bulk data, those optionally in zlib chunks.
 Payload_Encoding :: enum u8 {Compressed_Buffer,Raw,Zlib}
 Payload :: struct {span:unreal.Span,encoding:Payload_Encoding,raw_size:i64}

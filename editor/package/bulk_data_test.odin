@@ -50,7 +50,7 @@ unreal_editor_bulk_data_finds_its_payload_in_the_trailer_or_after_the_exports ::
         testing.expect(t,truncated.code!=.None)
     }
 
-    // Saved after the exports: the offset names an FCompressedBuffer, whose header has its size.
+    // Saved after the exports: the offset names an CompressedBuffer, whose header has its size.
     w2:=Fixture_Writer{bytes=make([]u8,256,context.temp_allocator)}
     put_u32(&w2,0)
     w2.at+=36
@@ -95,7 +95,7 @@ unreal_ue4_bulk_data_reads_inline_end_of_file_and_zlib_payloads :: proc(t:^testi
     put_u32(&w,BULK_SEPARATE_FILE|BULK_AT_END_OF_FILE)
     _,separate:=byte_bulk_data(&p,{64,64})
     testing.expect_value(t,separate.code,Error_Code.Unsupported_Value)
-    // An FIntBulkData counts elements of four bytes.
+    // An IntBulkData counts elements of four bytes.
     w.at=128
     put_u32(&w,0);put_u32(&w,2);put_u32(&w,8);put_u64(&w,148)
     w.at+=8

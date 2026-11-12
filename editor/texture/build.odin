@@ -208,7 +208,7 @@ cube_long_lat :: proc(from:textures.Source,read,stored:^textures.Transfer,alloca
                 for x in 0..<size {
                     d:=unreal_direction(cube_direction(face,x,y,size))
                     d/=math.sqrt(d.x*d.x+d.y*d.y+d.z*d.z)
-                    // LookupLongLatFloat with Unreal's swizzle of y and z undone: the pole is +Z.
+                    // The lookup with the swizzle of y and z undone: the pole is +Z.
                     lx:=(1+math.atan2(d.x,-d.y)/math.PI)*0.5*f32(w)
                     ly:=math.acos(clamp(d.z,-1,1))/math.PI*f32(h)
                     x0,y0:=clamp(int(lx),0,w-1),clamp(int(ly),0,h-1)

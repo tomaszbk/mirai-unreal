@@ -107,7 +107,7 @@ rotator_property :: proc(b:^Bytes,w:^Writer,property:string,pitch_yaw_roll:[3]f3
     for x in pitch_yaw_roll {if wide {put_f64(b,f64(x))} else {put_f32(b,x)}}
 }
 
-// An FColor, its bytes B, G, R and A.
+// A Color, its bytes B, G, R and A.
 color_property :: proc(b:^Bytes,w:^Writer,property:string,rgba:[4]u8) {
     tag(b,w,property,"StructProperty",4,{struct_name="Color"})
     put_u8(b,rgba[2]);put_u8(b,rgba[1]);put_u8(b,rgba[0]);put_u8(b,rgba[3])
