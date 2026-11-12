@@ -13,7 +13,7 @@ import unreal "project:plugins/unreal/editor/package"
 // switches and the static parameters of the instances are resolved, and what
 // cannot be translated leaves NONE and is counted by its class.
 
-// The outputs of a material (EMaterialProperty) that a translation reads.
+// The outputs of a material that a translation reads.
 Attribute :: enum u8 {
     Base_Color,Metallic,Specular,Roughness,Anisotropy,Emissive,Opacity,Opacity_Mask,Normal,Tangent,
     World_Position_Offset,Subsurface_Color,Clear_Coat,Clear_Coat_Roughness,Ambient_Occlusion,Refraction,
@@ -629,7 +629,7 @@ expression_build :: proc(e:^Evaluator,o:Object,output:i32,scope:i32) -> Value {
         note(e,"%s is taken at normal incidence: the surface seen head on",object_name(o))
         return nodes(binary(g,.Add,world_place(e,.World_Position),binary(g,.Mul,context_value(g,.Pixel_Normal,3),context_value(g,.Pixel_Depth,1))))
     case "EyeAdaptationInverse":
-        // LightValue·Exposure^-Alpha (EyeAdaptationInverseLookup): with Alpha 1
+        // LightValue·Exposure^-Alpha: with Alpha 1
         // its light value is relative to the exposure, with 0 physical.
         light,has_light:=pin(e,o,"LightValueInput",scope)
         if !has_light {light=constant(g,{1,1,1,0},3)}

@@ -369,11 +369,11 @@ it names). Everything lives in the library's arena.
   move its vertices (the engine deforms surfaces with three fixed mechanisms).
 - **Approximations** (in `notes`): `ActorPositionWS` is the object's pivot; `PerInstanceRandom` is
   0.5; `VertexInterpolator` passes its input, computed per pixel; `TwoSidedSign` is 1 (Mirai flips
-  a back face's frame); `Fresnel` is its reflectance at normal incidence, and the view is head-on,
-  looking down the normal: `CameraVectorWS` and `ReflectionVectorWS` are the normal,
-  `CameraPositionWS` is along it at the depth of the point (`PixelDepth`), and the view and camera
-  spaces of `Transform` have the inverse normal as forward; Mirai reflects by the view and what
-  imitates it sees the surface head-on;
+  a back face's frame); `Fresnel` is its reflectance at normal incidence; the view looks down the
+  normal: `CameraVectorWS` and `ReflectionVectorWS` are the normal, `CameraPositionWS` lies along
+  it at the depth of the point (`PixelDepth`) and the view and camera spaces of `Transform` look
+  along the inverse normal, since Mirai reflects by the view and what imitates it sees the surface
+  head-on;
   `EyeAdaptationInverse` is 1 and leaves emission relative to exposure (`Relative`); a sample's mip
   modes are left to Mirai; additive blend is a layer that does not cover.
 - **Legacy is adapted.** View-dependent relief (`BumpOffset` and the `/Engine`
