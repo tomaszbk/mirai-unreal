@@ -456,6 +456,11 @@ it names). Everything lives in the library's arena.
   a branch on the weight that gathers everything of that layer. Without weight, the input is zero
   (or each attribute's default) and the height zero: what Unreal sums from an unpainted layer,
   except the minimum weight (`0.0001`) of a height one.
+- **Landscape grass** (`landscape_grass`, `grass.odin`): each input of a `LandscapeGrassOutput`
+  that names a `LandscapeGrassType` gives the paint layers it reads (as the graph evaluates it,
+  and along its pins past a function that cannot be read), whether it is one layer's weight as is
+  (`plain`), and the `GrassVarieties` of its type with a variety's defaults (densities per square
+  metre, distances in metres; the `Default` of a per-platform value).
 
 ### Writing (`material/write`)
 
@@ -808,9 +813,9 @@ All with `mirai test` on the package folder inside a project with the plugin ins
   their source, `RateScale` and additives.
 - `editor/material` and `material/write`: synthetic UE4 packages (`material/fixture`) with a
   standard graph, tagged inputs, instances with static switches, functions, Landscape and material
-  layers, a program, screen, depth, bounds, the world with its origin, `Custom`, noise,
-  untranslated classes and damaged bytes; writing reads back `.mat` and `.tex` and reimports over a
-  changed parameter.
+  layers, landscape grass, a program, screen, depth, bounds, the world with its origin, `Custom`,
+  noise, untranslated classes and damaged bytes; writing reads back `.mat` and `.tex` and reimports
+  over a changed parameter.
 - `editor/level`, `landscape` and `foliage`: Unreal space against rotation matrices, archetypes
   from another package and by SCS, inherited templates
   (`an_inherited_component_a_blueprint_changes_takes_its_override_template`), native constructor

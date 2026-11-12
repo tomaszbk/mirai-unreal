@@ -58,6 +58,9 @@ PROVIDER_READS :: 4
 //   whatever their cell: what it writes streams by itself (a terrain by its
 //   pages). instanced also calls it with the instanced static mesh
 //   components the actors of the scene show (c.instanced), after them;
+//   map_scene also calls it for the scene of the map without actors of its
+//   own there, for what it makes of those of others (the grass of a
+//   landscape);
 // - with component, what it adds to each entity the scene made of a
 //   component of one of classes (StaticMeshComponent): the component k of
 //   actor a, and e, its entity. A component of a class the scene does not
@@ -68,6 +71,7 @@ Translator :: struct {
     component:proc(c:^Context,a,k:int,e:base.Entity_Id),
     root:bool,
     instanced:bool,
+    map_scene:bool,
 }
 
 // The components whose instances are batches of foliage of the translator
@@ -502,7 +506,7 @@ level_translate :: proc(c:^Context,translators:[]Translator) {
             if translator.translate==nil {continue}
             actors:=make([dynamic]int,context.temp_allocator)
             for a in section {if owners[a]==t {append(&actors,a)}}
-            if len(actors)==0 && !(translator.instanced && len(c.instanced)>0) {continue}
+            if len(actors)==0 && !(translator.instanced && len(c.instanced)>0) && !(translator.map_scene && s==0) {continue}
             translated:=translator.translate(c,actors[:])
             if c.failed {return}
             if len(actors)==0 {continue}

@@ -269,16 +269,17 @@ foliage_ids_keep :: proc(s:^foliage.Source,previous:^foliage.Source) -> bool {
 }
 
 // The foliage of an Unreal level imported by the editor: for each scene, its
-// InstancedFoliageActors and the instanced components of its actors are a
-// .foliage in levels/<map>/, named after the cell of the scene ("Foliage"
-// for the scene of the map), shown by an entity at the origin of the scene,
-// its types with the meshes and materials the level imports.
+// InstancedFoliageActors and the instanced components of its actors, and for
+// the scene of the map the grass of the landscapes, are a .foliage in
+// levels/<map>/, named after the cell of the scene ("Foliage" for the scene
+// of the map), shown by an entity at the origin of the scene, its types with
+// the meshes and materials the level imports.
 @(storage)
 Foliage_Unreal :: struct {provider:unreal_scene.Translator_Provider}
 
 foliage_unreal_default :: proc() -> (f:Foliage_Unreal) {
     f.provider.count=1
-    f.provider.translators[0]={classes={0="InstancedFoliageActor"},translate=foliages_translate,instanced=true}
+    f.provider.translators[0]={classes={0="InstancedFoliageActor"},translate=foliages_translate,instanced=true,map_scene=true}
     return
 }
 
@@ -334,6 +335,12 @@ foliages_translate :: proc(c:^unreal_scene.Context,actors:[]int) -> int {
         unreal_scene.zone_end(add_zone)
         for b in batches {instances+=len(b.instances)}
     }
+    grass:Grass_Result
+    if c.section==0 {
+        grass_zone:=unreal_scene.zone_begin(c,"foliage.grass")
+        grass=grass_translate(c,&s,origin)
+        unreal_scene.zone_end(grass_zone)
+    }
     unreal_scene.tally(c,"instances of foliage scaled differently along X and Y take the mean of both",result.averaged)
     unreal_scene.tally(c,"instances of foliage with a zero, negative or too large scale, or past the types a .foliage holds, are left out",result.dropped)
     unreal_scene.tally(c,"instances of foliage of actors have no actor in the level, which the editor of Unreal places again, and are left out",result.unplaced)
@@ -352,7 +359,7 @@ foliages_translate :: proc(c:^unreal_scene.Context,actors:[]int) -> int {
         return translated
     }
     defer delete(bytes)
-    detail:=fmt.tprintf("%d types, %d instances",len(s.types),instances-result.dropped)
+    detail:=fmt.tprintf("%d types, %d instances, %d cells of grass",len(s.types),instances-result.dropped,grass.cells)
     if !unreal_scene.asset_write(c,id,foliage.FOLIAGE_KIND,name,path,bytes,detail) {return translated}
     e,made:=unreal_scene.entity_make(c,0,fmt.tprintf("%s|foliage",name),"Foliage",{origin,1,{1,1,1}})
     if !made {return translated}

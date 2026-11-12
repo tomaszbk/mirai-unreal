@@ -1547,3 +1547,84 @@ material_layers_are_their_functions_with_the_parameters_of_each_layer :: proc(t:
         translated_destroy(&translated)
     }
 }
+
+// A grass output whose Meadow grass reads the weight of the layer Meadow as
+// it is and whose Rock grass reads half of Rock's: each names the layers its
+// input reads and the varieties of its grass type, read with the defaults of
+// a variety for what they do not save; an input without a grass type grows
+// nothing.
+@(test)
+a_grass_output_gives_each_grass_type_its_layers_and_varieties :: proc(t:^testing.T) {
+    b:=material_begin("M_Ground")
+    samples:[2]i32
+    for &sample,i in samples {
+        w:=fx.writer(&b.p)
+        fx.name_property_put(&w,"ParameterName",i==0?"Meadow":"Rock")
+        sample=expression(&b,"LandscapeLayerSample",i==0?"Meadow":"Rock",&w)
+    }
+    half:=fx.writer(&b.p)
+    fx.input_put(&half,"A","ExpressionInput",{expression=samples[1]})
+    fx.float_put(&half,"ConstB",0.5)
+    rock:=expression(&b,"Multiply","Half",&half)
+    grass_type:=fx.external(&b.p,"/Game/G/GT_Meadow","/Script/Landscape","LandscapeGrassType","GT_Meadow")
+    entries:=[3][]u8{}
+    names:=[3]string{"Meadow","Rock","Bare"}
+    for &entry,i in entries {
+        w:=fx.writer(&b.p)
+        fx.name_property_put(&w,"Name",names[i])
+        if i<2 {fx.object_put(&w,"GrassType",grass_type)}
+        fx.input_put(&w,"Input","ExpressionInput",{expression=i==0?samples[0]:rock})
+        entry=fx.end(&w)
+    }
+    output:=fx.writer(&b.p)
+    fx.structs_put(&output,"GrassTypes","GrassInput",entries[:])
+    expression(&b,"LandscapeGrassOutput","Grass",&output)
+    m:=fx.writer(&b.p)
+    b.p.exports[0].data=fx.finish(&m)
+
+    g:=fx.package_make()
+    platform_put :: proc(w:^fx.Writer,property,kind:string,bits:u32) {
+        body:=fx.writer(w.p)
+        fx.u32_put(&body,0)
+        fx.u32_put(&body,bits)
+        fx.u32_put(&body,0)
+        fx.struct_put(w,property,kind,body.bytes[:])
+    }
+    mesh:=fx.external(&g,"/Game/G/SM_Blades","/Script/Engine","StaticMesh","SM_Blades")
+    tall:=fx.writer(&g)
+    fx.object_put(&tall,"GrassMesh",mesh)
+    platform_put(&tall,"GrassDensity","PerPlatformFloat",transmute(u32)f32(150))
+    platform_put(&tall,"EndCullDistance","PerPlatformInt",5000)
+    fx.enum_put(&tall,"Scaling","EGrassScaling","EGrassScaling::Free")
+    scale_z:=fx.writer(&g)
+    fx.float_put(&scale_z,"Min",0.8)
+    fx.float_put(&scale_z,"Max",1.3)
+    fx.struct_put(&tall,"ScaleZ","FloatInterval",fx.end(&scale_z))
+    fx.bool_put(&tall,"bCastDynamicShadow",false)
+    plain:=fx.writer(&g)
+    fx.object_put(&plain,"GrassMesh",mesh)
+    varieties:=fx.writer(&g)
+    fx.structs_put(&varieties,"GrassVarieties","GrassVariety",{fx.end(&tall),fx.end(&plain)})
+    fx.export(&g,fx.class(&g,"/Script/Landscape","LandscapeGrassType"),0,"GT_Meadow",fx.finish(&varieties))
+
+    lib:Library
+    library_with(&lib,{"/Game/M/M_Ground",fx.package_bytes(&b.p,"/Game/M/M_Ground")},{"/Game/G/GT_Meadow",fx.package_bytes(&g,"/Game/G/GT_Meadow")})
+    defer library_destroy(&lib)
+    material,_:=object_find(&lib,"/Game/M/M_Ground")
+    grass,error:=landscape_grass(&lib,material,context.temp_allocator)
+    if !testing.expect_value(t,error.code,Error_Code.None) || !testing.expect_value(t,len(grass),2) {return}
+    meadow,stones:=grass[0],grass[1]
+    testing.expect(t,meadow.name=="Meadow" && meadow.type=="/Game/G/GT_Meadow.GT_Meadow")
+    testing.expect(t,len(meadow.layers)==1 && meadow.layers[0]=="Meadow" && meadow.plain,"Meadow grows as its layer weighs")
+    testing.expect(t,len(stones.layers)==1 && stones.layers[0]=="Rock" && !stones.plain,"Rock grows on half the weight of its layer")
+    if !testing.expect_value(t,len(meadow.varieties),2) {return}
+    v:=meadow.varieties[0]
+    testing.expect_value(t,v.mesh,"/Game/G/SM_Blades.SM_Blades")
+    testing.expect_value(t,v.density,f32(1.5))
+    testing.expect_value(t,v.cull,[2]f32{100,50})
+    testing.expect_value(t,v.scaling,Grass_Scaling.Free)
+    testing.expect_value(t,v.scale,[3][2]f32{{1,1},{1,1},{0.8,1.3}})
+    testing.expect(t,!v.casts_shadow && v.random_rotation && v.align)
+    d:=meadow.varieties[1]
+    testing.expect(t,d.density==4 && d.cull=={100,100} && d.weights=={0,1} && d.scaling==.Uniform && d.casts_shadow,"the defaults of a variety")
+}
