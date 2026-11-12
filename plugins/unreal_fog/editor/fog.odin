@@ -69,7 +69,8 @@ fogs_translate :: proc(c:^unreal_scene.Context,actors:[]int) -> int {
             added.density=fog_rate(second_density)
             added.falloff=fog_rate(second_falloff)
             // Added over the first, which it comes after.
-            place:=evolume.Volume{shape=.Unbounded,mode=.Add,priority=1}
+            added.zone.mode,added.zone.priority=.Add,1
+            place:=evolume.world()
             child,child_made:=unreal_scene.entity_make(c,e,fmt.tprintf("%s|second fog",key),fmt.tprintf("%s second fog",label),{position={0,f32(offset/100),0},rotation=1,scale=1})
             if !child_made || !unreal_scene.component_set(c,child,"Fog_Volume",&added) || !unreal_scene.component_set(c,child,"Volume",&place) {return translated}
         }

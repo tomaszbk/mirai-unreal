@@ -32,7 +32,7 @@ Landscape_Terrain :: struct {
 // Writes the source of a landscape into dst; false when it does not fit a
 // Heightfield (size, spacing) or memory runs out, dst unchanged.
 landscape_terrain :: proc(dst:^terrain.Source,l:^landscape.Landscape,options:Landscape_Options,allocator:=context.allocator) -> (result:Landscape_Terrain,ok:bool) {
-    if l.samples.x<2 || l.samples.y<2 || l.samples.x>terrain.HEIGHT_SAMPLES_MAX || l.samples.y>terrain.HEIGHT_SAMPLES_MAX {return}
+    if l.samples.x<2 || l.samples.y<2 || l.samples.x>terrain.SAMPLES_MAX || l.samples.y>terrain.SAMPLES_MAX {return}
     if !(l.spacing>0) || len(l.heights)!=l.samples.x*l.samples.y {return}
     chunk:=options.chunk_cells
     if chunk==0 {chunk=clamp(l.subsection_quads,terrain.CHUNK_CELLS_MIN,terrain.CHUNK_CELLS_MAX)}
@@ -204,7 +204,7 @@ landscape_translate :: proc(c:^unreal_scene.Context,l:^landscape.Landscape,index
     if len(l.layers)>terrain.LAYERS_MAX {unreal_scene.warn(c,"%s: %d paint layers; the %d of most weight are kept and the others fold into them",label,len(l.layers),terrain.LAYERS_MAX)}
     s.revision=1
     unreal_scene.zone(c,"terrain.write")
-    id,path,info:=unreal_scene.asset_place(c,terrain.KIND,label,index,terrain.EXTENSION)
+    id,path,info:=unreal_scene.asset_place(c,terrain.TERRAIN_KIND,label,index,terrain.TERRAIN_EXTENSION)
     types:=c.types
     bytes,bytes_error:=terrain.source_bytes(&s,id,types,context.allocator,&info)
     if bytes_error!=.None {
@@ -213,7 +213,7 @@ landscape_translate :: proc(c:^unreal_scene.Context,l:^landscape.Landscape,index
     }
     defer delete(bytes)
     detail:=fmt.tprintf("%dx%d samples every %.3g m, %d layers",l.samples.x,l.samples.y,l.spacing,s.layer_count)
-    if !unreal_scene.asset_write(c,id,terrain.KIND,label,path,bytes,detail) {return false}
+    if !unreal_scene.asset_write(c,id,terrain.TERRAIN_KIND,label,path,bytes,detail) {return false}
     e,made:=unreal_scene.entity_make(c,0,unreal_scene.actor_key(c,l.actor),label,result.transform)
     if !made {return false}
     owner:=terrain.Terrain{source=id,revision=1,solid=true}

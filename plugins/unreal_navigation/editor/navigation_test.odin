@@ -9,6 +9,7 @@ import fixture "project:plugins/unreal/editor/fixture/files"
 import unreal_scene "project:plugins/unreal/editor/scene"
 import "mirai:project"
 import nav "plugins:navigation/runtime"
+import volume "mirai:engine/volume"
 
 // The bounds, a modifier volume and a link proxy of an Unreal level: a
 // Nav_Bounds and a blocked Nav_Area of the sizes of their CubeBuilders in
@@ -23,8 +24,8 @@ the_navigation_actors_of_an_unreal_level_are_bounds_areas_and_links :: proc(t:^t
     os.make_directory_all(root)
     m:=project.manifest_default("Levels")
     project.manifest_write(project.path(root,project.PROJECT_FILE,allocator=context.temp_allocator),&m)
-    os.make_directory_all(fmt.tprintf("%s/Unreal/Content/Maps",top))
-    _=os.write_entire_file(fmt.tprintf("%s/Unreal/Levels.uproject",top),"{}")
+    os.make_directory_all(fmt.tprintf("%s/assets/Unreal/Content/Maps",root))
+    _=os.write_entire_file(fmt.tprintf("%s/assets/Unreal/Levels.uproject",root),"{}")
     l:=fixture.level_begin("/Game/Maps/Navigation")
     brush :: proc(l:^fixture.Level_Writer,class,name,label:string,size:f32,scale:[3]f64) {
         actor:=fixture.actor_add(l,fixture.script_class(&l.w,"/Script/NavigationSystem",class),name,label)
@@ -43,7 +44,7 @@ the_navigation_actors_of_an_unreal_level_are_bounds_areas_and_links :: proc(t:^t
     fixture.vector_property(&position,&l.w,"RelativeLocation",{100,0,0})
     scene:=fixture.component_add(&l,proxy,fixture.engine_class(&l.w,"SceneComponent"),"PositionComponent",position)
     fixture.actor_set(&l,proxy,scene)
-    level:=fmt.tprintf("%s/Unreal/Content/Maps/Navigation.umap",top)
+    level:=fmt.tprintf("%s/assets/Unreal/Content/Maps/Navigation.umap",root)
     _=os.write_entire_file(level,fixture.level_bytes(&l))
     provider:=navigation_unreal_default().provider
     report,error:=unreal_scene.level_import(level,{root=root},provider.translators[:provider.count],"-")
@@ -59,14 +60,16 @@ the_navigation_actors_of_an_unreal_level_are_bounds_areas_and_links :: proc(t:^t
         if bounds,ok:=asset.scene_get(&s,e.id,"Nav_Bounds",nav.Nav_Bounds);ok {
             found[0]=e.name=="Bounds"
             // 200 cm by default along Unreal's Y and Z, 4000 along its X: Mirai's x, y and z.
-            testing.expect_value(t,bounds.half,[3]f32{1,1,20})
+            place,boxed:=asset.scene_get(&s,e.id,"Volume",volume.Volume)
+            testing.expect(t,boxed && place.shape==.Box && place.extents==[3]f32{1,1,20},"in the box of its Volume")
             testing.expect(t,!bounds.air)
         }
         if area,ok:=asset.scene_get(&s,e.id,"Nav_Area",nav.Nav_Area);ok {
             found[1]=e.name=="Pit"
             // An area that names no class is NavArea_Null: nothing walks there.
             testing.expect_value(t,area.area,nav.AREA_BLOCKED)
-            testing.expect_value(t,area.half,[3]f32{1,1,2})
+            place,boxed:=asset.scene_get(&s,e.id,"Volume",volume.Volume)
+            testing.expect(t,boxed && place.shape==.Box && place.extents==[3]f32{1,1,2},"in the box of its Volume")
         }
         if link,ok:=asset.scene_get(&s,e.id,"Nav_Link",nav.Nav_Link);ok {
             found[2]=e.name=="Gap"

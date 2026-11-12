@@ -589,7 +589,7 @@ niagara_renderer :: proc(c:^unreal_scene.Context,info:^effect.Particle_Info,rend
                 if meshes,meshes_error:=unreal.array_tagged_structs(f.pkg,view,true,context.temp_allocator);meshes_error.code==.None && len(meshes.items)>0 {
                     if object:=value_object(f.pkg,unreal.property_find(f.pkg,&meshes.items[0],"Mesh"));object!=0 {
                         if path,path_error:=level.object_path(d,renderer,object,context.temp_allocator);path_error.code==.None {
-                            if m,imported:=unreal_scene.mesh_import(c,path);imported {info.mesh=m.id}
+                            if m,imported:=unreal_scene.mesh_import(c,path);imported {info.meshes[0]=m.id}
                         }
                     }
                 }

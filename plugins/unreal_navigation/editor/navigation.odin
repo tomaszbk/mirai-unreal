@@ -5,6 +5,7 @@ import "core:strings"
 import "project:plugins/unreal/editor/level"
 import unreal "project:plugins/unreal/editor/package"
 import unreal_scene "project:plugins/unreal/editor/scene"
+import volume "mirai:engine/volume"
 import "mirai:std/base"
 import mm "mirai:std/math"
 import nav "plugins:navigation/runtime"
@@ -65,8 +66,8 @@ bounds_translate :: proc(c:^unreal_scene.Context,actors:[]int) -> int {
     for a in actors {
         e,half,placed:=brush_entity(c,a)
         if !placed {other+=1;continue}
-        bounds:=nav.Nav_Bounds{half=half}
-        if !unreal_scene.component_set(c,e,"Nav_Bounds",&bounds) {return translated}
+        bounds,place:=nav.NAV_BOUNDS_DEFAULT,volume.box(half)
+        if !unreal_scene.component_set(c,e,"Nav_Bounds",&bounds) || !unreal_scene.component_set(c,e,"Volume",&place) {return translated}
         translated+=1
     }
     if other>0 {unreal_scene.warn(c,"%d NavMeshBoundsVolumes are not boxes of a CubeBuilder; their brushes are not read",other)}
@@ -85,7 +86,7 @@ modifiers_translate :: proc(c:^unreal_scene.Context,actors:[]int) -> int {
         path:=level.path_of(d,d.actors[a].ref,"AreaClass")
         name:="NavArea_Null" if path=="" else path[strings.last_index_any(path,"./")+1:]
         name=strings.trim_suffix(name,"_C")
-        area:=nav.Nav_Area{half=half,area=nav.AREA_BLOCKED}
+        area:=nav.NAV_AREA_DEFAULT
         switch name {
         case "NavArea_Null","NavArea_Obstacle","NavArea_LowHeight":
         case "NavArea_Default":
@@ -94,7 +95,8 @@ modifiers_translate :: proc(c:^unreal_scene.Context,actors:[]int) -> int {
             area.area=nav.AREA_WALKABLE
             unknown[name]+=1
         }
-        if !unreal_scene.component_set(c,e,"Nav_Area",&area) {return translated}
+        place:=volume.box(half)
+        if !unreal_scene.component_set(c,e,"Nav_Area",&area) || !unreal_scene.component_set(c,e,"Volume",&place) {return translated}
         translated+=1
     }
     for name,count in unknown {

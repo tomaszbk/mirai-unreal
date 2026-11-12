@@ -117,7 +117,7 @@ the_landscape_of_an_unreal_level_is_a_terrain_of_its_scene :: proc(t:^testing.T)
         if !testing.expectf(t,error.code==.None,"%s",error.message) {return}
         defer unreal_scene.level_report_destroy(&report)
         written:importer.Written
-        for a in report.imports.assets {if a.kind==terrain.KIND {written=a}}
+        for a in report.imports.assets {if a.kind==terrain.TERRAIN_KIND {written=a}}
         testing.expect(t,strings.has_suffix(written.path,"/assets/Map/Landscape.terrain"),written.path)
         ids[pass]=written.id
         types:asset.Types;asset.types_init(&types);defer asset.types_destroy(&types)

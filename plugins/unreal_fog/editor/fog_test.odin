@@ -27,8 +27,8 @@ the_height_fog_of_an_unreal_level_is_a_fog_of_the_whole_world :: proc(t:^testing
     os.make_directory_all(root)
     m:=project.manifest_default("Levels")
     project.manifest_write(project.path(root,project.PROJECT_FILE,allocator=context.temp_allocator),&m)
-    os.make_directory_all(fmt.tprintf("%s/Unreal/Content/Maps",top))
-    _=os.write_entire_file(fmt.tprintf("%s/Unreal/Levels.uproject",top),"{}")
+    os.make_directory_all(fmt.tprintf("%s/assets/Unreal/Content/Maps",root))
+    _=os.write_entire_file(fmt.tprintf("%s/assets/Unreal/Levels.uproject",root),"{}")
     l:=fixture.level_begin("/Game/Maps/Mist")
     actor:=fixture.actor_add(&l,fixture.engine_class(&l.w,"ExponentialHeightFog"),"ExponentialHeightFog_0","Mist")
     props:=fixture.bytes_make()
@@ -47,7 +47,7 @@ the_height_fog_of_an_unreal_level_is_a_fog_of_the_whole_world :: proc(t:^testing
     copied:=fixture.bytes_make()
     fixture.float_property(&copied,&l.w,"FogDensity",0.5)
     fixture.actor_set(&l,copy,fixture.component_add(&l,copy,fixture.engine_class(&l.w,"ExponentialHeightFogComponent"),"HeightFogComponent0",copied))
-    level:=fmt.tprintf("%s/Unreal/Content/Maps/Mist.umap",top)
+    level:=fmt.tprintf("%s/assets/Unreal/Content/Maps/Mist.umap",root)
     _=os.write_entire_file(level,fixture.level_bytes(&l))
     provider:=fog_unreal_default().provider
     report,error:=unreal_scene.level_import(level,{root=root},provider.translators[:provider.count],"-")
@@ -73,7 +73,7 @@ the_height_fog_of_an_unreal_level_is_a_fog_of_the_whole_world :: proc(t:^testing
         }
         added=true
         testing.expectf(t,e.name=="Mist second fog","only the first height fog and its second: %s",e.name)
-        testing.expect(t,bounded && place.shape==.Unbounded && place.mode==.Add,"the second fog fills the world over the first")
+        testing.expect(t,bounded && place.shape==.Unbounded && volume.zone.mode==.Add,"the second fog fills the world over the first")
         testing.expect(t,abs(volume.density-f32(0.02*math.LN2))<1e-6)
         testing.expect(t,abs(volume.falloff-f32(0.01*math.LN2))<1e-6)
         transform,_:=asset.scene_get(&scene,e.id,"Transform",core.Transform)

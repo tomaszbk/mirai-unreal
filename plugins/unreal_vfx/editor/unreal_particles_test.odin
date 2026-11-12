@@ -28,5 +28,5 @@ unreal_colors_above_one_go_to_the_intensity :: proc(t:^testing.T) {
     colors_set(&info,{4,2,0,1},{1,1,1,2})
     testing.expect(t,info.intensity==4)
     testing.expect(t,info.colors[0]=={1,0.5,0,1} && info.colors[1]=={0.25,0.25,0.25,1})
-    testing.expect(t,effect.particle_validate({info=&info}).message=="")
+    testing.expect(t,effect.particle_validate({info=info}).message=="")
 }

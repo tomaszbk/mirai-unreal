@@ -106,15 +106,15 @@ particles_place :: proc(c:^unreal_scene.Context,a,k:int,niagara:bool,e:base.Enti
                 break
             }
             part:=name if len(emitters)==1 else fmt.tprintf("%s %s",name,emitter.name)
-            id,file,info:=unreal_scene.asset_place(c,effect.KIND,part,index^,effect.EXTENSION)
+            id,file,info:=unreal_scene.asset_place(c,effect.PARTICLE_KIND,part,index^,effect.PARTICLE_EXTENSION)
             index^+=1
             bytes,error:=effect.particle_bytes(c.types,{id=id,info=emitter.info,parameters=emitter.parameters,source=&info})
             if error!=.None {
-                unreal_scene.warn(c,"%s: its effect does not validate (%v): %s",part,error,effect.particle_validate({info=&emitter.info}).message)
+                unreal_scene.warn(c,"%s: its effect does not validate (%v): %s",part,error,effect.particle_validate({info=emitter.info}).message)
                 continue
             }
             defer delete(bytes)
-            if !unreal_scene.asset_write(c,id,effect.KIND,part,file,bytes) {continue}
+            if !unreal_scene.asset_write(c,id,effect.PARTICLE_KIND,part,file,bytes) {continue}
             written.ids[written.count],written.loops[written.count],written.names[written.count]=id,emitter.loop,emitter.name
             written.grids[written.count],written.bindings[written.count]=emitter.grids,emitter.bindings
             written.count+=1
@@ -247,7 +247,7 @@ niagara_component_textures :: proc(d:^level.Document,ref:level.Ref) -> map[strin
 // particle materials of Unreal looks under the exposure of its levels.
 @(private)
 UNREAL_PARTICLE_DEFAULTS :: effect.Particle_Info{
-    duration=1,rate_over_cycle=effect.PARTICLE_CURVE_ONE,shape=.Point,
+    duration=1,shape=.Point,
     lifetime={1,1},size={0.01,0.01},colors={{1,1,1,1},{1,1,1,1}},intensity=1,emission_mode=.Relative,
     blend=.Alpha,lit=true,flipbook={1,1},light_range=1,
     size_over_life=effect.PARTICLE_CURVE_ONE,

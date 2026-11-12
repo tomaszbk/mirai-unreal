@@ -344,7 +344,7 @@ foliages_translate :: proc(c:^unreal_scene.Context,actors:[]int) -> int {
         unreal_scene.warn(c,"%s: %d types and %d instances do not make a valid .foliage; it is left out",name,len(s.types),instances)
         return translated
     }
-    id,path,info:=unreal_scene.asset_place(c,foliage.KIND,name,0,foliage.EXTENSION)
+    id,path,info:=unreal_scene.asset_place(c,foliage.FOLIAGE_KIND,name,0,foliage.FOLIAGE_EXTENSION)
     previous_keep(c,&s,name,path)
     bytes,bytes_error:=foliage.source_bytes(&s,id,c.types,context.allocator,&info)
     if bytes_error!=.None {
@@ -353,7 +353,7 @@ foliages_translate :: proc(c:^unreal_scene.Context,actors:[]int) -> int {
     }
     defer delete(bytes)
     detail:=fmt.tprintf("%d types, %d instances",len(s.types),instances-result.dropped)
-    if !unreal_scene.asset_write(c,id,foliage.KIND,name,path,bytes,detail) {return translated}
+    if !unreal_scene.asset_write(c,id,foliage.FOLIAGE_KIND,name,path,bytes,detail) {return translated}
     e,made:=unreal_scene.entity_make(c,0,fmt.tprintf("%s|foliage",name),"Foliage",{origin,1,{1,1,1}})
     if !made {return translated}
     shown:=foliage.Foliage{source=id}

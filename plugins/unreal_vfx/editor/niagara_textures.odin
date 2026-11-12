@@ -51,13 +51,13 @@ niagara_texture :: proc(w:^Niagara_Writer,di:^Niagara_Di) -> (baked:Niagara_Text
     cells,values,baked_ok:=niagara_texture_cells(input.source,input.options.srgb)
     if !baked_ok {return}
     info:=gridfile.Grid_Info{cells={u32(cells.x),1,u32(cells.y)},layers=1,cell_size=CENTIMETRE}
-    id,path,source:=unreal_scene.asset_place(c,gridfile.KIND,name,0,gridfile.EXTENSION)
+    id,path,source:=unreal_scene.asset_place(c,gridfile.GRID_KIND,name,0,gridfile.GRID_EXTENSION)
     bytes,bytes_error:=gridfile.grid_bytes(c.types,{id=id,info=info,cells=values,source=&source},context.temp_allocator)
     if bytes_error!=.None {
         unreal_scene.warn(c,"the texture %s could not be baked (%v)",name,bytes_error)
         return
     }
-    if !unreal_scene.asset_write(c,id,gridfile.KIND,name,path,bytes,fmt.tprintf("%dx%d texels",cells.x,cells.y)) {return}
+    if !unreal_scene.asset_write(c,id,gridfile.GRID_KIND,name,path,bytes,fmt.tprintf("%dx%d texels",cells.x,cells.y)) {return}
     return {id,strings.clone(name,context.temp_allocator),cells},true
 }
 

@@ -56,13 +56,13 @@ niagara_vector_field :: proc(w:^Niagara_Writer,di:^Niagara_Di) -> (field:Niagara
     c:=w.scene
     span:=max(field.high.x-field.low.x,1e-3)
     info:=gridfile.Grid_Info{cells={u32(field.cells.x),u32(field.cells.y),u32(field.cells.z)},layers=1,cell_size=span/f32(field.cells.x)*CENTIMETRE}
-    id,path,source:=unreal_scene.asset_place(c,gridfile.KIND,field.name,0,gridfile.EXTENSION)
+    id,path,source:=unreal_scene.asset_place(c,gridfile.GRID_KIND,field.name,0,gridfile.GRID_EXTENSION)
     bytes,bytes_error:=gridfile.grid_bytes(c.types,{id=id,info=info,cells=cells,source=&source},context.temp_allocator)
     if bytes_error!=.None {
         unreal_scene.warn(c,"the vector field %s could not be baked (%v)",field.name,bytes_error)
         return
     }
-    if !unreal_scene.asset_write(c,id,gridfile.KIND,field.name,path,bytes,fmt.tprintf("%dx%dx%d texels",field.cells.x,field.cells.y,field.cells.z)) {return}
+    if !unreal_scene.asset_write(c,id,gridfile.GRID_KIND,field.name,path,bytes,fmt.tprintf("%dx%dx%d texels",field.cells.x,field.cells.y,field.cells.z)) {return}
     field.id=id
     field.name=strings.clone(field.name,context.temp_allocator)
     return field,true

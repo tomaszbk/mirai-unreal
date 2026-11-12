@@ -35,7 +35,7 @@ cascade_system :: proc(c:^unreal_scene.Context,system:level.Ref,label:string) ->
             case "ParticleModuleTypeDataMesh":
                 info.render=.Mesh
                 if path:=level.path_of(d,data,"Mesh");path!="" {
-                    if m,imported:=unreal_scene.mesh_import(c,path);imported {info.mesh=m.id}
+                    if m,imported:=unreal_scene.mesh_import(c,path);imported {info.meshes[0]=m.id}
                 }
             case "ParticleModuleTypeDataGpu":
             case:append(&left,class)
