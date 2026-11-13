@@ -160,6 +160,11 @@ vector_property :: proc(b:^Bytes,w:^Writer,property:string,value:[3]f64) {
 }
 
 // A struct property whose fields `inner` holds, ended by None.
+linear_color_property :: proc(b:^Bytes,w:^Writer,property:string,rgba:[4]f32) {
+    tag(b,w,property,"StructProperty",16,{struct_name="LinearColor"})
+    for x in rgba {put_f32(b,x)}
+}
+
 struct_property :: proc(b:^Bytes,w:^Writer,property,struct_name:string,inner:^Bytes) {
     none(inner,w)
     tag(b,w,property,"StructProperty",len(inner.data),{struct_name=struct_name})
