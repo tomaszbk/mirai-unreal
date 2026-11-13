@@ -96,8 +96,24 @@ map_package :: proc() -> []u8 {
     fixture.float_property(&light_props,w,"AttenuationRadius",2000)
     fixture.float_property(&light_props,w,"SourceRadius",5)
     fixture.color_property(&light_props,w,"LightColor",{255,128,0,255})
+    fixture.float_property(&light_props,w,"IndirectLightingIntensity",4)
+    fixture.float_property(&light_props,w,"VolumetricScatteringIntensity",2)
     light:=fixture.component_add(&l,spot,fixture.engine_class(w,"SpotLightComponent"),"LightComponent0",light_props)
     fixture.actor_set(&l,spot,light)
+
+    // Two post process volumes that scale the indirect light: the unbound one
+    // everywhere, the bound one inside its box.
+    for unbound,i in ([2]bool{true,false}) {
+        volume:=fixture.actor_add(&l,fixture.engine_class(w,"PostProcessVolume"),fmt.tprintf("PostProcessVolume_%d",i),unbound?"Bounce":"Cellar")
+        settings:=fixture.bytes_make()
+        fixture.bool_property(&settings,w,"bOverride_IndirectLightingIntensity",true)
+        fixture.float_property(&settings,w,"IndirectLightingIntensity",unbound?3:5)
+        volume_props:=fixture.bytes_make()
+        fixture.bool_property(&volume_props,w,"bUnbound",unbound)
+        fixture.struct_property(&volume_props,w,"Settings","PostProcessSettings",&settings)
+        if !unbound {fixture.component_add(&l,volume,fixture.script_class(w,"/Script/UnrealEd","CubeBuilder"),"CubeBuilder_0",{})}
+        fixture.actor_set(&l,volume,0,volume_props)
+    }
 
     camera:=fixture.actor_add(&l,fixture.script_class(w,"/Script/CinematicCamera","CineCameraActor"),"CineCameraActor_0","Shot")
     camera_props:=fixture.bytes_make()
@@ -247,7 +263,14 @@ a_map_becomes_a_scene_of_entities_meshes_lights_and_cameras_in_the_units_of_mira
         testing.expectf(t,close(light.intensity,expected),"%v cd, expected %v",light.intensity,expected)
         testing.expect(t,close(light.range,20) && close(light.radius,0.05) && close(light.angle,30*math.RAD_PER_DEG))
         testing.expect(t,close3(light.color,{1,mm.srgb_to_linear(f32(128)/255),0}),"the color of the light, linear")
+        testing.expectf(t,light.indirect==4 && light.scattering==2,"what of its light bounces and what a fog scatters: %v and %v",light.indirect,light.scattering)
     }
+    // The unbound post process volume scales all the indirect light; the bound one would change it with the camera.
+    bounce,_,has_bounce:=entity_named(&scene,"Bounce light")
+    scale,has_scale:=asset.scene_get(&scene,bounce,"Bounce_Light",render.Bounce_Light)
+    testing.expectf(t,has_bounce && has_scale && scale.scale==3,"the indirect light of the unbound volume: %v",scale)
+    testing.expect(t,has_warning(&report,"Cellar","IndirectLightingIntensity","camera"),"a bound volume that scales the indirect light is a warning")
+    testing.expect(t,!has_warning(&report,"no equivalent","IndirectLightingIntensity"),"the indirect light is taken")
     light_t,_:=asset.scene_get(&scene,spot,"Transform",core.Transform)
     testing.expect(t,close3(mm.quat_rotate(light_t.rotation,{0,0,-1}),{0,-1,0}),"it shines down along -Z of its entity")
     testing.expect(t,close3(light_t.position,{0,4,0}),"where its component is")

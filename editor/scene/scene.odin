@@ -221,6 +221,7 @@ Context :: struct {
     sky_turn:f32,             // of the image of the sky about up, radians
     sky_drawn:bool,           // the level draws a sky behind the scene: an atmosphere or the engine's sky sphere
     sky_atmosphere:bool,      // by an atmosphere (SkyAtmosphere, or AtmosphericFog of UE4)
+    bounce:Bounce_Candidate,  // the scale of all the indirect light, from an unbound post process volume
     notes:[Note]int,
     left:map[string]int, // components that were not translated, by class
     reads:Reads,                // the packages of meshes read ahead (reads.odin)
@@ -406,6 +407,7 @@ document_import :: proc(d:^level.Document,source:string,size,hash:u64,options:im
     section_use(&c,0)
     environment_zone:=importer.zone_begin(options,"level.environment")
     environment_finish(&c)
+    bounce_finish(&c)
     if !c.failed {blueprints_prefab(&c)}
     base.profile_end(environment_zone)
     sections_zone:=importer.zone_begin(options,"level.sections")

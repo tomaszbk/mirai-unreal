@@ -173,13 +173,14 @@ post_process_add :: proc(c:^Context,a:int) {
             v,error:=unreal.property_value(p,&item)
             if error.code!=.None || v.kind!=.Boolean || !v.boolean {continue}
             setting:=name[len("bOverride_"):]
-            if !slice.contains(EXPOSURE_SETTINGS,setting) && !slice.contains(others[:],setting) {append(&others,setting)}
+            if !slice.contains(EXPOSURE_SETTINGS,setting) && !slice.contains(LIGHT_SETTINGS,setting) && !slice.contains(others[:],setting) {append(&others,setting)}
         }
     }
     if len(others)>0 {
         shown:=others[:min(len(others),8)]
         warn(c,"%s: %d post process settings have no equivalent in Mirai: %s%s",label,len(others),strings.join(shown,", ",context.temp_allocator),len(others)>8?", ...":"")
     }
+    post_process_light(c,label,&settings,unbound,f32(priority))
     exposure,any:=exposure_from(c,&settings,0)
     if !any {return}
     look.exposure=exposure
