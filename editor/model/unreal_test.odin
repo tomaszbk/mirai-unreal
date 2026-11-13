@@ -137,7 +137,7 @@ a_package_without_meshes_or_skeletons_is_refused_by_name :: proc(t:^testing.T) {
 }
 
 @(test)
-the_simple_collision_of_a_mesh_is_its_colliders_unless_the_settings_force_theirs :: proc(t:^testing.T) {
+the_simple_collision_of_a_mesh_is_its_colliders_as_authored :: proc(t:^testing.T) {
     f:=quad(.Description)
     f.body={
         boxes=own([]fixture.Body_Box{{center={100,0,0},size={200,100,50}}}),
