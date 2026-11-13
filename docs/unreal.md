@@ -251,7 +251,10 @@ arrives with its cause and offset.
   always multiplies it and a program reads it as data. Corners carry the color only in slots whose
   translated material multiplies it by its base color or whose program reads it
   (`Vertex_Colors.Multiply_Base_Color`, `.Program`).
-- **UV.** The first two; if there are more, a warning.
+- **UV.** A mesh holds two sets, and a slot the Unreal sets its translated material reads, lowest
+  first (`uv_sets_held`); one that reads none holds the first. A set past those of the mesh is its
+  last, as Unreal reads it. A material that reads more sets than fit is a warning naming them; in a
+  level, so is an override whose sets differ from those the mesh holds for its own material.
 - **Mounts.** `/Game` is the `Content` folder of the package's project: of the `Content` folders
   that contain it, the first next to a `.uproject` or, with none, the closest (only folders that
   have a `Content` are listed). A package outside any `Content` folder (a pack copied without its
@@ -363,10 +366,11 @@ it names). Everything lives in the library's arena.
 - **What is not translated** leaves `NONE`, is counted per class in `untranslated` and the output
   that uses it takes Unreal's value unconnected: what a Mirai program does not see (camera, the
   image behind, particles, distance fields: `SceneColor`, `SceneTexture`, `ViewProperty` and
-  `SceneDepth` with own coordinates), UV sets after the second (vertex animation data) and domains
-  that are not surfaces (`Error`). Outputs the translation does not read (position, tangent,
-  subsurface, depth) are not evaluated, nor is `WorldPositionOffset`: a Mirai material does not
-  move its vertices (the engine deforms surfaces with three fixed mechanisms).
+  `SceneDepth` with own coordinates), a UV set past the two a mesh holds (after the first two the
+  material reads) and domains that are not surfaces (`Error`). Outputs the translation does not
+  read (position, tangent, subsurface, depth) are not evaluated, nor is `WorldPositionOffset`: a
+  Mirai material does not move its vertices (the engine deforms surfaces with three fixed
+  mechanisms).
 - **Approximations** (in `notes`): `ActorPositionWS` is the object's pivot; `PerInstanceRandom` is
   0.5; `VertexInterpolator` passes its input, computed per pixel; `TwoSidedSign` is 1 (Mirai flips
   a back face's frame); `Fresnel` is its reflectance at normal incidence; the view looks down the
@@ -384,6 +388,8 @@ it names). Everything lives in the library's arena.
 
 ### Translation
 
+- **UV sets.** The graph reads the mesh's sets: each Unreal set the outputs read is moved to the
+  mesh set that holds it (`uv_sets`, lowest first).
 - **Standard model.** Each output is a constant factor times a per-texel part whose samples read
   the same coordinate, affine in a UV set:
   the factor is the material's value and the part, the map's image, with the coordinate's scale
@@ -817,9 +823,9 @@ All with `mirai test` on the package folder inside a project with the plugin ins
   `additive_and_rate_scaled_animations_say_so`, `damaged_animations_are_read_or_refused`); pose
   assets (`a_pose_asset_is_a_frame_per_pose_after_its_base_with_its_names_and_curves`,
   `pose_assets_that_do_not_add_up_or_are_damaged_are_refused`).
-- `editor/model`: space, slots, materials, mounts, skeletons and inverse binds, morph targets and
-  sockets, source collision, `/Engine` without Unreal and clips of each format sampled against
-  their source, `RateScale` and additives.
+- `editor/model`: space, slots, materials, the UV sets of each slot, mounts, skeletons and inverse
+  binds, morph targets and sockets, source collision, `/Engine` without Unreal and clips of each
+  format sampled against their source, `RateScale` and additives.
 - `editor/material` and `material/write`: synthetic UE4 packages (`material/fixture`) with a
   standard graph, tagged inputs, instances with static switches, functions, Landscape and material
   layers, landscape grass, a program, screen, depth, bounds, the world with its origin, `Custom`,

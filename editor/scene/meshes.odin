@@ -136,17 +136,7 @@ slot_material_paths :: proc(c:^Context,k:int) -> []string {
     ref:=d.components[k].ref
     mesh_path:=level.path_of(d,ref,"StaticMesh")
     m,_:=mesh_import(c,mesh_path)
-    own,seen:=c.slot_paths[mesh_path]
-    if !seen {
-        library_lock(c)
-        if object,found:=material.object_find(c.lib,mesh_path);found {
-            if list,list_error:=material.object_properties(object);list_error.code==.None && list!=nil {
-                own,_=unreal_mesh.static_material_paths(&object.pkg.p,list,context.temp_allocator)
-            }
-        }
-        library_unlock(c)
-        c.slot_paths[strings.clone(mesh_path,context.temp_allocator)]=own
-    }
+    own:=mesh_slot_paths(c,mesh_path,false)
     overrides:=level.paths_of(d,ref,"OverrideMaterials")
     paths:=make([]string,min(len(m.slot_ids),render.MATERIAL_SLOTS),context.temp_allocator)
     for &path,row in paths {
@@ -154,6 +144,41 @@ slot_material_paths :: proc(c:^Context,k:int) -> []string {
         if index>=0 && index<len(overrides) && overrides[index]!="" {path=overrides[index]} else if index>=0 && index<len(own) {path=own[index]}
     }
     return paths
+}
+
+// The object path of the material of each slot of the mesh at path, by
+// Unreal's index; "" for a slot without one.
+@(private)
+mesh_slot_paths :: proc(c:^Context,path:string,skeletal:bool) -> []string {
+    if own,seen:=c.slot_paths[path];seen {return own}
+    own:[]string
+    defer c.slot_paths[strings.clone(path,context.temp_allocator)]=own
+    library_lock(c)
+    defer library_unlock(c)
+    object,found:=material.object_find(c.lib,path)
+    if !found {return own}
+    if skeletal {
+        source,error:=unreal_mesh.skeletal_read(&object.pkg.p,object.export,context.temp_allocator)
+        if error.code!=.None {return own}
+        own=make([]string,len(source.materials),context.temp_allocator)
+        for slot,i in source.materials {own[i]=slot.path}
+    } else if list,list_error:=material.object_properties(object);list_error.code==.None && list!=nil {
+        own,_=unreal_mesh.static_material_paths(&object.pkg.p,list,context.temp_allocator)
+    }
+    return own
+}
+
+// The Unreal uv sets the material at path reads, which its translation
+// finds in the uv sets of a mesh; none for one that cannot be translated.
+@(private)
+material_uv_sets :: proc(c:^Context,path:string) -> (sets:material.Unreal_UV_Sets) {
+    if path=="" || engine_missing(c,path) {return}
+    if found,seen:=c.uv_sets[path];seen {return found}
+    defer c.uv_sets[strings.clone(path,context.temp_allocator)]=sets
+    t,translated:=translation_or_grid(c,path)
+    if !translated {return}
+    defer material.translated_destroy(&t)
+    return t.uv_sets
 }
 
 // The material a slot of instances shows when its entity-less instances
@@ -244,6 +269,11 @@ mesh_renderer :: proc(c:^Context,a,k:int,skeletal:bool) -> (shown:render.Mesh_Re
         }
         id,imported:=material_import(c,override)
         if !imported || row<len(m.slot_materials) && id==m.slot_materials[row] {continue}
+        own:=mesh_slot_paths(c,path,skeletal)
+        own_path:=index<len(own)?own[index]:""
+        if held,reads:=material_uv_sets(c,own_path),material_uv_sets(c,override);!uasset.uv_sets_agree(held,reads) {
+            warn(c,"%s: %s shows %s on slot %d of %s, which reads the UV sets %v where the mesh holds %v for %s: it samples other coordinates than in Unreal",d.actors[a].label,d.components[k].name,override,index,path,reads,uasset.uv_sets_held(held),own_path)
+        }
         shown.materials[row]=id
         overridden[row]=true
     }
@@ -428,6 +458,7 @@ material_import :: proc(c:^Context,path:string) -> (id:base.Asset_Id,ok:bool) {
     base.profile_end(translate_zone)
     if !translated {return}
     defer material.translated_destroy(&t)
+    c.uv_sets[strings.clone(path,context.temp_allocator)]=t.uv_sets
     ids:=materials_write(c,file,{t}) or_return
     return ids[0],true
 }
