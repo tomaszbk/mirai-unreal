@@ -11,10 +11,10 @@ puts it in the project's `plugins/unreal` with its companions.
 
 - The root is the `unreal` plugin: the reading and translation packages, the model format, the map
   importer and the API method `unreal.inspect`.
-- `plugins/`: its companions `unreal_terrain`, `unreal_foliage`, `unreal_physics`, `unreal_fog`,
-  `unreal_navigation`, `unreal_vfx` and `unreal_fluids`, automatic bridges (`automatic: true`,
-  editor-only). Each depends on `unreal` and on the plugin it translates for, and gives the
-  importer the translator for its actors or the textures its systems write.
+- `plugins/`: its companions `unreal_terrain`, `unreal_foliage`, `unreal_physics`, `unreal_shapes`,
+  `unreal_fog`, `unreal_navigation`, `unreal_vfx` and `unreal_fluids`, automatic bridges
+  (`automatic: true`, editor-only). Each depends on `unreal` and on the plugin it translates for,
+  and gives the importer the translator for its actors or the textures its systems write.
 
 The `editor/` packages are imported as `project:plugins/unreal/editor/<package>`:
 
@@ -29,8 +29,8 @@ The `editor/` packages are imported as `project:plugins/unreal/editor/<package>`
 
 - Packages, payloads, Kraken, textures, meshes, skeletons, animations, materials, levels,
   Landscape, foliage and maps as scenes: [unreal.md](unreal.md).
-- What each bridge plugin translates (terrain, foliage, physics, fog, navigation, particles) and
-  the translator contract: [translators.md](translators.md).
+- What each bridge plugin translates (terrain, foliage, physics, spline meshes, fog, navigation,
+  particles) and the translator contract: [translators.md](translators.md).
 
 ## Importing in the editor
 
@@ -85,7 +85,7 @@ With `mirai test` on the touched package (`plugins:` packages resolve on their o
 - `mirai test plugins/unreal/editor/<package>` with `package`, `kraken`, `texture`, `mesh`,
   `model`, `material`, `material/write`, `level`, `landscape`, `foliage` or `scene`; each one's
   focal tests are in [unreal.md](unreal.md#verification).
-- tests of `plugins/unreal_<x>/editor` with `terrain`, `foliage`, `physics`, `fog`, `navigation`
-  or `vfx`: [translators](translators.md#verification).
+- tests of `plugins/unreal_<x>/editor` with `terrain`, `foliage`, `physics`, `shapes`, `fog`,
+  `navigation` or `vfx`: [translators](translators.md#verification).
 - Against a real corpus, `unreal.inspect` and, in an editor session, importing a map with the
   bridges it uses.

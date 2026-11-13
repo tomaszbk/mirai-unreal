@@ -393,31 +393,53 @@ instances_box :: proc(d:^Document,k:int,mesh:mm.Aabb) -> (box:mm.Aabb,ok:bool) {
 // the larger of its two scales.
 @(private)
 spline_box :: proc(d:^Document,ref:Ref,mesh:mm.Aabb) -> (box:mm.Aabb,ok:bool) {
-    f,error:=property(d,ref,"SplineParams")
-    if error.code!=.None || f.property==nil {return}
-    params,params_error:=unreal.property_tagged_struct(f.pkg,f.property,true,context.temp_allocator)
-    if params_error.code!=.None {return}
-    field :: proc(p:^unreal.Package,list:^unreal.Property_List,name:string,default:[3]f64) -> [3]f64 {
-        item:=unreal.property_find(p,list,name)
-        if item==nil {return default}
-        v,error:=unreal.property_value(p,item)
-        if error.code!=.None || v.kind!=.Real_Vector {return default}
-        out:=default
-        for axis in 0..<min(int(v.vector_count),3) {out[axis]=v.vector[axis]}
-        return out
-    }
-    start:=field(f.pkg,&params,"StartPos",{})
-    end:=field(f.pkg,&params,"EndPos",{100,0,0})
-    start_tangent:=field(f.pkg,&params,"StartTangent",{100,0,0})
-    end_tangent:=field(f.pkg,&params,"EndTangent",{100,0,0})
-    start_scale:=field(f.pkg,&params,"StartScale",{1,1,0})
-    end_scale:=field(f.pkg,&params,"EndScale",{1,1,0})
-    points:=[4][3]f32{point_to_mirai(start),point_to_mirai(start+start_tangent/3),point_to_mirai(end-end_tangent/3),point_to_mirai(end)}
+    s:=spline_mesh_of(d,ref) or_return
+    points:=[4][3]f32{point_to_mirai(s.start),point_to_mirai(s.start+s.start_tangent/3),point_to_mirai(s.end-s.end_tangent/3),point_to_mirai(s.end)}
     box=mm.aabb_from_points(points[:])
     half:=mm.aabb_half(mesh)
     across:=max(abs(mesh.min.x),abs(mesh.max.x),abs(mesh.min.y),abs(mesh.max.y),abs(mesh.min.z),abs(mesh.max.z),half.x,half.y,half.z)
-    scale:=f32(max(abs(start_scale.x),abs(start_scale.y),abs(end_scale.x),abs(end_scale.y),1))
+    scale:=f32(max(abs(s.start_scale.x),abs(s.start_scale.y),abs(s.end_scale.x),abs(s.end_scale.y),1))
     return mm.aabb_expand(box,across*scale),true
+}
+
+// The SplineParams of a SplineMeshComponent as Unreal keeps them, in its
+// space: centimetres and radians.
+Spline_Mesh :: struct {
+    start,start_tangent,end,end_tangent:[3]f64,
+    start_scale,end_scale,start_offset,end_offset:[2]f64,
+    start_roll,end_roll:f64,
+}
+
+// What a SplineMeshComponent is made with: a straight metre along X.
+SPLINE_MESH_DEFAULT :: Spline_Mesh{start_tangent={100,0,0},end={100,0,0},end_tangent={100,0,0},start_scale={1,1},end_scale={1,1}}
+
+// The spline of a SplineMeshComponent, with the defaults of the component
+// for what it does not keep; false when what it keeps cannot be read.
+spline_mesh_of :: proc(d:^Document,ref:Ref) -> (s:Spline_Mesh,ok:bool) {
+    s=SPLINE_MESH_DEFAULT
+    f,error:=property(d,ref,"SplineParams")
+    if error.code!=.None {return}
+    if f.property==nil {return s,true}
+    params,params_error:=unreal.property_tagged_struct(f.pkg,f.property,true,context.temp_allocator)
+    if params_error.code!=.None {return}
+    vector :: proc(p:^unreal.Package,list:^unreal.Property_List,name:string,out:[]f64) {
+        item:=unreal.property_find(p,list,name)
+        if item==nil {return}
+        v,error:=unreal.property_value(p,item)
+        if error.code!=.None || v.kind!=.Real_Vector {return}
+        for axis in 0..<min(int(v.vector_count),len(out)) {out[axis]=v.vector[axis]}
+    }
+    vector(f.pkg,&params,"StartPos",s.start[:])
+    vector(f.pkg,&params,"StartTangent",s.start_tangent[:])
+    vector(f.pkg,&params,"EndPos",s.end[:])
+    vector(f.pkg,&params,"EndTangent",s.end_tangent[:])
+    vector(f.pkg,&params,"StartScale",s.start_scale[:])
+    vector(f.pkg,&params,"EndScale",s.end_scale[:])
+    vector(f.pkg,&params,"StartOffset",s.start_offset[:])
+    vector(f.pkg,&params,"EndOffset",s.end_offset[:])
+    if item:=unreal.property_find(f.pkg,&params,"StartRoll");item!=nil {s.start_roll,_=value_real(f.pkg,item,0)}
+    if item:=unreal.property_find(f.pkg,&params,"EndRoll");item!=nil {s.end_roll,_=value_real(f.pkg,item,0)}
+    return s,true
 }
 
 // The box of the mesh at an object path, in its own space, from the

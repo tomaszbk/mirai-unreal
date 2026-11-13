@@ -529,7 +529,12 @@ level_translate :: proc(c:^Context,translators:[]Translator) {
     slice.sort(left[:])
     for class in left {
         n:=c.left[class]
-        importer.output_warn(&c.outputs,"%d %s %s of translated actors %s left out: Mirai has no translation for it",n,class,n==1?"component":"components",n==1?"was":"were")
+        reason:="Mirai has no translation for it"
+        for bridged in PLUGIN_COMPONENTS {
+            if bridged[0]!=class {continue}
+            reason=len(translators)>0?fmt.tprintf("the %s plugin translates it and is not in the project",bridged[1]):"a plugin translates it in an editor session: import the level there (mirai session start, then mirai rpc asset.import with its path)"
+        }
+        importer.output_warn(&c.outputs,"%d %s %s of translated actors %s left out: %s",n,class,n==1?"component":"components",n==1?"was":"were",reason)
     }
     said:=make([dynamic]string,context.temp_allocator)
     for what in c.tallies {append(&said,what)}
@@ -576,6 +581,10 @@ SILENT_COMPONENTS :: []string{
 // The classes plugins of Mirai translate in an editor session.
 @(private)
 PLUGIN_CLASSES :: []string{"Landscape","LandscapeProxy","LandscapeStreamingProxy","InstancedFoliageActor","BlockingVolume","ExponentialHeightFog"}
+
+// The component classes a bridge plugin translates in an editor session, and the plugin it bridges to.
+@(private)
+PLUGIN_COMPONENTS :: [?][2]string{{"SplineMeshComponent","shapes"},{"ParticleSystemComponent","vfx"},{"NiagaraComponent","vfx"}}
 
 @(private)
 untranslated_reason :: proc(c:^Context,a:int,native:level.Class,with_translators:bool) -> string {
@@ -638,6 +647,13 @@ actor_translate :: proc(c:^Context,a:int,native:level.Class) -> (translated,sile
         ok:=false
         switch component.class.name {
         case "StaticMeshComponent":ok=mesh_add(c,a,k,false)
+        case "SplineMeshComponent":
+            // Its mesh drawn straight would be another shape: the bridge that bends it adds its curve.
+            if !component_claimed(c,component.class.name) {
+                append(&left,component.class.name)
+                continue
+            }
+            ok=mesh_add(c,a,k,false)
         case "TextRenderComponent":ok=text_add(c,a,k)
         case "InstancedStaticMeshComponent","HierarchicalInstancedStaticMeshComponent","FoliageInstancedStaticMeshComponent":ok=instanced_take(c,a,k)
         case "SkeletalMeshComponent":ok=mesh_add(c,a,k,true)
