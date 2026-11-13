@@ -66,6 +66,15 @@ chain_real :: proc(chain:^Struct_Chain,name:string,default:f64) -> (value:f64,fo
     return level.value_real(p,item,default)
 }
 
+// A LinearColor field, as its RGB.
+chain_color :: proc(chain:^Struct_Chain,name:string,default:[3]f32) -> (value:[3]f32,found:bool) {
+    item,p:=chain_find(chain,name)
+    if item==nil {return default,false}
+    v,error:=unreal.property_value(p,item)
+    if error.code!=.None || v.kind!=.Real_Vector || v.vector_count<3 {return default,false}
+    return {f32(v.vector[0]),f32(v.vector[1]),f32(v.vector[2])},true
+}
+
 chain_bool :: proc(chain:^Struct_Chain,name:string) -> bool {
     item,p:=chain_find(chain,name)
     if item==nil {return false}

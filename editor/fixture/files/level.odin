@@ -113,6 +113,12 @@ color_property :: proc(b:^Bytes,w:^Writer,property:string,rgba:[4]u8) {
     put_u8(b,rgba[2]);put_u8(b,rgba[1]);put_u8(b,rgba[0]);put_u8(b,rgba[3])
 }
 
+// A LinearColor, its four floats.
+linear_color_property :: proc(b:^Bytes,w:^Writer,property:string,rgba:[4]f32) {
+    tag(b,w,property,"StructProperty",16,{struct_name="LinearColor"})
+    for x in rgba {put_f32(b,x)}
+}
+
 objects_property :: proc(b:^Bytes,w:^Writer,property:string,values:[]i32) {
     tag(b,w,property,"ArrayProperty",4+4*len(values),{inner="ObjectProperty"})
     put_u32(b,u32(len(values)))

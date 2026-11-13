@@ -43,9 +43,9 @@ library (`editor.provided_all`).
   folder of the map's import), `entity_make` (at the root of a section, where the world transform
   puts it), `actor_entity`, `actor_key` and `component_set` (the scene), and `warn`.
 - A bridge is declared like any editor plugin: a storage with the provider and its default
-  (`Terrain_Unreal`, `Foliage_Unreal`, `Physics_Unreal`, `Fog_Unreal`, `Navigation_Unreal`,
-  `Vfx_Unreal`, `Fluids_Unreal`). Without the bridge for a class, its actors are warnings saying
-  which plugin to enable.
+  (`Terrain_Unreal`, `Foliage_Unreal`, `Physics_Unreal`, `Fog_Unreal`, `Lens_Unreal`,
+  `Navigation_Unreal`, `Vfx_Unreal`, `Fluids_Unreal`). Without the bridge for a class, its actors
+  are warnings saying which plugin to enable.
 
 ## Terrain (`unreal_terrain`)
 
@@ -147,6 +147,24 @@ light are radiance that Unreal adds, not an albedo: with a `SkyAtmosphere` Unrea
 with the sky and sun, as Mirai always does, and they are omitted; the scale of non-white sky light
 and what depends on the eye, `StartDistance`, `FogCutoffDistance` and `FogMaxOpacity`, are
 warnings.
+
+## Lens (`unreal_lens`)
+
+It takes `PostProcessVolume`: the importer's `post_process_add` makes each the entity of its
+`View_Volume` with its zone and `Volume` (`lens`: also when it overrides only `LENS_SETTINGS`), and
+the bridge adds a `Lens_Volume` of the same zone there with what it overrides of them; what it does
+not override is the lens's default.
+
+- Bloom: Unreal's standard bloom adds to the image each of its six levels by its tint and a sixth
+  of `BloomIntensity` × `BloomGaussianIntensity`, k of the light in all; the lens's `bloom` is the
+  share of the image that is its blur, k/(1+k). A tint counts by its luminance and a colored one
+  is a warning; the convolution bloom (`BM_FFT`) is a warning and is not translated.
+- Vignette: Unreal darkens by cos⁴ of an angle whose tangent is `VignetteIntensity` times the
+  distance from the center, the same at the corners of any view; the lens takes a share of the cos⁴
+  falloff of the angles of its view. The share darkens the corners of Unreal's default view (90°
+  across, 16:9) as Unreal does, at most the whole falloff, with a warning beyond.
+- Threshold, sizes, dirt mask and the rest of the lens settings have no equivalent and are in the
+  importer's warning.
 
 ## Navigation (`unreal_navigation`)
 
@@ -278,6 +296,9 @@ the area the Blueprint simulates; at 1, those of the mesh. `PressureDivergenceBu
   `a_blocking_volume_of_an_unreal_level_is_a_static_box`.
 - Tests of `plugins/unreal_fog/editor`:
   `the_height_fog_of_an_unreal_level_is_a_fog_of_the_whole_world`.
+- Tests of `plugins/unreal_lens/editor`:
+  `the_bloom_and_vignette_of_an_unreal_post_process_volume_are_a_lens_volume`; without the bridge,
+  `the_bloom_of_a_post_process_volume_without_its_bridge_names_the_lens_plugin` of `editor/scene`.
 - Tests of `plugins/unreal_navigation/editor`:
   `the_navigation_actors_of_an_unreal_level_are_bounds_areas_and_links`.
 - Tests of `plugins/unreal_vfx/editor`: the names the Niagara translator writes and the VM bytecode

@@ -1,0 +1,7 @@
+{
+  "name": "unreal_lens",
+  "version": "0.1.0",
+  "dependencies": ["unreal", "lens"],
+  "parts": ["Editor"],
+  "automatic": true
+}

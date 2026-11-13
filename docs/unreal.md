@@ -714,15 +714,19 @@ entity, the imported meshes and the time.
   engine's sky sphere), and otherwise black; with an atmosphere, the `Sky` is the air the sun lights
   (`atmosphere`), unless the `SkyLight` names a cube: Mirai's `Sky` draws the image or the air, and
   the cube wins, with a warning. `VolumetricCloud` is a warning: Mirai draws no clouds.
-  An unbounded `PostProcessVolume` (the highest priority) gives the `Sky`'s exposure: method
-  (manual or automatic), compensation, adaptation speed, the physical camera (f, shutter and ISO)
-  and the minimum and maximum brightness, which Unreal takes to white and Mirai to mid gray: the
-  EV100 that makes that luminance white (Unreal's EV100 over `LuminanceMax` if the project extends
-  the range, luminance as UE4 if not). The rest of what it overrides and a bounded volume are
-  warnings; `ReflectionCapture`s, which GI replaces, what only Unreal's editor uses, World
-  Partition's HLOD (Mirai's is per cell), minimaps, `GPULightmass`, virtual texture volumes (their
-  layers are the terrain's), a Landscape's Nanite and proxy components, the PCG graph and a packed
-  level actor's level (its instances show it) are omitted without a warning.
+  An unbounded `PostProcessVolume` (the highest priority) gives the `Sky`'s exposure: method (manual
+  or automatic), compensation, adaptation speed, the physical camera (f, shutter and ISO) and the
+  minimum and maximum brightness, which Unreal takes to white and Mirai to mid gray: the EV100 that
+  makes that luminance white (Unreal's EV100 over `LuminanceMax` if the project extends the range,
+  luminance as UE4 if not). A bounded one is that `View_Volume` in the box of its `CubeBuilder`
+  grown by its blend radius. Its bloom and vignette are a `Lens_Volume` of the `unreal_lens` bridge
+  on the same entity ([lens](translators.md#lens-unreal_lens)); without it they are a warning that
+  names the `lens` plugin. The rest of what it overrides is a warning: saturation and contrast too,
+  because the engine's `ColorGrade` has no saturation and its contrast is not Unreal's (a power
+  around middle gray); `ReflectionCapture`s, which GI replaces, what only Unreal's editor uses,
+  World Partition's HLOD (Mirai's is per cell), minimaps, `GPULightmass`, virtual texture volumes
+  (their layers are the terrain's), a Landscape's Nanite and proxy components, the PCG graph and a
+  packed level actor's level (its instances show it) are omitted without a warning.
 - **Texts.** `TextRenderComponent` is a fixed `World_Widget` on the component's entity, facing
   where the text faces in Unreal (its +X, Mirai's -Z), with its own `.ui` in the import: a
   line measures `WorldSize` times `YScale`, in its color, aligned as Unreal aligns it and with
@@ -730,8 +734,9 @@ entity, the imported meshes and the time.
   in the source culture (`None` and `Base` histories).
 - **Plugin translators.** A `Translator` takes the actors of its native classes, one scene at a
   time, and is provided by an `unreal_*` bridge plugin ([translators](translators.md)): terrain,
-  foliage, physics, fog, particles, navigation and the fluids' textures. Without a class's bridge,
-  its actors are warnings saying which plugin to enable, and the meshes have no collision.
+  foliage, physics, fog, the lens of post process volumes, particles, navigation and the fluids'
+  textures. Without a class's bridge, its actors are warnings saying which plugin to enable, and
+  the meshes have no collision.
 - **What is not translated** is a warning per class with its count: sounds, BSP, Blueprints that
   show nothing Mirai translates, and the untranslated components of translated actors. Warnings
   repeated by the meshes' imports are given once.

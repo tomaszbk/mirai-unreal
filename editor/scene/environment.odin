@@ -77,7 +77,7 @@ camera_add :: proc(c:^Context,a,k:int,cine:bool) -> bool {
 @(private)
 exposure_from :: proc(c:^Context,s:^Struct_Chain,aperture:f32) -> (e:render.Exposure,any:bool) {
     e=render.EXPOSURE_DEFAULT
-    overridden :: proc(s:^Struct_Chain,name:string) -> bool {return chain_bool(s,strings.concatenate({"bOverride_",name},context.temp_allocator))}
+    overridden :: setting_overridden
     if overridden(s,"AutoExposureMethod") {
         any=true
         if chain_enum(s,"AutoExposureMethod","AEM_Histogram")=="AEM_Manual" {e.mode=.Manual}
@@ -133,12 +133,32 @@ EXPOSURE_SETTINGS :: []string{
     "AutoExposureSpeedDown","AutoExposureApplyPhysicalCameraExposure","CameraShutterSpeed","CameraISO","DepthOfFieldFstop",
 }
 
+// Those the lens plugin translates, through its bridge (unreal_lens): the
+// light the bloom scatters and the vignette.
+LENS_SETTINGS :: []string{
+    "BloomIntensity","BloomGaussianIntensity","Bloom1Tint","Bloom2Tint","Bloom3Tint","Bloom4Tint","Bloom5Tint","Bloom6Tint",
+    "VignetteIntensity",
+}
+
+// Whether post process settings override a setting.
+setting_overridden :: proc(s:^Struct_Chain,name:string) -> bool {
+    return chain_bool(s,strings.concatenate({"bOverride_",name},context.temp_allocator))
+}
+
+// The entity a post process volume became and what its settings are, for
+// what a bridge adds to it over the same zone and Volume.
+Post_Process :: struct {
+    entity:base.Entity_Id,
+    zone:volume.Zone,
+    settings:Struct_Chain,
+}
+
 // A post process volume is a View_Volume with the exposure it overrides, by
 // its priority, over its blend radius: in its box when it is bound, which a
-// CubeBuilder gives, and everywhere otherwise. What is not exposure is a
-// warning.
-@(private)
-post_process_add :: proc(c:^Context,a:int) {
+// CubeBuilder gives, and everywhere otherwise. lens: the caller translates
+// LENS_SETTINGS on the entity, which is made for them too; without it they
+// are a warning that names the lens plugin. The rest is a warning.
+post_process_add :: proc(c:^Context,a:int,lens:=false) -> (p:Post_Process,made:bool) {
     d:=c.d
     ref:=d.actors[a].ref
     label:=d.actors[a].label
@@ -165,30 +185,41 @@ post_process_add :: proc(c:^Context,a:int) {
     }
     settings:=struct_chain(d,ref,"Settings")
     others:=make([dynamic]string,context.temp_allocator)
+    lensed:=make([dynamic]string,context.temp_allocator)
     for i in 0..<settings.count {
-        p:=settings.packages[i]
+        pkg:=settings.packages[i]
         for &item in settings.lists[i].items {
-            name:=unreal.name_plain(p,item.name)
+            name:=unreal.name_plain(pkg,item.name)
             if !strings.has_prefix(name,"bOverride_") {continue}
-            v,error:=unreal.property_value(p,&item)
+            v,error:=unreal.property_value(pkg,&item)
             if error.code!=.None || v.kind!=.Boolean || !v.boolean {continue}
             setting:=name[len("bOverride_"):]
-            if !slice.contains(EXPOSURE_SETTINGS,setting) && !slice.contains(others[:],setting) {append(&others,setting)}
+            if slice.contains(EXPOSURE_SETTINGS,setting) {continue}
+            into:=slice.contains(LENS_SETTINGS,setting)?&lensed:&others
+            if !slice.contains(into[:],setting) {append(into,setting)}
         }
     }
     if len(others)>0 {
         shown:=others[:min(len(others),8)]
         warn(c,"%s: %d post process settings have no equivalent in Mirai: %s%s",label,len(others),strings.join(shown,", ",context.temp_allocator),len(others)>8?", ...":"")
     }
+    if len(lensed)>0 && !lens {
+        missing:=len(c.translators)>0?"the lens plugin is not in the project":"the lens plugin translates them in an editor session: import the level there (mirai session start, then mirai rpc asset.import with its path)"
+        warn(c,"%s: its bloom and vignette (%s) are not translated: %s",label,strings.join(lensed[:],", ",context.temp_allocator),missing)
+    }
     exposure,any:=exposure_from(c,&settings,0)
-    if !any {return}
-    look.exposure=exposure
+    if !any && !(lens && len(lensed)>0) {return}
     world,_,error:=level.actor_world(d,a)
     if error.code!=.None {return}
     if place.shape==.Box {place.extents=blend_beyond(place.extents,look.zone.blend,world.scale)}
-    e,made:=entity_make(c,0,actor_key(c,a),label,world)
-    if !made || !component_set(c,e,"View_Volume",&look) {return}
-    if place.shape!=.Unbounded {component_set(c,e,"Volume",&place)}
+    e,entity_made:=entity_make(c,0,actor_key(c,a),label,world)
+    if !entity_made {return}
+    if any {
+        look.exposure=exposure
+        if !component_set(c,e,"View_Volume",&look) {return}
+    }
+    if place.shape!=.Unbounded && !component_set(c,e,"Volume",&place) {return}
+    return {entity=e,zone=look.zone,settings=settings},true
 }
 
 // Unreal blends a bound volume over its blend radius beyond its brush, and
