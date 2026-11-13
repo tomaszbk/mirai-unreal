@@ -23,6 +23,7 @@ The `editor/` packages are imported as `project:plugins/unreal/editor/<package>`
 - `model`: the `.uasset` model format (`FORMAT`), and `scene`: a map as a project scene
   (`level_import`).
 - `inspect`: the diagnostic behind `unreal.inspect`; `fixture`: synthetic packages for tests.
+- `fab`: the Fab library of the account, its builds and their download ([fab.md](fab.md)).
 - `api.odin` and `unreal.odin`: the plugin's storages, below.
 
 ## Map
@@ -31,6 +32,8 @@ The `editor/` packages are imported as `project:plugins/unreal/editor/<package>`
   Landscape, foliage and maps as scenes: [unreal.md](unreal.md).
 - What each bridge plugin translates (terrain, foliage, physics, fog, navigation, particles) and
   the translator contract: [translators.md](translators.md).
+- Signing in to Fab, reading the library and downloading a pick or a whole build into the assets:
+  [fab.md](fab.md).
 
 ## Importing in the editor
 
@@ -50,7 +53,8 @@ library:
   `scene.level_import`: one import that owns everything it writes, in `<map>/` beside the map.
   The build rebuilds what it keeps in the imported folder from the map and those packages, its
   inputs.
-- `Unreal_Api` registers `unreal.inspect` ([diagnostic](unreal.md#diagnostics-inspect)).
+- `Unreal_Api` registers `unreal.inspect` ([diagnostic](unreal.md#diagnostics-inspect)) and the
+  `unreal.fab.*` methods; `Unreal_Fab` holds the Fab panel and its jobs ([Fab](fab.md)).
 - Importing again gives the same ids. An import that writes Surface programs publishes the
   project's programs so its materials render.
 - `mirai import` and the engine CLI know nothing about Unreal: a map or a `.uasset` is imported in
