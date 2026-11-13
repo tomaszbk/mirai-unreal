@@ -317,6 +317,8 @@ document_import :: proc(d:^level.Document,source:string,size,hash:u64,options:im
     types:asset.Types
     asset.types_init(&types)
     defer asset.types_destroy(&types)
+    // The scene and its prefabs carry what each component starts as, as the editor writes them.
+    if options.world!=nil && options.world.schema!=nil {types.defaults=&options.world.schema.schema}
     c:=Context{d=d,lib=&materials,types=&types,options=options,report=&report}
     c.meshes.allocator,c.materials.allocator,c.layers.allocator,c.left.allocator=scratch,scratch,scratch,scratch
     c.clips.allocator,c.bodies.allocator,c.slot_paths.allocator,c.custom_reads.allocator=scratch,scratch,scratch,scratch
