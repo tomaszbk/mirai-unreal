@@ -17,8 +17,15 @@ import "mirai:std/base"
 import mm "mirai:std/math"
 import terrain "plugins:terrain/runtime"
 
+// The weight a sample gives a layer of the source.
+@(private="file")
+weight_of :: proc(w:terrain.Weights,layer:int) -> (value:int) {
+    for slot in 0..<terrain.WEIGHT_SLOTS {if at,v:=terrain.weights_slot(w,slot);at==layer {value+=v}}
+    return
+}
+
 @(test)
-a_landscape_becomes_a_heightfield_that_keeps_four_layers_and_folds_the_rest :: proc(t:^testing.T) {
+a_landscape_becomes_a_heightfield_with_every_layer_up_to_the_most_a_source_holds :: proc(t:^testing.T) {
     l:landscape.Landscape
     l.samples={4,3}
     l.spacing=2
@@ -38,8 +45,8 @@ a_landscape_becomes_a_heightfield_that_keeps_four_layers_and_folds_the_rest :: p
     // Sample k: A everywhere but the last row; B, C, D and E in a sample
     // each, E with some A; F, the lightest, only where D is.
     weights:=make([]u8,6*count,context.temp_allocator)
+    put :: proc(w:[]u8,count,layer,k:int,value:u8) {w[layer*count+k]=value}
     for k in 0..<count {
-        put :: proc(w:[]u8,count,layer,k:int,value:u8) {w[layer*count+k]=value}
         switch k {
         case 8:put(weights,count,1,k,255)
         case 9:put(weights,count,2,k,155)
@@ -60,20 +67,42 @@ a_landscape_becomes_a_heightfield_that_keeps_four_layers_and_folds_the_rest :: p
     testing.expect_value(t,s.cell,f32(2))
     testing.expect_value(t,s.chunk_cells,u32(7))
     testing.expect_value(t,result.transform.position,mm.Vec3{1,2,3})
-    for k in 0..<count {testing.expect_value(t,terrain.source_value(&s,{k%4,0,k/4}),heights[k])}
+    for k in 0..<count {
+        h,read:=terrain.source_value(&s,{k%4,0,k/4})
+        testing.expect(t,read && h==heights[k],"the heights of the landscape")
+    }
     testing.expect(t,terrain.source_hole(&s,1,1) && !terrain.source_hole(&s,0,0),"the holes of the landscape")
-    // By weight A, B and D (B first on the tie), E; C blends with none and goes to
-    // the heaviest, F blends with D.
-    testing.expect_value(t,s.layer_count,u32(4))
-    testing.expect_value(t,result.layers,[4]int{0,1,3,4})
-    testing.expect_value(t,result.folded[2],0)
-    testing.expect_value(t,result.folded[5],2)
-    testing.expect_value(t,terrain.grid_get(&s.weights,2,2),terrain.Weights{0,0,255,0})
-    testing.expect_value(t,s.layers[1].material,materials[1])
-    w9:=terrain.grid_get(&s.weights,1,2)
-    testing.expect_value(t,int(w9[0])+int(w9[1])+int(w9[2])+int(w9[3]),terrain.WEIGHT_FULL)
+    // Every layer, in the order of the landscape, with its material.
+    testing.expect_value(t,s.layer_count,u32(6))
+    for layer in 0..<6 {
+        testing.expect_value(t,result.layers[layer],layer)
+        testing.expect_value(t,result.folded[layer],layer)
+        testing.expect_value(t,s.layers[layer].material,materials[layer])
+    }
+    testing.expect_value(t,weight_of(terrain.grid_get(&s.weights,1,2),2),terrain.WEIGHT_FULL)
+    w10:=terrain.grid_get(&s.weights,2,2)
+    testing.expect(t,weight_of(w10,3)+weight_of(w10,5)==terrain.WEIGHT_FULL && weight_of(w10,3)>weight_of(w10,5) && weight_of(w10,5)>0,"F beside D, as light as it is")
     w11:=terrain.grid_get(&s.weights,3,2)
-    testing.expect_value(t,w11,terrain.Weights{55,0,0,200})
+    testing.expect(t,weight_of(w11,4)==200 && weight_of(w11,0)==55,"E and A where both are painted")
+    // Past LAYERS_MAX the lightest fold into the kept layer they overlap
+    // most, the first on a tie, or into the heaviest: layer k paints sample
+    // k%11 lighter the higher k; 32 shares sample 3 and 33 has 11 alone.
+    many:=l
+    many.layers=make([]landscape.Layer,terrain.LAYERS_MAX+2,context.temp_allocator)
+    many.weights=make([]u8,len(many.layers)*count,context.temp_allocator)
+    for layer in 0..<terrain.LAYERS_MAX {put(many.weights,count,layer,layer%11,u8(200-layer))}
+    put(many.weights,count,terrain.LAYERS_MAX,3,10)
+    put(many.weights,count,terrain.LAYERS_MAX+1,11,5)
+    folds:terrain.Source
+    defer terrain.source_destroy(&folds)
+    folded,folds_ok:=landscape_terrain(&folds,&many,{})
+    if !testing.expect(t,folds_ok) {return}
+    defer delete(folded.folded)
+    testing.expect_value(t,folds.layer_count,u32(terrain.LAYERS_MAX))
+    for layer in 0..<terrain.LAYERS_MAX {testing.expect_value(t,folded.layers[layer],layer)}
+    testing.expect_value(t,folded.folded[terrain.LAYERS_MAX],3)
+    testing.expect_value(t,folded.folded[terrain.LAYERS_MAX+1],0)
+    testing.expect_value(t,weight_of(terrain.grid_get(&folds.weights,3,2),0),terrain.WEIGHT_FULL)
     types:asset.Types;asset.types_init(&types);defer asset.types_destroy(&types)
     bytes,error:=terrain.source_bytes(&s,{9,9},&types)
     if !testing.expect_value(t,error,asset.Error.None) {return}
@@ -160,8 +189,7 @@ a_landscape_maps_the_world_to_its_coordinates_and_its_layers_to_those_of_the_ter
     if !testing.expect(t,ok) {return}
     defer delete(result.folded)
     mapping:=landscape_mapping(&list[0],&result)
-    testing.expect_value(t,mapping.layers[0],list[0].layers[0].name)
-    testing.expect_value(t,mapping.layers[1],"")
+    if testing.expect_value(t,len(mapping.layers),len(list[0].layers)) {testing.expect_value(t,mapping.layers[0],list[0].layers[0].name)}
     // The actor is at (1000,2000,300) with 100 cm a quad.
     for q in ([][2]f32{{0,0},{2,1},{4,2}}) {
         world:=[3]f32{1000+100*q.x,2000+100*q.y,300}

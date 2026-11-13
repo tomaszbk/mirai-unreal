@@ -56,6 +56,7 @@ Program_Parameter :: struct {
     components:u8,
     value:[4]f32,
     texture:int,       // Texture: row of graph.textures
+    piece:bool,        // given by each piece of the terrain that shows the material, not by the material
 }
 
 Program :: struct {

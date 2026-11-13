@@ -480,7 +480,8 @@ layer_materials :: proc(c:^Context,path:string,label:="",mapping:^material.Lands
     }
     if mapping!=nil {
         kept:=mapping^
-        for &name in kept.layers {name=strings.clone(name,context.temp_allocator)}
+        kept.layers=make([]string,len(mapping.layers),context.temp_allocator)
+        for name,i in mapping.layers {kept.layers[i]=strings.clone(name,context.temp_allocator)}
         if entry.wholes.allocator.procedure==nil {entry.wholes.allocator=context.temp_allocator}
         append(&entry.wholes,Landscape_Whole{label=strings.clone(label,context.temp_allocator),mapping=kept})
     }
@@ -521,6 +522,18 @@ layer_materials :: proc(c:^Context,path:string,label:="",mapping:^material.Lands
     return
 }
 
+
+// The grass of a landscape material by its object path
+// (material.landscape_grass); none, with a warning, when it cannot be read.
+landscape_grass :: proc(c:^Context,path:string) -> []material.Landscape_Grass {
+    library_lock(c)
+    defer library_unlock(c)
+    object,found:=material.object_find(c.lib,path)
+    if !found {return nil}
+    grass,error:=material.landscape_grass(c.lib,object,context.temp_allocator)
+    if error.code!=.None {warn(c,"the grass of the landscape material %s could not be read (%s); it is left out",path,error.message)}
+    return grass
+}
 
 @(private)
 materials_write :: proc(c:^Context,file:string,translated:[]material.Translated_Material) -> (ids:[]base.Asset_Id,ok:bool) {

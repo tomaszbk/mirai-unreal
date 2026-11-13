@@ -56,18 +56,25 @@ level_slice :: proc(decoded:^Decoded,level:Level,slice:int) -> []u8 {
 // The source pixels as RGBA rows from the top, every block, layer, mip and
 // slice, in Mirai's conventions: normal maps keep +Y in green.
 texture_decode :: proc(p:^unreal.Package,texture:^Texture,decoder:^kraken.Decoder,allocator:=context.allocator,worker:=jobs.Worker_Ref{}) -> (decoded:Decoded,error:unreal.Error) {
-    if p==nil || texture==nil || len(texture.layers)==0 || len(texture.blocks)==0 {return {},{.Invalid_Reference,0,"texture to decode"}}
+    if p==nil || texture==nil {return {},{.Invalid_Reference,0,"texture to decode"}}
+    payload:[]u8
+    payload,error=unreal.span_bytes(p,texture.payload.span)
+    if error.code!=.None {return}
+    return payload_decode(payload,p.limits,texture,decoder,allocator,worker)
+}
+
+// texture_decode of the payload of texture as its package stores it.
+@(private)
+payload_decode :: proc(payload:[]u8,limits:unreal.Limits,texture:^Texture,decoder:^kraken.Decoder,allocator:=context.allocator,worker:=jobs.Worker_Ref{}) -> (decoded:Decoded,error:unreal.Error) {
+    if texture==nil || len(texture.layers)==0 || len(texture.blocks)==0 {return {},{.Invalid_Reference,0,"texture to decode"}}
     at_payload:=texture.payload.span.offset
     if texture.payload.raw_size<=0 {return {},{.Unsupported_Value,at_payload,"texture source has no pixels"}}
-    if u64(texture.payload.raw_size)>p.limits.source_bytes {return {},{.Limit,at_payload,"texture payload size"}}
+    if u64(texture.payload.raw_size)>limits.source_bytes {return {},{.Limit,at_payload,"texture payload size"}}
     for block in texture.blocks {
         if block.width*block.height>MAX_PIXELS {return {},{.Limit,0,"texture source pixel count"}}
     }
     expected:=source_size(texture)
-    if expected<=0 || expected>int(p.limits.source_bytes) {return {},{.Limit,0,"texture source size"}}
-    payload:[]u8
-    payload,error=unreal.span_bytes(p,texture.payload.span)
-    if error.code!=.None {return}
+    if expected<=0 || expected>int(limits.source_bytes) {return {},{.Limit,0,"texture source size"}}
     raw,raw_error:=make([]u8,int(texture.payload.raw_size),context.allocator)
     if raw_error!=nil {return {},{.Out_Of_Memory,0,"texture payload"}}
     defer delete(raw)
@@ -77,7 +84,7 @@ texture_decode :: proc(p:^unreal.Package,texture:^Texture,decoder:^kraken.Decode
     switch texture.payload.encoding {
     case .Compressed_Buffer:
         buffer:unreal.Compressed_Buffer
-        buffer,error=unreal.compressed_buffer(payload,p.limits)
+        buffer,error=unreal.compressed_buffer(payload,limits)
         if error.code!=.None {return}
         if buffer.raw_size!=u64(len(raw)) {return {},{.Malformed,at_payload,"compressed buffer size differs from the bulk data size"}}
         error=unreal.compressed_buffer_decode(buffer,raw,decoder)

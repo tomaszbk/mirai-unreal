@@ -8,14 +8,14 @@ import unreal "project:plugins/unreal/editor/package"
 // material, by the weights painted on it. Translated per layer, the graph is
 // evaluated once per layer with that layer's weight 1 and the others 0: what
 // is left is the branch of that layer, a material like any other. Translated
-// whole for a terrain (Options.landscape), the weights are those the terrain
-// gives its program (Layer_Weights) and the coordinates of the landscape come
-// from the place of the point in the world.
+// whole for a terrain (Options.landscape), the weights are those the maps of
+// each piece of the terrain give the program (Layer_Weight) and the
+// coordinates of the landscape come from the place of the point in the world.
 
 // How the layers and the coordinates of a landscape are those of the terrain
 // that shows it.
 Landscape_Mapping :: struct {
-    layers:[4]string,         // the paint layer each layer of the terrain shows, in its order; "" none
+    layers:[]string,          // the paint layer each layer of the terrain shows, in its order; "" none
     coordinates:[2][4]f32,    // the landscape coordinates (quads of Unreal from its actor) at a point p of the world in Unreal's centimetres: dot(row.xyz,p)+row.w
 }
 
@@ -49,7 +49,7 @@ layer_weight_node :: proc(e:^Evaluator,name:string) -> (weight:u32,found:bool) {
         return scalar(g,w),w>0
     }
     for layer,slot in e.landscape.layers {
-        if layer!="" && strings.equal_fold(layer,name) {return component(g,context_value(g,.Layer_Weights,4),u8(slot)),true}
+        if layer!="" && strings.equal_fold(layer,name) {return context_value(g,.Layer_Weight,1,u32(slot)),true}
     }
     return scalar(g,0),false
 }

@@ -24,6 +24,7 @@ Emitter :: struct {
     parameters:[dynamic]Program_Parameter,
     folded:map[u32]bool,   // parameters left as constants, over the budget
     scopes:[]u32,          // of each node: SCOPE_OUTER, the weight of its branch, or NONE when unread
+    landscape:bool,        // a landscape whole: it reads what the pieces of its terrain give (Unreal_Landscape)
     failed:string,
 }
 
@@ -205,16 +206,21 @@ line_emit :: proc(m:^Emitter,n:u32,indent:string) {
     case .Texture_Read:
         read:=m.g.textures[node.index].read
         code=fmt.tprintf("%s(\"%s\",%s)",read.function,read.name,operand(m,a))
-    case .Vertex_Normal:code="float3(-ctx.vertex_normal.z,ctx.vertex_normal.x,ctx.vertex_normal.y)"
+    // A terrain gives each point the normal of its maps.
+    case .Vertex_Normal,.Pixel_Normal:
+        switch {
+        case m.landscape:code="unreal_vector(landscape.normal)"
+        case node.op==.Vertex_Normal:code="float3(-ctx.vertex_normal.z,ctx.vertex_normal.x,ctx.vertex_normal.y)"
+        case:code="float3(-ctx.normal.z,ctx.normal.x,ctx.normal.y)"
+        }
     case .Vertex_Tangent:code="float3(-ctx.tangent.z,ctx.tangent.x,ctx.tangent.y)"
     case .Vertex_Bitangent:code="unreal_bitangent(ctx)"
-    case .Pixel_Normal:code="float3(-ctx.normal.z,ctx.normal.x,ctx.normal.y)"
     case .Vertex_Color:code="ctx.vertex_color"
     case .Object_Position:code="unreal_point(ctx.object_center)"
     case .Actor_Position:code="unreal_point(ctx.object_position)"
     case .Object_Radius:code="ctx.object_radius*100.0"
     case .Object_Axis:code=fmt.tprintf("unreal_object_axis(ctx,%d)",node.index)
-    case .Layer_Weights:code="float4(ctx.uv0,ctx.uv1)"
+    case .Layer_Weight:code=fmt.tprintf("unreal_layer_weight(landscape,%du)",node.index)
     case .Abs,.Floor,.Ceil,.Frac,.Round,.Trunc,.Sin,.Cos,.Tan,.Asin,.Acos,.Atan,.Exp,.Exp2,.Log,.Log2,.Saturate,.Sign,.Length,.Normalize:
         names:=#partial [Op]string{.Abs="abs",.Floor="floor",.Ceil="ceil",.Frac="frac",.Round="round",.Trunc="trunc",.Sin="sin",.Cos="cos",
             .Tan="tan",.Asin="asin",.Acos="acos",.Atan="atan",.Exp="exp",.Exp2="exp2",.Log="log",.Log2="log2",.Saturate="saturate",
@@ -294,7 +300,14 @@ fields_plan :: proc(m:^Emitter,used:[]u32) -> bool {
     bytes,count:=0,0
     texture_index,parameter_index:=0,0
     taken:=make([]bool,len(used),context.temp_allocator)
+    pieces:=PIECE_PARAMETERS
+    piece :: proc(m:^Emitter,q:Piece_Parameter,bytes,count:^int) {
+        append(&m.parameters,Program_Parameter{name=q.name,source=q.name,kind=q.width==0?.Texture:.Float,components=max(q.width,1),texture=-1,piece=true})
+        bytes^+=4*int(max(q.width,1))
+        count^+=1
+    }
     // Textures first: they cannot be folded.
+    if m.landscape {for q in pieces {if q.width==0 {piece(m,q,&bytes,&count)}}}
     for n,i in used {
         node:=g.nodes[n]
         if node.op!=.Texture {continue}
@@ -306,6 +319,10 @@ fields_plan :: proc(m:^Emitter,used:[]u32) -> bool {
         append(&m.parameters,Program_Parameter{name=m.fields[n],source=ref.path,kind=.Texture,components=1,texture=int(node.index)})
         bytes+=4
         count+=1
+    }
+    if m.landscape {
+        bytes=(bytes+15)/16*16
+        for q in pieces {if q.width==4 {piece(m,q,&bytes,&count)}}
     }
     if bytes>MAX_PROGRAM_BYTES || count>MAX_PROGRAM_FIELDS {return false}
     for width in widths[1:] {
@@ -364,13 +381,14 @@ program_build :: proc(t:^Translated_Material,e:^Evaluator,base_color,alpha,metal
     outputs:=[?]u32{base_color,alpha,metallic,roughness,specular,occlusion,emissive,map_normal?NONE:normal,
         shading==.Clear_Coat?roots[.Clear_Coat]:NONE,shading==.Clear_Coat?roots[.Clear_Coat_Roughness]:NONE,
         shading!=.Cloth?e.fuzz[0]:NONE,shading!=.Cloth?e.fuzz[1]:NONE,e.diffuse_transmission[0],e.diffuse_transmission[1]}
-    m:=Emitter{g=g}
+    m:=Emitter{g=g,landscape=landscape}
     m.scopes=scopes_plan(g,outputs[:])
     m.emitted=make([]bool,len(g.nodes),context.temp_allocator)
     m.fields=make([]string,len(g.nodes),context.temp_allocator)
     m.parameters.allocator=out
     m.folded.allocator=context.temp_allocator
     strings.builder_init(&m.body,context.temp_allocator)
+    if landscape {strings.write_string(&m.body,"    Unreal_Landscape landscape=unreal_landscape(ctx,p.control,p.normal,p.paint,p.piece,p.palette);\n")}
     seen:=make([]bool,len(g.nodes),context.temp_allocator)
     leaves:=make([dynamic]u32,context.temp_allocator)
     for n in outputs {collect_leaves(g,n,seen,&leaves)}
@@ -405,6 +423,8 @@ program_build :: proc(t:^Translated_Material,e:^Evaluator,base_color,alpha,metal
         if specular!=NONE {fmt.sbprintf(b,"    unreal_specular(s,%s);\n",operand(&m,specular,1))}
         if !map_normal && landscape {
             fmt.sbprintf(b,"    s.normal=normalize(unreal_to_mirai(%s));\n",operand(&m,normal,3))
+        } else if landscape {
+            strings.write_string(b,"    s.normal=normalize(landscape.normal);\n")
         } else if !map_normal {
             fmt.sbprintf(b,"    s.normal=normalize(unreal_tangent_to_world(ctx,%s));\n",operand(&m,normal,3))
         }
@@ -417,6 +437,7 @@ program_build :: proc(t:^Translated_Material,e:^Evaluator,base_color,alpha,metal
         set(b,&m,"fuzz_weight",outputs[11],1)
         set(b,&m,"diffuse_transmission_color",outputs[12],3)
         set(b,&m,"diffuse_transmission_weight",outputs[13],1)
+        if landscape {strings.write_string(b,"    unreal_landscape_paint(s,landscape);\n")}
     }
     if alpha!=NONE {set(b,&m,"alpha",alpha,1)}
     body:=strings.to_string(m.body)
@@ -425,6 +446,7 @@ program_build :: proc(t:^Translated_Material,e:^Evaluator,base_color,alpha,metal
     unreal_shared:=false
     customs:=false
     includes:=make([dynamic]string,context.temp_allocator)
+    if landscape {append(&includes,"terrain_surface.slang")}
     for emitted,n in m.emitted {
         if !emitted {continue}
         #partial switch g.nodes[n].op {
@@ -450,6 +472,10 @@ program_build :: proc(t:^Translated_Material,e:^Evaluator,base_color,alpha,metal
     source:=strings.builder_make(out)
     fmt.sbprintf(&source,"//! mirai surface %s\n",name)
     for p in m.parameters {
+        if p.piece {
+            for q in PIECE_PARAMETERS {if q.name==p.name {fmt.sbprintf(&source,"//! parameter %s %s\n",q.name,q.declaration)}}
+            continue
+        }
         if p.kind==.Texture {
             ref:=g.textures[p.texture]
             fmt.sbprintf(&source,"//! parameter %s {{\"kind\":\"texture\",\"srgb\":%v,\"normal\":%v}}\n",p.name,ref.sampler==.Color,ref.sampler==.Normal)
@@ -475,6 +501,7 @@ program_build :: proc(t:^Translated_Material,e:^Evaluator,base_color,alpha,metal
     for p in m.parameters {fmt.sbprintf(&source,"%s %s;",p.kind==.Texture?"uint":type_name(p.components),p.name)}
     strings.write_string(&source,"};\n")
     strings.write_string(&source,PROGRAM_HELPERS)
+    if landscape {strings.write_string(&source,LANDSCAPE_HELPERS)}
     strings.write_string(&source,strings.to_string(functions))
     strings.write_string(&source,"Mirai_Surface evaluate(Mirai_Surface_Context ctx, Parameters p) {\n    Mirai_Surface s=mirai_surface_default(ctx);\n")
     strings.write_string(&source,body)
@@ -486,6 +513,21 @@ program_build :: proc(t:^Translated_Material,e:^Evaluator,base_color,alpha,metal
     normal_transform:=asset.material_maps(&t.info.maps)[.Normal]
     t.info.maps=asset.MATERIAL_DEFAULTS.maps
     asset.material_maps(&t.info.maps)[.Normal]=normal_transform
+}
+
+// What the terrain that shows a landscape gives each of its pieces
+// (terrain.piece_values), declared as its Terrain_Layers program declares it:
+// the maps of the piece, their size and the palette of a piece of a Volume.
+@(private)
+Piece_Parameter :: struct {name:string,width:u8,declaration:string} // width 0: a texture
+
+@(private)
+PIECE_PARAMETERS :: [5]Piece_Parameter{
+    {"control",0,`{"kind":"texture"}`},
+    {"normal",0,`{"kind":"texture"}`},
+    {"paint",0,`{"kind":"texture","srgb":true}`},
+    {"piece",4,`{"default":[2,2,0,1],"min":0,"max":100000}`},
+    {"palette",4,`{"default":[0,1,2,3],"min":0,"max":31}`},
 }
 
 @(private)
@@ -580,5 +622,52 @@ void unreal_specular(inout Mirai_Surface s, float specular) {
     float r=sqrt(max(f0,0.02));
     s.specular_ior=(1.0+r)/(1.0-r);
     s.specular_factor=min(f0/0.02,1.0);
+}
+`
+
+// What a landscape reads of the terrain that shows it at a point, as the
+// terrain's Terrain_Layers program reads it (terrain_surface.slang): the
+// weights of its layers, its normal in the world and what is painted over
+// it. A piece of a Volume carries the weights of its palette in uv0 and uv1.
+@(private)
+LANDSCAPE_HELPERS :: `struct Unreal_Landscape {
+    Terrain_Mix mix;
+    float3 normal;
+    float4 paint;
+};
+Unreal_Landscape unreal_landscape(Mirai_Surface_Context ctx, uint control, uint normal, uint paint, float4 piece, float4 palette) {
+    Unreal_Landscape l;
+    l.normal=ctx.normal;
+    l.paint=float4(1.0,1.0,1.0,float(PAINT_ROUGHNESS_NEUTRAL)/255.0);
+    if (piece.z>0.5 || control==0xffffffffu) {
+        float4 w=max(float4(ctx.uv0,ctx.uv1),float4(0.0));
+        float total=w.x+w.y+w.z+w.w;
+        w=total>0.0?w/total:float4(1.0,0.0,0.0,0.0);
+        for (int i=0;i<4;i++) {l.mix.layers[i]=uint(palette[i]+0.5);l.mix.weights[i]=w[i];}
+        return l;
+    }
+    float2 size=max(piece.xy,float2(1.0));
+    bool hole;
+    l.mix=terrain_weights_at(control,size,ctx.uv0,hole);
+    // The maps along the footprint of the point, in texels of piece.w metres.
+    float2 uv=(ctx.uv0+0.5)/size;
+    float2 dx=mirai_object_vector(ctx,ctx.position_dx).xz/(max(piece.w,1e-6)*size);
+    float2 dy=mirai_object_vector(ctx,ctx.position_dy).xz/(max(piece.w,1e-6)*size);
+    float3 n=mirai_sample_texture_grad(normal,uv,dx,dy).rgb*2.0-1.0;
+    float3 w=n.x*ctx.object_x/max(dot(ctx.object_x,ctx.object_x),1e-30)+n.y*ctx.object_y/max(dot(ctx.object_y,ctx.object_y),1e-30)+n.z*ctx.object_z/max(dot(ctx.object_z,ctx.object_z),1e-30);
+    if (dot(w,w)>1e-30) l.normal=normalize(w);
+    if (paint!=0xffffffffu) l.paint=mirai_sample_texture_grad(paint,uv,dx,dy);
+    return l;
+}
+// The weight of a layer of the terrain at the point.
+float unreal_layer_weight(Unreal_Landscape l, uint layer) {
+    float w=0.0;
+    for (int i=0;i<4;i++) {if (l.mix.layers[i]==layer) w+=l.mix.weights[i];}
+    return w;
+}
+// The color and the roughness painted over the terrain.
+void unreal_landscape_paint(inout Mirai_Surface s, Unreal_Landscape l) {
+    s.base_color*=l.paint.rgb;
+    s.roughness=saturate(s.roughness+(l.paint.a*255.0-float(PAINT_ROUGHNESS_NEUTRAL))/(255.0-float(PAINT_ROUGHNESS_NEUTRAL)));
 }
 `

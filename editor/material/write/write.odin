@@ -2,7 +2,6 @@ package write
 
 import "base:runtime"
 import "core:fmt"
-import "core:math"
 import "core:mem"
 import "core:os"
 import "core:path/filepath"
@@ -32,7 +31,11 @@ import "mirai:std/serial"
 Built_Image :: struct {
     key:string, // what it holds: equal keys, equal pixels
     name:string,
-    made:textures.Source,
+    // What make makes its texels of: an Unreal texture (texture.texture_made)
+    // or the recipe of a bake (bake_made).
+    data:[]u8,
+    make:importer.Image_Make,
+    made:textures.Source, // of a bake made already: one that scales its emission
     srgb,normal_map,keep_precision:bool,
 }
 
@@ -50,7 +53,8 @@ Built_Material :: struct {
 @(private)
 Bake :: struct {key:string,scale:[4]f32}
 
-// An Unreal texture, read once for every material that uses it.
+// An Unreal texture, read once for every material that uses it: what its
+// texture is made from, and its texels once something reads them.
 
 @(private)
 Source_Texture :: struct {
@@ -58,7 +62,10 @@ Source_Texture :: struct {
     pending:bool, // a user decodes it with the lock of the builder let go: the others wait for it
     note:string,  // what is said of it to each user: why it could not be read, or what it lost
     usage:texture.Usage,
-    input:texture.Build_Input, // as a .tex is built from
+    keep_precision:bool,
+    data:[]u8,                 // what texture.texture_made makes its texels of
+    decoded:bool,              // its texels were made, or could not be
+    input:texture.Build_Input, // as a .tex is built from, once decoded; width 0 when it could not be
     pixels:material.Pixels,    // as Unreal's sampler reads it
     pixels_ready:bool,
 }
@@ -146,21 +153,11 @@ builder_settle :: proc(b:^Builder) {
     b.settling=false
 }
 
-// The texture at path, decoded once. decoder is the caller's own: with it, a
-// builder with a lock decodes without holding it; nil decodes with the
-// decoder of the library, holding everything.
+// The texture at path, read once: its properties and what its texture is
+// made from, which is not decoded (source_decoded).
 @(private)
-source_texture :: proc(b:^Builder,path:string,decoder:^kraken.Decoder) -> ^Source_Texture {
+source_texture :: proc(b:^Builder,path:string) -> ^Source_Texture {
     if found,ok:=b.sources[path];ok {
-        if found.pending {
-            worker:=b.lib.worker
-            jobs.worker_zone(worker,"unreal.texture.wait")
-            b.outside+=1
-            for found.pending {sync.cond_wait(&b.decoded,b.lock)}
-            b.outside-=1
-            sync.cond_broadcast(&b.decoded)
-            b.lib.worker=worker
-        }
         if found.note!="" {warn(b,"%s",found.note)}
         return found
     }
@@ -171,41 +168,59 @@ source_texture :: proc(b:^Builder,path:string,decoder:^kraken.Decoder) -> ^Sourc
         texture_note(b,source,fmt.tprintf("texture %s is not under the mounts",path))
         return source
     }
-    worker:=b.lib.worker
-    jobs.worker_zone(worker,"unreal.texture")
-    read,error:=texture.texture_read(&object.pkg.p,object.export,b.allocator)
+    read,error:=texture.texture_read(&object.pkg.p,object.export,context.temp_allocator)
+    if error.code==.None {source.data,error=texture.texture_pack(&object.pkg.p,&read,b.allocator)}
     if error.code!=.None {
         texture_note(b,source,fmt.tprintf("texture %s: %v %s",path,error.code,error.field))
         return source
     }
+    if approximations:=texture.texture_approximations(&read);approximations!={} {texture_note(b,source,fmt.tprintf("texture %s: %v",path,approximations))}
+    source.ok=true
+    source.usage=read.usage
+    source.keep_precision=read.keep_precision
+    return source
+}
+
+// The texels of the texture at path, decoded once; false when they cannot be
+// (a note says why). decoder is the caller's own: with it, a builder with a
+// lock decodes without holding it; nil decodes with the decoder of the
+// library, holding everything.
+@(private)
+source_decoded :: proc(b:^Builder,path:string,source:^Source_Texture,decoder:^kraken.Decoder) -> bool {
+    if !source.ok {return false}
+    if source.pending {
+        worker:=b.lib.worker
+        jobs.worker_zone(worker,"unreal.texture.wait")
+        b.outside+=1
+        for source.pending {sync.cond_wait(&b.decoded,b.lock)}
+        b.outside-=1
+        sync.cond_broadcast(&b.decoded)
+        b.lib.worker=worker
+    }
+    if source.decoded {return source.input.source.width>0}
+    worker:=b.lib.worker
+    jobs.worker_zone(worker,"unreal.texture")
     decoder:=decoder
     apart:=b.lock!=nil && decoder!=nil && !b.settling
     // Under the floor, users decode one after the other, holding the lock: what decoding takes
     // (the payload, its pixels and those of the image, reckoned as four times the payload) adds up once.
     if apart && b.floor>0 {
         total,available,known:=base.memory_stats()
-        apart=!known || f64(available-4*read.payload.raw_size)>=f64(total)*b.floor
+        apart=!known || f64(available-4*i64(len(source.data)))>=f64(total)*b.floor
     }
     if decoder==nil {
         decoder_ok:bool
         decoder,decoder_ok=material.library_decoder(b.lib)
-        if !decoder_ok {return source}
+        if !decoder_ok {return false}
     }
-    // What the package and the read texture hold does not change while the
-    // lock is let go: the library adds packages, it moves none.
+    // What the builder holds of the texture does not change while the lock is let go.
     own:=runtime.heap_allocator()
     if apart {
         source.pending=true
         b.outside+=1
         sync.mutex_unlock(b.lock)
     }
-    decoded,decode_error:=texture.texture_decode(&object.pkg.p,&read,decoder,own,worker)
-    input:texture.Build_Input
-    input_error:unreal.Error
-    if decode_error.code==.None {
-        input,input_error=texture.texture_build_input(&read,&decoded,own)
-        texture.decoded_destroy(&decoded)
-    }
+    made,_,error:=texture.made_decode(source.data,decoder,own)
     if apart {
         sync.mutex_lock(b.lock)
         b.outside-=1
@@ -213,22 +228,16 @@ source_texture :: proc(b:^Builder,path:string,decoder:^kraken.Decoder) -> ^Sourc
         source.pending=false
         sync.cond_broadcast(&b.decoded)
     }
-    defer texture.build_input_destroy(&input)
-    if decode_error.code!=.None {
-        texture_note(b,source,fmt.tprintf("texture %s: %v %s",path,decode_error.code,decode_error.field))
-        return source
+    source.decoded=true
+    if error.code!=.None {
+        texture_note(b,source,fmt.tprintf("texture %s: %v %s",path,error.code,error.field))
+        return false
     }
-    if input_error.code!=.None {
-        texture_note(b,source,fmt.tprintf("texture %s: %v %s",path,input_error.code,input_error.field))
-        return source
-    }
-    if input.approximations!={} {texture_note(b,source,fmt.tprintf("texture %s: %v",path,input.approximations))}
-    source.ok=true
-    source.usage=read.usage
-    source.input=input
-    source.input.source.texels=slice.clone(input.source.texels,b.allocator)
+    defer textures.source_destroy(&made)
+    source.input={source=made,options={srgb=source.usage==.Color,normal_map=source.usage==.Normal,keep_precision=source.keep_precision}}
+    source.input.source.texels=slice.clone(made.texels,b.allocator)
     source.input.source.allocator=b.allocator
-    return source
+    return true
 }
 
 // Says text of a texture now and to each user that asks for it later: the
@@ -243,24 +252,11 @@ texture_note :: proc(b:^Builder,source:^Source_Texture,text:string) {
 // normal map unpacked to -1..1 with its Z rebuilt, data as it is. None of a
 // cube or an array, which a map of uv does not read.
 @(private)
-source_pixels :: proc(b:^Builder,source:^Source_Texture) -> ^material.Pixels {
-    if !source.ok || source.input.source.cube || source.input.source.layers>1 {return nil}
+source_pixels :: proc(b:^Builder,path:string,decoder:^kraken.Decoder) -> ^material.Pixels {
+    source:=source_texture(b,path)
+    if !source_decoded(b,path,source,decoder) || source.input.source.cube || source.input.source.layers>1 {return nil}
     if source.pixels_ready {return &source.pixels}
-    from:=&source.input.source
-    count:=from.width*from.height
-    source.pixels={from.width,from.height,make([][4]f32,count,b.allocator)}
-    transfer:=textures.transfer_make(source.input.options.srgb && !textures.source_hdr(from.format))
-    for i in 0..<count {
-        texel:=textures.texel_read(from.texels,from.format,i,&transfer)
-        switch source.usage {
-        case .Color:
-        case .Normal:
-            xy:=texel.xy*2-1
-            texel={xy.x,xy.y,math.sqrt(max(1-xy.x*xy.x-xy.y*xy.y,0)),1}
-        case .Data:
-        }
-        source.pixels.texels[i]=texel
-    }
+    source.pixels=pixels_of(&source.input.source,source.usage,b.allocator)
     source.pixels_ready=true
     return &source.pixels
 }
@@ -275,12 +271,12 @@ image_add :: proc(b:^Builder,image:Built_Image) -> string {
 
 // The image of an Unreal texture as it is, with the use Unreal gives it.
 @(private)
-texture_image :: proc(b:^Builder,path,name:string,decoder:^kraken.Decoder) -> string {
-    source:=source_texture(b,path,decoder)
+texture_image :: proc(b:^Builder,path,name:string) -> string {
+    source:=source_texture(b,path)
     if !source.ok {return ""}
     key:=fmt.aprintf("texture:%s:%v",path,source.usage,allocator=b.allocator)
-    return image_add(b,{key=key,name=strings.clone(unreal.asset_name(name),b.allocator),made=source.input.source,
-        srgb=source.usage==.Color,normal_map=source.usage==.Normal,keep_precision=source.input.options.keep_precision})
+    return image_add(b,{key=key,name=strings.clone(unreal.asset_name(name),b.allocator),data=source.data,make=texture.texture_made,
+        srgb=source.usage==.Color,normal_map=source.usage==.Normal,keep_precision=source.keep_precision})
 }
 
 @(private)
@@ -323,11 +319,11 @@ material_build :: proc(b:^Builder,t:^material.Translated_Material,decoder:^krake
         // A texture read as it is keeps its pixels.
         if row,direct:=material.image_direct(g,image,relevant);direct {
             ref:=g.textures[row]
-            source:=source_texture(b,ref.path,decoder)
+            source:=source_texture(b,ref.path)
             wanted:=texture.Usage.Data
             if color {wanted=.Color}
             if kind==.Normal {wanted=.Normal}
-            if source.ok && source.usage==wanted {key=texture_image(b,ref.path,ref.name,decoder)}
+            if source.ok && source.usage==wanted {key=texture_image(b,ref.path,ref.name)}
         }
         if key=="" {
             // What the bake reads: the graph, the values of its parameters
@@ -341,13 +337,22 @@ material_build :: proc(b:^Builder,t:^material.Translated_Material,decoder:^krake
 
             done,again:=b.bakes[baked]
             if !again {
-                pixels:=make([]^material.Pixels,len(g.textures),context.temp_allocator)
-                for &ref,i in g.textures {pixels[i]=source_pixels(b,source_texture(b,ref.path,decoder))}
-                data,width,height,scale:=material.image_bake(g,image,encodings,pixels,kind==.Emission,b.allocator)
-                done.scale=scale
-                done.key=fmt.aprintf("baked:%016x:%dx%d:%v",base.hash64(data),width,height,kind,allocator=b.allocator)
-                done.key=image_add(b,{key=done.key,name=fmt.aprintf("%s_%s",unreal.asset_name(t.name),names[kind],allocator=b.allocator),
-                    made=textures.rgba8(data,width,height),srgb=color,normal_map=kind==.Normal})
+                name:=fmt.aprintf("%s_%s",unreal.asset_name(t.name),names[kind],allocator=b.allocator)
+                if kind==.Emission {
+                    // Its scale is the factor of the material: it is baked now.
+                    pixels:=make([]^material.Pixels,len(g.textures),context.temp_allocator)
+                    for &ref,i in g.textures {pixels[i]=source_pixels(b,ref.path,decoder)}
+                    data,width,height,scale:=material.image_bake(g,image,encodings,pixels,true,b.allocator)
+                    done.scale=scale
+                    done.key=fmt.aprintf("baked:%016x:%dx%d:%v",base.hash64(data),width,height,kind,allocator=b.allocator)
+                    done.key=image_add(b,{key=done.key,name=name,made=textures.rgba8(data,width,height),srgb=color})
+                } else {
+                    // Baked when its texture is built, and only when the texture cache does not keep it.
+                    recipe:=bake_pack(b,g,image,encodings,b.allocator)
+                    done.scale={1,1,1,1}
+                    done.key=fmt.aprintf("baked:%016x:%v",base.hash64(recipe),kind,allocator=b.allocator)
+                    done.key=image_add(b,{key=done.key,name=name,data=recipe,make=bake_made,srgb=color,normal_map=kind==.Normal})
+                }
                 b.bakes[strings.clone(baked,b.allocator)]=done
             }
             if kind==.Emission {m.info.emission*=done.scale.xyz}
@@ -358,17 +363,23 @@ material_build :: proc(b:^Builder,t:^material.Translated_Material,decoder:^krake
         }
         m.images[kind]=key
     }
-    parameters:=make([]asset.Material_Parameter,len(t.program.parameters),b.allocator)
-    images:=make([]string,len(t.program.parameters),b.allocator)
-    for &p,i in t.program.parameters {
+    // What a terrain gives each piece the material holds no value of.
+    held:=0
+    for p in t.program.parameters {if !p.piece {held+=1}}
+    parameters:=make([]asset.Material_Parameter,held,b.allocator)
+    images:=make([]string,held,b.allocator)
+    i:=0
+    for &p in t.program.parameters {
+        if p.piece {continue}
         row:=&parameters[i]
         asset.text_set(row.name[:],p.name)
         row.kind,row.components=p.kind,p.components
         for c in 0..<4 {row.value[c]=f64(p.value[c])}
         if p.kind==.Texture {
             ref:=g.textures[p.texture]
-            images[i]=texture_image(b,ref.path,ref.name,decoder)
+            images[i]=texture_image(b,ref.path,ref.name)
         }
+        i+=1
     }
     m.parameters,m.parameter_images=parameters,images
     return
@@ -400,7 +411,12 @@ reader_material :: proc(r:^importer.Reader,b:^Builder,t:^material.Translated_Mat
 reader_image :: proc(r:^importer.Reader,b:^Builder,key,name:string,cutoff:f32) -> int {
     if key=="" {return -1}
     image:=&b.images[b.keys[key]]
-    row:=importer.image_pixels(r,image.key,name!=""?name:image.name,image.made,image.srgb,image.normal_map,image.keep_precision)
+    row:int
+    if image.data!=nil {
+        row=importer.image_made(r,image.key,name!=""?name:image.name,image.data,image.make,image.srgb,image.normal_map,image.keep_precision)
+    } else {
+        row=importer.image_pixels(r,image.key,name!=""?name:image.name,image.made,image.srgb,image.normal_map,image.keep_precision)
+    }
     if row>=0 && cutoff>=0 {r.images[row].alpha_cutoff=cutoff}
     return row
 }
@@ -428,7 +444,7 @@ program_write :: proc(t:^material.Translated_Material,shaders:string) -> (path:s
 // The memory a builder holds in textures and images, in bytes.
 builder_bytes :: proc(b:^Builder) -> int {
     total:=0
-    for _,source in b.sources {total+=len(source.input.source.texels)+len(source.pixels.texels)*size_of([4]f32)}
+    for _,source in b.sources {total+=len(source.data)+len(source.input.source.texels)+len(source.pixels.texels)*size_of([4]f32)}
     for image in b.images {total+=len(image.made.texels)}
     return total
 }
@@ -469,15 +485,16 @@ sky_write :: proc(lib:^material.Library,path:string,outputs:^importer.Outputs,pr
         defer if lock!=nil {sync.mutex_unlock(lock)}
         lib.worker=options.worker
         builder_room(b)
-        cube:=source_texture(b,path,decoder)
+        cube:=source_texture(b,path)
+        decoded:=source_decoded(b,path,cube,decoder)
         notes:=make([]string,len(b.warnings),scratch)
         for w,i in b.warnings {notes[i]=strings.clone(w,scratch)}
         clear(&b.warnings)
-        if !cube.ok {return {},importer.error_make(.Read,"texture %s could not be read: %s",path,strings.join(notes,"; ",context.temp_allocator))}
+        if !decoded {return {},importer.error_make(.Read,"texture %s could not be read: %s",path,strings.join(notes,"; ",context.temp_allocator))}
         sky,sky_error:=texture.sky_of_cube(cube.input.source,cube.usage==.Color,scratch)
         if sky_error.code!=.None {return {},importer.error_make(.Unsupported,"texture %s is not a cube: the sky is drawn from a cube",path)}
         name:=strings.concatenate({unreal.asset_name(path[strings.last_index_any(path,"./")+1:]),"_Sky"},scratch)
-        image={name=name,made=sky,srgb=cube.usage==.Color,keep_precision=cube.input.options.keep_precision}
+        image={name=name,made=sky,srgb=cube.usage==.Color,keep_precision=cube.keep_precision}
         model.warnings=notes
     }
     model.images=slice.clone([]importer.Imported_Image{image},scratch)
@@ -531,7 +548,7 @@ materials_write :: proc(lib:^material.Library,translated:[]material.Translated_M
         row,seen:=rows_of[key]
         if !seen {
             image:=b.images[b.keys[key]]
-            append(images,importer.Imported_Image{name=name!=""?name:image.name,made=image.made,srgb=image.srgb,normal_map=image.normal_map,keep_precision=image.keep_precision})
+            append(images,importer.Imported_Image{name=name!=""?name:image.name,data=image.data,make=image.make,made=image.made,srgb=image.srgb,normal_map=image.normal_map,keep_precision=image.keep_precision})
             row=len(images)-1
             rows_of[key]=row
         }

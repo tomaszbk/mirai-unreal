@@ -34,7 +34,7 @@ unreal_foliage_becomes_manual_instances_of_its_cells_with_their_ground :: proc(t
     testing.expect_value(t,fern.scale,[2]f32{0.5,2})
     testing.expect_value(t,fern.height,[2]f32{1,1})
     testing.expect_value(t,fern.cull_distance,f32(50))
-    testing.expect_value(t,fern.fade_distance,f32(10))
+    testing.expect_value(t,fern.fade_distance,f32(50)) // whole up to where it is gone, as Unreal draws it
     testing.expect_value(t,fern.wind,f32(0))
     testing.expect_value(t,fern.collision,foliage.Foliage_Collision.None)
     rock:=s.types[1]
@@ -70,7 +70,7 @@ unreal_foliage_becomes_manual_instances_of_its_cells_with_their_ground :: proc(t
 
 @(test)
 instanced_components_are_one_type_for_each_mesh_and_materials_with_instances_from_the_origin :: proc(t:^testing.T) {
-    rock:=Instanced_Type{name="Rock",mesh={1,1},fade_distance=100,cull_distance=200,casts_shadow=true,ray_visible=true,size={2,1,2}}
+    rock:=Instanced_Type{name="Rock",mesh={1,1},cull_distance=200,casts_shadow=true,ray_visible=true,size={2,1,2}}
     mossy:=rock
     mossy.materials[0]={9,9}
     mossy.name="Mossy rock"
@@ -88,6 +88,7 @@ instanced_components_are_one_type_for_each_mesh_and_materials_with_instances_fro
     testing.expect_value(t,s.types[1].materials[0],base.Asset_Id{9,9})
     testing.expect_value(t,s.types[0].density,f32(0))
     testing.expect_value(t,s.types[0].cull_distance,f32(200))
+    testing.expect_value(t,s.types[0].fade_distance,f32(200))
     testing.expect_value(t,s.types[0].collision,foliage.Foliage_Collision.Box)
     testing.expect_value(t,s.types[0].size,[3]f32{2,1,2})
     testing.expect_value(t,result.dropped,1)

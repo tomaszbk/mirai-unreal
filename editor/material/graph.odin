@@ -25,14 +25,14 @@ Op :: enum u8 {
     // centre of its bounds (Object_Position) and their radius, its pivot
     // (Actor_Position), its local axis index in the world, as long as its
     // scale along it, and the low (index 0) or high corner of its bounds in
-    // its own space (Object_Bounds). Layer_Weights: those of the four layers
-    // of a terrain, by the order of its layers. Screen_Position: the point in
+    // its own space (Object_Bounds). Layer_Weight: that of layer index of the
+    // terrain that shows the point. Screen_Position: the point in
     // the image of the view, 0 to 1; Screen_Size: that image in pixels;
     // Pixel_Depth: the distance of the point along the view; Scene_Depth:
     // that of the opaque surface behind it. Particle_Data: the data index
     // the particle that draws the point gives, or value where it gives none;
     // Particle_Random: its random value, 0 to 1; Particle_Radius: its radius.
-    UV,Vertex_Color,Time,World_Position,Origin,Object_Position,Object_Radius,Actor_Position,Object_Axis,Object_Bounds,Layer_Weights,
+    UV,Vertex_Color,Time,World_Position,Origin,Object_Position,Object_Radius,Actor_Position,Object_Axis,Object_Bounds,Layer_Weight,
     Vertex_Normal,Vertex_Tangent,Vertex_Bitangent,Pixel_Normal,
     Camera_Vector,Camera_Position,Screen_Position,Screen_Size,Per_Instance_Random,Two_Sided_Sign,Pixel_Depth,Scene_Depth,Particle_Data,Particle_Random,Particle_Radius,
     // Unreal's Fresnel node, whose value at normal incidence (value) it reads
@@ -63,7 +63,7 @@ Op :: enum u8 {
 }
 
 UNARY :: bit_set[Op]{.Abs,.Floor,.Ceil,.Frac,.Round,.Trunc,.Sqrt,.Sin,.Cos,.Tan,.Asin,.Acos,.Atan,.Exp,.Exp2,.Log,.Log2,.Saturate,.Sign,.Length,.Normalize}
-CONTEXT :: bit_set[Op]{.UV,.Vertex_Color,.Time,.World_Position,.Origin,.Object_Position,.Object_Radius,.Actor_Position,.Object_Axis,.Object_Bounds,.Layer_Weights,.Vertex_Normal,.Vertex_Tangent,.Vertex_Bitangent,.Pixel_Normal,.Camera_Vector,.Camera_Position,.Screen_Position,.Screen_Size,.Per_Instance_Random,.Two_Sided_Sign,.Pixel_Depth,.Scene_Depth,.Particle_Data,.Particle_Random,.Particle_Radius}
+CONTEXT :: bit_set[Op]{.UV,.Vertex_Color,.Time,.World_Position,.Origin,.Object_Position,.Object_Radius,.Actor_Position,.Object_Axis,.Object_Bounds,.Layer_Weight,.Vertex_Normal,.Vertex_Tangent,.Vertex_Bitangent,.Pixel_Normal,.Camera_Vector,.Camera_Position,.Screen_Position,.Screen_Size,.Per_Instance_Random,.Two_Sided_Sign,.Pixel_Depth,.Scene_Depth,.Particle_Data,.Particle_Random,.Particle_Radius}
 // What the CPU does not evaluate: the context and what only a program computes.
 PROGRAM :: CONTEXT+{.Texture_Size,.Noise,.Vector_Noise,.Custom,.Custom_Output,.Arguments,.Texture_Read}
 // What makes a node vary over the surface: its context and the textures it reads.

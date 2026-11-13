@@ -14,13 +14,12 @@ import phys "plugins:physics/runtime"
 //   BodyInstance of the component collides (the instances of an instanced
 //   one are foliage, which collides by its types). Boxes, spheres and
 //   capsules alone are colliders of child entities where they lie in the
-//   mesh. With a convex, the entity collides with the colliders its imported
-//   mesh stores: the hull of the convex when it is the only shape, and the
-//   hulls of all its shapes as triangles otherwise (the hull of all of them
-//   for a body that simulates). A mesh without
-//   simple shapes, or that uses its complex collision as simple, collides
-//   with its triangles: Unreal answers traces with them, and characters walk
-//   on them. A component that simulates is a dynamic body.
+//   mesh. With a convex, the entity has an Auto collider: the colliders its
+//   imported mesh stores, each shape as authored. A mesh without simple
+//   shapes, or that uses its complex collision as simple, stores none, and
+//   its Auto collider is its triangles (Unreal answers traces with them, and
+//   characters walk on them), or convex pieces of them when it simulates. A
+//   component that simulates is a dynamic body.
 @(storage)
 Physics_Unreal :: struct {provider:unreal_scene.Translator_Provider}
 
@@ -69,13 +68,8 @@ mesh_collision :: proc(c:^unreal_scene.Context,a,k:int,e:base.Entity_Id) {
     if !level.profile_collides(profile,enabled) {return}
     convexes:=0
     for shape in body.shapes {if shape.kind==.Convex {convexes+=1}}
-    whole:=phys.Collider_Kind.Hull if simulate else .Mesh
-    if body.trace==.Complex_As_Simple || len(body.shapes)==0 {
-        // The triangles of what the mesh draws: a mesh asset without colliders gives them.
-        collider:=phys.collider_mesh() if whole==.Mesh else phys.collider_hull()
-        if !unreal_scene.component_set(c,e,"Collider",&collider) {return}
-    } else if convexes>0 {
-        collider:=phys.collider_hull() if len(body.shapes)==1 || simulate else phys.collider_mesh()
+    if body.trace==.Complex_As_Simple || len(body.shapes)==0 || convexes>0 {
+        collider:=phys.collider_auto()
         if !unreal_scene.component_set(c,e,"Collider",&collider) {return}
     } else {
         for shape,i in body.shapes {

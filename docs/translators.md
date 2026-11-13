@@ -20,8 +20,10 @@ library (`editor.provided_all`).
   actors a translator takes. With `root`, those of all cells go to the map's scene, because what it
   writes loads only by distance (terrain, by pages). With `instanced` it also receives, after the
   actors, the instanced components (`ISM`, `HISM`, foliage) shown by the scene's actors
-  (`c.instanced`), even with no actors: their instances are never one entity each. `tally` counts
-  what it says about each scene and the level warns once.
+  (`c.instanced`), even with no actors: their instances are never one entity each. With
+  `map_scene` it is called for the map's scene even without actors of its classes there, for what
+  it makes of those of others (the grass of a landscape). `tally` counts what it says about each
+  scene and the level warns once.
 - One with `component` instead of `translate` names component classes: `component(c, a, k, e)`
   adds to the entity `e` that the importer made from component `k` of actor `a`. For a class the
   importer translates (`StaticMeshComponent`), the importer still writes what it shows and the
@@ -36,10 +38,10 @@ library (`editor.provided_all`).
   `decoder`), `mesh_import`, `material_import` and `mesh_renderer` (the mesh and the materials of a
   component's slots) by Unreal object path, `mesh_body` (the collision of a `StaticMesh`'s
   `BodySetup`: simple shapes in imported-mesh space, `CollisionTraceFlag` and the profile of its
-  `DefaultInstance`), `layer_materials` (layers of a Landscape material), `asset_place` and
-  `asset_write` (the id, file and `Import_Info` of a level asset, in the folder of the map's
-  import), `entity_make` (at the root of a section, where the world transform puts it),
-  `actor_entity`, `actor_key` and `component_set` (the scene), and `warn`.
+  `DefaultInstance`), `layer_materials` (layers of a Landscape material), `landscape_grass` (its
+  grass), `asset_place` and `asset_write` (the id, file and `Import_Info` of a level asset, in the
+  folder of the map's import), `entity_make` (at the root of a section, where the world transform
+  puts it), `actor_entity`, `actor_key` and `component_set` (the scene), and `warn`.
 - A bridge is declared like any editor plugin: a storage with the provider and its default
   (`Terrain_Unreal`, `Foliage_Unreal`, `Physics_Unreal`, `Fog_Unreal`, `Navigation_Unreal`,
   `Vfx_Unreal`, `Fluids_Unreal`). Without the bridge for a class, its actors are warnings saying
@@ -56,7 +58,8 @@ shows it.
   the options say otherwise. Cells are square: a landscape scaled differently in X than in Y is the
   grid of its X scale on an entity stretched sideways (the transform's x scale), which drawing,
   collision and residency already compose.
-- The layers are the `LAYERS_MAX` with the most total weight. Each of the others adds its weight to
+- The layers are every paint layer, in the landscape's order, up to `LAYERS_MAX`; past it, those
+  with the most total weight. Each of the others adds its weight to
   the kept layer it overlaps most (the sum of the minimums of their per-sample weights; with no
   overlap, the one with the most weight): an edge between two layers stays an edge and each sample
   keeps its whole weight. A sample with no weight goes to the first layer.
@@ -88,9 +91,12 @@ in the space of an entity at the scene origin.
   (`Foliage.components`) are batches like those below.
 - **Instanced components** (`instanced_add`): `InstancedStaticMeshComponent`, the hierarchical one
   and the foliage one, also those baked by PCG and by packed level actors. One type per mesh,
-  materials of its slots, cull distances (`InstanceStart/EndCullDistance`), shadows, rays and
-  collision: a box of the mesh bounds if the component collides, nothing if not. No generator or
-  wind; instances are manual, where they are.
+  materials of its slots, cull distance (`InstanceEndCullDistance`), shadows, rays and collision:
+  a box of the mesh bounds if the component collides, nothing if not. No generator or wind;
+  instances are manual, where they are.
+- **Cull distances.** Unreal fades an instance between its start and end cull distances only in
+  a material that reads `PerInstanceFadeAmount`; otherwise it draws whole up to the end and is
+  gone there. Every type of foliage starts its fade at its cull distance.
 - **Reimporting** keeps the ids: the translator reads the `.foliage` it replaces and
   `foliage_ids_keep` gives each type the id of the equal one or of the one with its name, mesh,
   prefab and materials, and each manual instance the id of the nearest of its type in its cell
@@ -102,6 +108,16 @@ in the space of an entity at the scene origin.
   is written on request (`instanced_material`), because no entity takes it when the level ends;
   the instances of each set of per-instance floats (`PerInstanceSMCustomData`) are a batch showing
   the variant, with those values, of the materials that read them (the wall color of a blueprint).
+- **Landscape grass** (`grass_add`, `grass.odin`): in the map's scene, each variety of each grass
+  type of a landscape material ([grass](unreal.md#translation)) is a generated type of its mesh, its
+  rule on the terrain layers (by material) whose paint layers its input reads, at most `RULE_LAYERS`
+  of most coverage, on the slopes and from the least weight the input fits, and as dense as they
+  weigh, as Unreal keeps a point where a chance is under the weight. A fit more than `FIT_NOTED` off
+  is a warning with its slopes, weight and error; an input that reads what a rule does not see
+  (time, the camera, noise) grows as densely as its layers alone. The cells over quads where those
+  layers weigh, holes left out, generate, and then the other types of the source have density 0:
+  what Unreal placed of them is all there is. Equal varieties of landscapes of one material are one
+  type.
 - **When importing a level**, the `Foliage_Unreal` translator writes per scene a `.foliage` in the
   folder of the map's import with its `Import_Info`, named after the World Partition cell (`Foliage`
   in the map's scene), and a `Foliage` entity at its origin.
@@ -117,10 +133,9 @@ in the space of an entity at the scene origin.
   ([foliage](#foliage-unreal_foliage)).
   - Only boxes, spheres and capsules of `AggGeom`: colliders of child entities where they are in
     the mesh.
-  - With a convex, the entity collides with the colliders stored by the imported mesh: the convex's
-    `Hull` when it is the only shape; if there are more, the hulls of all as triangles (`Mesh`), or
-    the `Hull` of all in a simulating body.
-  - Without simple shapes, or with `CTF_UseComplexAsSimple`: the triangles (`Hull` if it simulates).
+  - With a convex, or without simple shapes, or with `CTF_UseComplexAsSimple`: an `Auto` collider,
+    which takes the colliders the imported mesh stores, each shape as authored; a mesh that stores
+    none collides with its triangles, or with convex pieces of them when it simulates.
   - `bSimulatePhysics` gives a dynamic `Rigid_Body`.
 
 ## Fog (`unreal_fog`)
@@ -247,15 +262,18 @@ the area the Blueprint simulates; at 1, those of the mesh. `PressureDivergenceBu
 ## Verification
 
 - Tests of `plugins/unreal_terrain/editor`:
-  `a_landscape_becomes_a_heightfield_that_keeps_four_layers_and_folds_the_rest`,
+  `a_landscape_becomes_a_heightfield_with_every_layer_up_to_the_most_a_source_holds`,
   `the_landscape_of_an_unreal_level_is_a_terrain_of_its_scene`,
   `a_landscape_maps_the_world_to_its_coordinates_and_its_layers_to_those_of_the_terrain` and
   `a_landscape_of_unequal_scales_is_a_square_heightfield_on_a_stretched_entity`.
 - Tests of `plugins/unreal_foliage/editor`:
   `unreal_foliage_becomes_manual_instances_of_its_cells_with_their_ground`,
   `instanced_components_are_one_type_for_each_mesh_and_materials_with_instances_from_the_origin`,
-  `a_reimported_level_keeps_the_ids_of_the_foliage_it_had` and
-  `unreal_foliage_of_actors_adds_only_its_static_mesh_types`.
+  `a_reimported_level_keeps_the_ids_of_the_foliage_it_had`,
+  `unreal_foliage_of_actors_adds_only_its_static_mesh_types` and
+  `landscape_grass_is_a_generated_type_on_its_layer_over_the_cells_where_it_is_painted`; the
+  grass of a material, `a_grass_output_gives_each_grass_type_its_layers_rule_and_varieties` of
+  `editor/material`.
 - Tests of `plugins/unreal_physics/editor`:
   `a_blocking_volume_of_an_unreal_level_is_a_static_box`.
 - Tests of `plugins/unreal_fog/editor`:
