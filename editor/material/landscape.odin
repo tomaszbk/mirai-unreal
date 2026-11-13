@@ -1,5 +1,6 @@
 package material
 
+import "core:fmt"
 import "core:math"
 import "core:strings"
 import unreal "project:plugins/unreal/editor/package"
@@ -54,13 +55,26 @@ layer_weight_node :: proc(e:^Evaluator,name:string) -> (weight:u32,found:bool) {
     return scalar(g,0),false
 }
 
-// The coordinates of a set of uvs: where the coordinates are a landscape's,
-// those of the landscape (quads of Unreal from its actor) at the place of
-// the point in the world, whatever the set.
+// The coordinates of the Unreal uv set an expression o reads: where the
+// coordinates are a landscape's, those of the landscape (quads of Unreal from
+// its actor) at the place of the point in the world, whatever the set. A set
+// past the UV_SETS the mesh holds is not translated.
 @(private)
-uv_value :: proc(e:^Evaluator,set:u32) -> u32 {
+uv_value :: proc(e:^Evaluator,o:Object,set:int) -> u32 {
     g:=e.g
-    if e.coordinates==nil {return context_value(g,.UV,2,set)}
+    if e.coordinates==nil {
+        if set<0 || set>=UNREAL_UV_SETS {
+            untranslated(e,o,fmt.tprintf("the uv set %d, which no Unreal mesh has: they hold sets 0 to %d",set,UNREAL_UV_SETS-1))
+            return NONE
+        }
+        if set not_in e.uv_sets && card(e.uv_sets)==UV_SETS {
+            e.uv_sets_past+={set}
+            untranslated(e,o,fmt.tprintf("the uv set %d, past the %d a Mirai mesh holds for its material",set,UV_SETS))
+            return NONE
+        }
+        e.uv_sets+={set}
+        return context_value(g,.UV,2,u32(set))
+    }
     p:=world_place(e,.World_Position)
     along :: proc(g:^Graph,p:u32,row:[4]f32) -> u32 {return binary(g,.Add,binary(g,.Dot,p,constant(g,{row.x,row.y,row.z,0},3)),scalar(g,row.w))}
     return append_values(g,along(g,p,e.coordinates[0]),along(g,p,e.coordinates[1]))
@@ -209,7 +223,7 @@ landscape_coords :: proc(e:^Evaluator,o:Object) -> u32 {
     mapping:=prop_float(o,"MappingScale",0)
     scale:f32=mapping==0?1:1/mapping
     angle:=prop_float(o,"MappingRotation",0)*math.PI/180
-    uv:=uv_value(e,0)
+    uv:=uv_value(e,o,0)
     turned:u32
     if angle==0 {
         turned=binary(g,.Mul,uv,constant(g,{scale,scale,0,0},2))

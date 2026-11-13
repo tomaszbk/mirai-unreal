@@ -35,6 +35,12 @@ Options :: struct {
     writers:[]Virtual_Texture_Writer, // what writes each runtime virtual texture the material may sample
 }
 
+// The uv sets of a Mirai mesh (uv0 and uv1), and those an Unreal mesh holds.
+UV_SETS :: 2
+UNREAL_UV_SETS :: 8
+
+Unreal_UV_Sets :: bit_set[0..<UNREAL_UV_SETS;u8]
+
 // How the vertex colors of a mesh enter its material.
 Vertex_Colors :: enum u8 {
     Unused,              // the material does not read them: a mesh drops them
@@ -74,6 +80,10 @@ Translated_Material :: struct {
     graph:Graph,
     program:Program,
     vertex_colors:Vertex_Colors,
+    // The Unreal uv sets it reads, which the mesh holds in its own uv sets
+    // lowest first (uv_set_sources): the graph reads them there.
+    uv_sets:Unreal_UV_Sets,
+    uv_sets_past:Unreal_UV_Sets, // those it reads past the UV_SETS of the mesh: not translated
     layers:[]string,             // the landscape layers the graph names
     untranslated:[]Untranslated, // expressions that could not be translated, by class
     notes:[]string,              // what was left out or approximated, and why
@@ -192,6 +202,7 @@ translate :: proc(lib:^Library,material:Object,options:Options={},allocator:=con
         note(&e,"landscape material shown as its layer %s; each layer is a material of its own (landscape_layers)",e.layers[0])
     }
 
+    uv_sets_place(&t,&e,roots)
     translate_values(&t,&e,roots,connected,blend,shading,clip,thin)
     untranslated:=make([dynamic]Untranslated,out)
     untranslated_counts(&e,&untranslated)
@@ -200,6 +211,45 @@ translate :: proc(lib:^Library,material:Object,options:Options={},allocator:=con
     t.missing=e.missing[:]
     t.reads_custom_data=e.reads_custom_data
     return t,{}
+}
+
+// The Unreal uv set of each uv set of the mesh, as uv_sets holds them:
+// lowest first; -1 for one that holds none.
+uv_set_sources :: proc(sets:Unreal_UV_Sets) -> (sources:[UV_SETS]i32) {
+    sources={-1,-1}
+    slot:=0
+    for set in 0..<UNREAL_UV_SETS {
+        if set not_in sets {continue}
+        sources[slot]=i32(set)
+        slot+=1
+    }
+    return
+}
+
+// Moves the Unreal uv sets the outputs read to the uv sets of the mesh that
+// hold them: the graph reads uv0 and uv1 from here on.
+@(private)
+uv_sets_place :: proc(t:^Translated_Material,e:^Evaluator,roots:[Attribute]u32) {
+    g:=&t.graph
+    read:=make([dynamic]u32,context.temp_allocator)
+    for root in roots {append(&read,root)}
+    append(&read,..e.fuzz[:])
+    append(&read,..e.diffuse_transmission[:])
+    for n in nodes_under(g,read[:]) {
+        if g.nodes[n].op==.UV && int(g.nodes[n].index) in e.uv_sets {t.uv_sets+={int(g.nodes[n].index)}}
+    }
+    t.uv_sets_past=e.uv_sets_past
+    sources:=uv_set_sources(t.uv_sets)
+    for &node in g.nodes {
+        if node.op!=.UV {continue}
+        for source,slot in sources {
+            if source==i32(node.index) {node.index=u32(slot);break}
+        }
+    }
+    clear(&g.lookup)
+    for node,row in g.nodes {
+        if node not_in g.lookup {g.lookup[node]=u32(row)}
+    }
 }
 
 // The chain of instances down to the material: the values the closest

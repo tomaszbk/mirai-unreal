@@ -20,7 +20,7 @@ Mesh_Fixture :: struct {
     polygon_sizes:[]int,      // Legacy_Description: the corners of each polygon, saved before triangles were; empty: triangles
     normals:[][3]f32,         // per corner; empty: none
     tangents:[][4]f32,        // per corner, w the binormal sign; empty: none
-    uvs,uvs1:[][2]f32,        // per corner; uvs1 empty: one channel
+    uvs,uvs1,uvs2:[][2]f32,   // per corner; uvs1 empty: one channel, uvs2 empty: no third
     colors:[][4]u8,           // per corner, RGBA as Unreal draws it; empty: none
     groups:[]u32,             // per triangle (per polygon with polygon_sizes): polygon group, or face material of a raw mesh
     group_names:[]string,     // ImportedMaterialSlotName of each polygon group
@@ -186,7 +186,7 @@ raw_mesh_bytes :: proc(f:Mesh_Fixture,allocator:=context.temp_allocator) -> []u8
     }
     vectors(&b,tangent_x);vectors(&b,tangent_y);vectors(&b,f.normals)
     for channel in 0..<8 {
-        uvs:=channel==0?f.uvs:channel==1?f.uvs1:nil
+        uvs:=channel==0?f.uvs:channel==1?f.uvs1:channel==2?f.uvs2:nil
         put_u32(&b,u32(len(uvs)))
         for uv in uvs {put_f32(&b,uv.x);put_f32(&b,uv.y)}
     }
@@ -277,7 +277,7 @@ description_bytes :: proc(w:^Writer,f:Mesh_Fixture,element_map:bool,fortnite:i32
     }
     positions:=bytes_make(allocator)
     for p in f.positions {for x in p {put_f32(&positions,x)}}
-    normals,tangents,signs,colors,uv0,uv1:=bytes_make(allocator),bytes_make(allocator),bytes_make(allocator),bytes_make(allocator),bytes_make(allocator),bytes_make(allocator)
+    normals,tangents,signs,colors,uv0,uv1,uv2:=bytes_make(allocator),bytes_make(allocator),bytes_make(allocator),bytes_make(allocator),bytes_make(allocator),bytes_make(allocator),bytes_make(allocator)
     for corner in 0..<corners {
         n:=len(f.normals)>0?f.normals[corner]:{}
         t:=len(f.tangents)>0?f.tangents[corner]:{}
@@ -289,8 +289,9 @@ description_bytes :: proc(w:^Writer,f:Mesh_Fixture,element_map:bool,fortnite:i32
         put_f32(&colors,f32(c[3])/255)
         put_f32(&uv0,f.uvs[corner].x);put_f32(&uv0,f.uvs[corner].y)
         if len(f.uvs1)>0 {put_f32(&uv1,f.uvs1[corner].x);put_f32(&uv1,f.uvs1[corner].y)}
+        if len(f.uvs2)>0 {put_f32(&uv2,f.uvs2[corner].x);put_f32(&uv2,f.uvs2[corner].y)}
     }
-    uv_channels:=len(f.uvs1)>0?[][]u8{uv0.data[:],uv1.data[:]}:[][]u8{uv0.data[:]}
+    uv_channels:=[][]u8{uv0.data[:],uv1.data[:],uv2.data[:]}[:len(f.uvs2)>0?3:len(f.uvs1)>0?2:1]
     instance_attributes:=make([dynamic]Attribute,allocator)
     append(&instance_attributes,
         Attribute{name="Normal",type=1,extent=1,size=12,channels={normals.data[:]},default=floats(allocator,0,0,0)},

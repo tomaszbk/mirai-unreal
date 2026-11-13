@@ -945,3 +945,43 @@ components_of_one_name_and_another_number_are_entities_apart :: proc(t:^testing.
     second,_,second_found:=entity_named(&scene,"Piece_2")
     testing.expect(t,first_found && second_found && first!=second,"each keeps its name and an id of its own")
 }
+
+// An override that reads other uv sets than the mesh holds for its own
+// material says so: M_Light samples set 1 where the quad holds set 0, and
+// M_Red reads none.
+@(test)
+an_override_that_reads_other_uv_sets_than_the_mesh_holds_is_a_warning :: proc(t:^testing.T) {
+    f:=folders_make("uv-sets")
+    defer folders_remove(f)
+    os.make_directory_all(fmt.tprintf("%s/Content/Textures",f.unreal))
+    pixels:=make([]u8,4*4*4,context.temp_allocator)
+    _=os.write_entire_file(fmt.tprintf("%s/Content/Textures/T_Light.uasset",f.unreal),fx.texture_package("/Game/Textures/T_Light","T_Light",pixels,4,4))
+    p:=fx.package_make()
+    light:=fx.export(&p,fx.class(&p,"/Script/Engine","Material"),0,"M_Light",nil)
+    sample:=fx.writer(&p)
+    fx.object_put(&sample,"Texture",fx.external(&p,"/Game/Textures/T_Light","/Script/Engine","Texture2D","T_Light"))
+    fx.int_put(&sample,"ConstCoordinate",1)
+    baked:=fx.export(&p,fx.class(&p,"/Script/Engine","MaterialExpressionTextureSample"),light,"Baked",fx.finish(&sample))
+    m:=fx.writer(&p)
+    fx.input_put(&m,"BaseColor","ColorMaterialInput",{expression=baked,mask={true,true,true,false}})
+    p.exports[light-1].data=fx.finish(&m)
+    _=os.write_entire_file(fmt.tprintf("%s/Content/Materials/M_Light.uasset",f.unreal),fx.package_bytes(&p,"/Game/Materials/M_Light"))
+    l:=fixture.level_begin("/Game/Maps/Map")
+    w:=&l.w
+    mesh:=fixture.package_object(w,"/Game/Meshes/SM_Fixture","/Script/Engine","StaticMesh","SM_Fixture")
+    mesh_class:=fixture.engine_class(w,"StaticMeshComponent")
+    for material,i in ([2]string{"M_Red","M_Light"}) {
+        override:=fixture.package_object(w,fmt.tprintf("/Game/Materials/%s",material),"/Script/Engine","Material",material)
+        actor:=fixture.actor_add(&l,fixture.engine_class(w,"StaticMeshActor"),fmt.tprintf("StaticMeshActor_%d",i),material)
+        props:=fixture.bytes_make()
+        fixture.object_property(&props,w,"StaticMesh",mesh)
+        fixture.objects_property(&props,w,"OverrideMaterials",{override})
+        fixture.actor_set(&l,actor,fixture.component_add(&l,actor,mesh_class,"StaticMeshComponent0",props))
+    }
+    _=os.write_entire_file(f.map_path,fixture.level_bytes(&l))
+    report,error:=level_import(f.map_path,{root=f.mirai},engine_content="-")
+    if !testing.expectf(t,error.code==.None,"%s",error.message) {return}
+    defer level_report_destroy(&report)
+    testing.expectf(t,has_warning(&report,"/Game/Materials/M_Light.M_Light","UV sets"),"the override that reads set 1 is named: %v",report.imports.warnings)
+    testing.expect(t,!has_warning(&report,"M_Red","UV sets"),"one that reads none is not")
+}

@@ -1282,28 +1282,56 @@ places_of_the_world_add_the_origin_and_their_differences_do_not :: proc(t:^testi
     testing.expect(t,exact,"the offset from the object is between the places relative to the origin")
 }
 
-// A uv set past the two of Mirai's meshes is vertex animation data: not translated.
+// The Unreal uv sets a material reads are the uv sets of the mesh, lowest
+// first, wherever they are; one past the two a mesh holds, or that no Unreal
+// mesh has, is not translated.
 @(test)
-a_uv_set_past_the_second_is_not_translated :: proc(t:^testing.T) {
-    b:=material_begin("M_Pivot")
-    w:=fx.writer(&b.p)
-    fx.int_put(&w,"CoordinateIndex",2)
-    uv:=expression(&b,"TextureCoordinate","Pivot",&w)
-    m:=fx.writer(&b.p)
-    fx.input_put(&m,"EmissiveColor","ColorMaterialInput",{expression=uv})
-    b.p.exports[0].data=fx.finish(&m)
-    lib:Library
-    library_with(&lib,{"/Game/M/M_Pivot",fx.package_bytes(&b.p,"/Game/M/M_Pivot")})
-    defer library_destroy(&lib)
-    translated,ok:=translate_one(t,&lib,"/Game/M/M_Pivot")
-    if !ok {return}
-    defer translated_destroy(&translated)
-    if testing.expect_value(t,len(translated.untranslated),1) {
-        testing.expect_value(t,translated.untranslated[0],Untranslated{"MaterialExpressionTextureCoordinate",1})
+the_uv_sets_a_material_reads_are_those_of_the_mesh_lowest_first :: proc(t:^testing.T) {
+    Case :: struct {
+        name:string,
+        reads:[3]i32, // the set the base color, emission and normal sample; -1: none
+        uv_sets,past:Unreal_UV_Sets,
+        slots:[3]u32, // the uv set of the mesh each map reads
+        untranslated:int,
     }
-    noted:=false
-    for n in translated.notes {noted||=strings.contains(n,"vertex animation")}
-    testing.expect(t,noted,"the note says why")
+    cases:=[]Case{
+        {"M_Third",{2,-1,-1},{2},{},{0,0,0},0},
+        {"M_Apart",{3,1,-1},{1,3},{},{1,0,0},0},
+        {"M_Three",{0,1,2},{0,1},{2},{0,1,0},1},
+        {"M_None",{9,-1,-1},{},{},{0,0,0},1},
+    }
+    for c in cases {
+        b:=material_begin(c.name)
+        m:=fx.writer(&b.p)
+        outputs:=[3]struct{input,kind,sampler:string}{{"BaseColor","ColorMaterialInput",""},{"EmissiveColor","ColorMaterialInput",""},{"Normal","VectorMaterialInput","SAMPLERTYPE_Normal"}}
+        for output,i in outputs {
+            if c.reads[i]<0 {continue}
+            w:=fx.writer(&b.p)
+            fx.object_put(&w,"Texture",texture_ref(&b,output.input))
+            if output.sampler!="" {fx.enum_put(&w,"SamplerType","EMaterialSamplerType",output.sampler)}
+            fx.int_put(&w,"ConstCoordinate",c.reads[i])
+            sample:=expression(&b,"TextureSample",output.input,&w)
+            fx.input_put(&m,output.input,output.kind,{expression=sample,mask=RGB})
+        }
+        b.p.exports[0].data=fx.finish(&m)
+        path:=fmt.tprintf("/Game/M/%s",c.name)
+        lib:Library
+        library_with(&lib,{path,fx.package_bytes(&b.p,path)})
+        defer library_destroy(&lib)
+        translated,ok:=translate_one(t,&lib,path)
+        if !ok {continue}
+        defer translated_destroy(&translated)
+        testing.expectf(t,translated.uv_sets==c.uv_sets && translated.uv_sets_past==c.past,"%s reads %v and past them %v",c.name,translated.uv_sets,translated.uv_sets_past)
+        untranslated:=0
+        for u in translated.untranslated {untranslated+=u.count}
+        testing.expectf(t,untranslated==c.untranslated,"%s: %v",c.name,translated.untranslated)
+        if !testing.expectf(t,translated_is_standard(&translated),"%s is the standard model",c.name) {continue}
+        maps:=asset.material_maps(&translated.info.maps)
+        for kind,i in ([3]asset.Material_Map_Kind{.Base_Color,.Emission,.Normal}) {
+            if c.reads[i]<0 || i==2 && c.past!={} {continue}
+            testing.expectf(t,maps[kind].uv_set==c.slots[i],"%s: the %v map reads uv %d: %v",c.name,kind,c.slots[i],maps[kind])
+        }
+    }
 }
 
 // The HLSL of a Custom expression is a function of the program with its

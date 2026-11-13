@@ -110,6 +110,26 @@ Context :: struct {
 Slot_Material :: struct {
     row:int,                 // of the model's materials, -1 for none
     vertex_colors:bool, // the material reads the vertex colors: its base color multiplied by them, or its program
+    uv_sets,uv_sets_past:material.Unreal_UV_Sets, // of its translation
+}
+
+// The Unreal uv set each uv set of a mesh holds for a material that reads
+// sets: those it reads, lowest first, and uv0 the first set when it reads
+// none of its own. -1: none.
+uv_sets_held :: proc(sets:material.Unreal_UV_Sets) -> [material.UV_SETS]i32 {
+    held:=material.uv_set_sources(sets)
+    if held[0]<0 {held[0]=0}
+    return held
+}
+
+// Whether a material that reads the Unreal uv sets reads finds them in a
+// slot that holds those of a material that reads held.
+uv_sets_agree :: proc(held,reads:material.Unreal_UV_Sets) -> bool {
+    mesh,wanted:=uv_sets_held(held),material.uv_set_sources(reads)
+    for source,slot in wanted {
+        if source>=0 && source!=mesh[slot] {return false}
+    }
+    return true
 }
 
 @(private)
@@ -325,22 +345,30 @@ body_collision :: proc(body:umesh.Body,allocator:=context.allocator) -> (collisi
 @(private)
 geometry_build :: proc(c:^Context,name:string,materials:[]umesh.Material_Slot,geometry:^umesh.Mesh,skin:[]asset.Skin_Vertex,morphs:[]umesh.Morph_Target=nil,corner_morph:[]u32=nil) -> (built:importer.Imported_Mesh,ok:bool) {
     r:=c.r
-    if geometry.uv_count>2 {importer.warn(r,"%s: %s has %d UV channels; the mesh keeps the first two",r.file_name,name,geometry.uv_count)}
     builder:importer.Mesh_Builder
     importer.builder_init(&builder,r,skin!=nil)
-    builder.has_uv1=geometry.uv_count>1
     slots:=make([]int,len(geometry.sections),context.temp_allocator)
     tints:=make([]bool,len(geometry.sections),context.temp_allocator)
+    // The Unreal uv set each uv set of the mesh holds in a section, those its
+    // material reads; one past the sets of the mesh is its last, as Unreal reads it.
+    uvs:=make([][material.UV_SETS]i32,len(geometry.sections),context.temp_allocator)
     for section,i in geometry.sections {
         // The slot is the material slot of Unreal: what a component overrides by index.
-        id,label,material:=u32(0),"",-1
+        id,label,row:=u32(0),"",-1
+        made:Slot_Material
         if section.material>=0 {
             slot:=materials[section.material]
             id,label=u32(section.material+1),slot.name
-            made:=slot_material(c,slot)
-            material,tints[i]=made.row,made.vertex_colors
+            made=slot_material(c,slot)
+            row,tints[i]=made.row,made.vertex_colors
+            if made.uv_sets_past!={} {importer.warn(r,"%s: %s: the material %s reads the UV sets %v besides %v, past the %d a Mirai mesh holds: what reads them is not translated",r.file_name,name,slot.path,made.uv_sets_past,made.uv_sets,material.UV_SETS)}
         }
-        slots[i]=importer.builder_slot(&builder,id,label,material) or_return
+        uvs[i]=uv_sets_held(made.uv_sets)
+        for &source in uvs[i] {
+            if source>=0 {source=min(source,i32(geometry.uv_count)-1)}
+        }
+        builder.has_uv1||=uvs[i][1]>=0
+        slots[i]=importer.builder_slot(&builder,id,label,row) or_return
     }
     corners_zone:=importer.zone_begin(r.options,"import.mesh.corners")
     for section,triangle in geometry.triangle_section {
@@ -352,8 +380,8 @@ geometry_build :: proc(c:^Context,name:string,materials:[]umesh.Material_Slot,ge
             out:=&corners[k]
             out.position=geometry.positions[geometry.corner_vertex[corner]]
             out.normal=geometry.corner_normal[corner]
-            if geometry.uv_count>0 {out.uv,out.has_uv=geometry.corner_uvs[0][corner],true}
-            if geometry.uv_count>1 {out.uv1,out.has_uv1=geometry.corner_uvs[1][corner],true}
+            if set:=uvs[section][0];set>=0 {out.uv,out.has_uv=geometry.corner_uvs[set][corner],true}
+            if set:=uvs[section][1];set>=0 {out.uv1,out.has_uv1=geometry.corner_uvs[set][corner],true}
             out.color=importer.WHITE
             if tints[section] && len(geometry.corner_color)>0 {
                 rgba:=geometry.corner_color[corner]
@@ -445,6 +473,7 @@ slot_material :: proc(c:^Context,slot:umesh.Material_Slot) -> Slot_Material {
     base.profile_end(images_zone)
 
     made.vertex_colors=t.vertex_colors==.Multiply_Base_Color || t.vertex_colors==.Program && t.program.name!=""
+    made.uv_sets,made.uv_sets_past=t.uv_sets,t.uv_sets_past
     return made
 }
 

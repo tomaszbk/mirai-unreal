@@ -208,6 +208,7 @@ Context :: struct {
     materials:map[string]base.Asset_Id, // by object path; a variant (instanced_material) by its name
     slot_paths:map[string][]string,     // the materials of the slots of each mesh, by Unreal's index
     custom_reads:map[string]bool,       // whether a material reads PerInstanceCustomData, by object path
+    uv_sets:map[string]material.Unreal_UV_Sets, // the Unreal uv sets a material reads, by object path
     prefixes:map[string]string,         // the folder of the parts of each package the level writes, by file ("" for the map)
     variant_uses:[dynamic]Variant_Use,  // the slots whose material is written at the end of the level
     held:[dynamic]Held_Slot,            // of the component being translated: its slots that name a material the level keeps
@@ -319,7 +320,7 @@ document_import :: proc(d:^level.Document,source:string,size,hash:u64,options:im
     c:=Context{d=d,lib=&materials,types=&types,options=options,report=&report}
     c.meshes.allocator,c.materials.allocator,c.layers.allocator,c.left.allocator=scratch,scratch,scratch,scratch
     c.clips.allocator,c.bodies.allocator,c.slot_paths.allocator,c.custom_reads.allocator=scratch,scratch,scratch,scratch
-    c.prefixes.allocator=scratch
+    c.prefixes.allocator,c.uv_sets.allocator=scratch,scratch
     c.variant_uses.allocator,c.texts.allocator,c.held.allocator=scratch,scratch,scratch
     c.translators=translators
     c.texture_reads.allocator=scratch
