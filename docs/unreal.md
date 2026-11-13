@@ -472,6 +472,13 @@ it names). Everything lives in the library's arena.
   1 goes to the factor. A baked image carries the name of the material that uses it and the alpha
   cutoff of its base color is the material's: what a package writes does not depend on which
   package of the level shared the `Builder` before.
+- **Nothing is decoded or baked that the texture cache keeps.** A texture read as is is the bytes
+  `texture_pack` gives (its properties and its payload as the package stores it) and a baked map
+  its recipe (`bake_pack`: the nodes under its channels, parameters as their values, and the
+  packed textures they sample); `importer.image_made` keys the texture by those bytes and makes
+  the texels (`texture_made`, `bake_made`) only on a miss, in the job that builds it. An emission
+  is baked when the material is built: its scale is the material's factor. A change of what those
+  procedures give for the same bytes raises `MADE_VERSION` or `BAKE_VERSION`.
 - `reader_material` adds the material and its images to a format's `Reader` (for a mesh's slots);
   the notes are model warnings. `materials_write` writes `.mat` and `.tex` as parts of an
   `importer.Outputs` (`importer.output_model`), under a prefix of their names, and each program into
@@ -732,13 +739,13 @@ entity, the imported meshes and the time.
 ### Read-ahead
 
 With a job system in `Import_Options.worker`, the packages of the meshes the level names
-(`reads.odin`) are read and built (`importer.model_cook`) in jobs while the level is translated,
-in the order the translation asks for them: of each scene, its actors' meshes and then the
-instanced components, if a translator takes them. After a component's mesh go the materials from
+(`reads.odin`) are read, and built (`importer.model_cook`) unless the outputs of the import are
+current (`importer.outputs_current`: the writer keeps them all), in jobs while the level is
+translated, in the order the translation asks for them: of each scene, its actors' meshes and then
+the instanced components, if a translator takes them. After a component's mesh go the materials from
 other packages that it overrides: a job translates them and builds their images in the level's
-`Builder`, where the translation finds their textures decoded. The translation writes each one,
-with its ids, when it reaches it, one after another: what is written is the same as without
-read-ahead.
+`Builder`, where the translation finds them. The translation writes each one, with its ids, when it
+reaches it, one after another: what is written is the same as without read-ahead.
 
 - **Memory floor.** A level import leaves `MEMORY_FLOOR` of the machine's memory free, measured at
   that moment (`base.memory_stats`). A read starts if the available memory, minus what the running
@@ -757,12 +764,12 @@ read-ahead.
 - The translation waits for a package without running other jobs: a long one would delay it.
 - `c.lib` and `c.images` are shared: whoever uses them takes `c.library_lock`, never while waiting
   for a job. Translators have their own Oodle decoder (`decoder(c)`).
-- A texture is decoded without the lock: the `Builder` releases it while decoding with the
-  requester's decoder and memory, and takes it again to store the pixels; whoever asks for one
-  another decodes waits for it, and each texture is decoded once; what the `Builder` says about a
-  texture it says to each material that uses it. While `builder_settle` waits, textures are decoded
-  with the lock. Without a lock (importing a single package) it decodes the same, releasing
-  nothing.
+- A texture an emission or the sky needs is decoded without the lock: the `Builder` releases it
+  while decoding with the requester's decoder and memory, and takes it again to store the pixels;
+  whoever asks for one another decodes waits for it, and each texture is decoded once; what the
+  `Builder` says about a texture it says to each material that uses it. While `builder_settle`
+  waits, textures are decoded with the lock. Without a lock (importing a single package) it decodes
+  the same, releasing nothing.
 
 ## Diagnostics (`inspect`)
 

@@ -63,6 +63,7 @@ Read :: struct {
     running:bool,              // atomic: started and not done
     formats:[]importer.Format,
     options:importer.Import_Options,
+    cook:bool, // its meshes and textures are built ahead (Reads.cook)
     done:sync.Sema,
     model:importer.Imported_Model,
     error:importer.Error, // its message in the memory of the job system
@@ -76,6 +77,7 @@ Reads :: struct {
     passed:int,           // those of order before it were passed by the translation (reads_pass)
     started:int,          // started and neither taken nor passed: those that hold a worker
     materials:map[string]bool, // object paths read ahead
+    cook:bool,                 // the outputs of the import are not current: what is read is built ahead
 }
 
 // The packages of the meshes the components of the level show, in the order
@@ -91,6 +93,7 @@ reads_begin :: proc(c:^Context,natives:[]level.Class,owners:[]int,sections:[][dy
     r.materials.allocator=context.temp_allocator
     if c.options.worker.system==nil {return}
     d:=c.d
+    r.cook=!importer.outputs_current(&c.outputs)
     add :: proc(c:^Context,path:string) {
         if path=="" {return}
         package_name,_:=object_split(path)
@@ -99,7 +102,7 @@ reads_begin :: proc(c:^Context,natives:[]level.Class,owners:[]int,sections:[][dy
         info,error:=os.stat(file,context.temp_allocator)
         if error!=nil {return}
         read:=new(Read,context.temp_allocator)
-        read^={file=strings.clone(file,context.temp_allocator),index=len(c.reads.order),cost=int(info.size)*READ_COST,formats=c.formats[:],options=c.options}
+        read^={file=strings.clone(file,context.temp_allocator),index=len(c.reads.order),cost=int(info.size)*READ_COST,formats=c.formats[:],options=c.options,cook=c.reads.cook}
         c.reads.by_file[read.file]=read
         append(&c.reads.order,read)
     }
@@ -199,7 +202,7 @@ read_run :: proc(read:^Read,worker:int) {
         read.error={error.code,strings.clone(error.message,allocator)}
         return
     }
-    importer.model_cook(&model,options)
+    if read.cook {importer.model_cook(&model,options)}
     read.model=model
 }
 
@@ -260,9 +263,7 @@ reads_take :: proc(c:^Context,file:string) -> (model:importer.Imported_Model,err
         defer if read!=nil {intrinsics.atomic_store(&read.running,false)}
         reads_fill(c)
         importer.zone(c.options,"level.read")
-        model,error=importer.import_model(file,c.formats[:],c.options,c.report.allocator)
-        if error.code==.None {importer.model_cook(&model,c.options)}
-        return
+        return importer.import_model(file,c.formats[:],c.options,c.report.allocator)
     }
     wait_zone:=importer.zone_begin(c.options,"level.wait")
     sync.sema_wait(&read.done)

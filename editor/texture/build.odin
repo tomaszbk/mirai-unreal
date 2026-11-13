@@ -18,6 +18,16 @@ Approximation :: enum u8 {
 }
 Approximations :: bit_set[Approximation;u8]
 
+// What a .tex of texture does not keep, known from its properties alone.
+texture_approximations :: proc(texture:^Texture) -> (approximations:Approximations) {
+    if len(texture.blocks)==0 {return}
+    if len(texture.layers)>1 {approximations+={.Layers_Dropped}}
+    if len(texture.blocks)>1 {approximations+={.Blocks_Dropped}}
+    if texture.blocks[0].mips>1 {approximations+={.Mips_Rebuilt}}
+    if texture.kind==.Volume && level_slices(texture,texture.blocks[0],0)>1 {approximations+={.Slices_Dropped}}
+    return
+}
+
 // The texels and options cook/textures.build takes to write a .tex.
 Build_Input :: struct {
     source:textures.Source, // owns its texels
@@ -42,9 +52,7 @@ texture_build_input :: proc(texture:^Texture,decoded:^Decoded,allocator:=context
     level:=decoded.levels[0]
     color:=texture.usage==.Color
     input.options={srgb=color,normal_map=texture.usage==.Normal,keep_precision=texture.keep_precision}
-    if len(texture.layers)>1 {input.approximations+={.Layers_Dropped}}
-    if len(texture.blocks)>1 {input.approximations+={.Blocks_Dropped}}
-    if texture.blocks[0].mips>1 {input.approximations+={.Mips_Rebuilt}}
+    input.approximations=texture_approximations(texture)
     format:textures.Source_Format
     switch decoded.format {
     case .RGBA8: format=.RGBA8
@@ -52,10 +60,7 @@ texture_build_input :: proc(texture:^Texture,decoded:^Decoded,allocator:=context
     case .RGBA32F: format=.RGBA32F
     }
     slices:=level.slices
-    if texture.kind==.Volume && slices>1 {
-        input.approximations+={.Slices_Dropped}
-        slices=1
-    }
+    if texture.kind==.Volume {slices=1}
     from:=textures.Source{texels=decoded.pixels[level.offset:][:level.width*level.height*slices*pixel_bytes(decoded.format)],width=level.width,height=level.height,layers=slices,format=format}
     // Decoded 16 bits are linear: color takes the sRGB curve, as 8 bits have it.
     read:=textures.transfer_make(false)

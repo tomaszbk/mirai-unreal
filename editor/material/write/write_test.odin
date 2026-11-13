@@ -196,6 +196,40 @@ translated_materials_are_written_with_their_images_and_programs :: proc(t:^testi
     testing.expect_value(t,reread.imported_parameters[1].value[0],f64(f32(0.2)))
 }
 
+// A map baked from the graph is made when its texture is built, from its
+// recipe: building the material decodes no texture, and the texels are those
+// of baking it from the decoded textures.
+@(test)
+a_baked_map_is_made_from_its_recipe_with_the_texels_of_the_bake :: proc(t:^testing.T) {
+    lib:material.Library
+    material.library_init(&lib,nil)
+    defer material.library_destroy(&lib)
+    material.library_add(&lib,"/Game/M/M_Materials",materials_package())
+    material.library_add(&lib,"/Game/T/T_Albedo",texture_bytes("T_Albedo","TC_Default",true))
+    material.library_add(&lib,"/Game/T/T_Mask",texture_bytes("T_Mask","TC_Masks",false))
+    material.library_add(&lib,"/Game/T/T_Normal",texture_bytes("T_Normal","TC_Normalmap",false))
+    object,found:=material.object_find(&lib,"/Game/M/M_Materials.M_Still")
+    if !testing.expect(t,found) {return}
+    translated,error:=material.translate(&lib,object)
+    if !testing.expect_value(t,error.code,material.Error_Code.None) {return}
+    defer material.translated_destroy(&translated)
+    b:Builder
+    builder_init(&b,&lib)
+    defer builder_destroy(&b)
+    built:=material_build(&b,&translated)
+    image:=b.images[b.keys[built.images[.Metallic_Roughness]]]
+    if !testing.expect(t,image.make==bake_made && len(image.data)>0 && image.made.width==0,"the bake is a recipe") {return}
+    for _,source in b.sources {testing.expect(t,!source.decoded,"no texture is decoded to build the material")}
+    made,ok:=bake_made(image.data,context.temp_allocator)
+    if !testing.expect(t,ok) {return}
+    pixels:=make([]^material.Pixels,len(translated.graph.textures),context.temp_allocator)
+    for &ref,i in translated.graph.textures {pixels[i]=source_pixels(&b,ref.path,nil)}
+    texels,width,height,_:=material.image_bake(&translated.graph,translated.images[.Metallic_Roughness],{},pixels,false,context.temp_allocator)
+    testing.expect(t,made.width==width && made.height==height && string(made.texels)==string(texels),"the texels of the bake")
+    _,refused:=bake_made(image.data[:len(image.data)-1],context.temp_allocator)
+    testing.expect(t,!refused,"a recipe cut short is no recipe")
+}
+
 // Users of a builder with a lock build their materials on threads of their
 // own, decoding textures without holding it: each texture is decoded once,
 // and the images are those of a builder of one user.
@@ -260,7 +294,7 @@ a_builder_shared_by_threads_decodes_each_texture_once_and_gives_the_images_of_on
             testing.expectf(t,u.built.images[kind]==key && u.built.image_names[kind]==want.image_names[kind],"%v: %s %s",kind,u.built.images[kind],key)
             if key=="" {continue}
             a,b:=alone.images[alone.keys[key]],shared.images[shared.keys[key]]
-            testing.expect(t,string(a.made.texels)==string(b.made.texels))
+            testing.expect(t,string(a.made.texels)==string(b.made.texels) && string(a.data)==string(b.data))
         }
     }
 }
