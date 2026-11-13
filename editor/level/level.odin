@@ -689,9 +689,10 @@ paths_of :: proc(d:^Document,ref:Ref,name:string,allocator:=context.temp_allocat
 // How a primitive component collides, from its BodyInstance: its collision
 // profile, what it enables when the profile is Custom ("" when it does not
 // say) and whether it simulates. StaticMeshComponent's defaults:
-// BlockAllDynamic, queries and physics, not simulated.
-component_collision :: proc(d:^Document,ref:Ref) -> (profile,enabled:string,simulate:bool) {
-    profile="BlockAllDynamic"
+// BlockAllDynamic, queries and physics, not simulated; a class made with
+// another profile gives it.
+component_collision :: proc(d:^Document,ref:Ref,default_profile:="BlockAllDynamic") -> (profile,enabled:string,simulate:bool) {
+    profile=default_profile
     f,error:=property(d,ref,"BodyInstance")
     if error.code!=.None || f.property==nil {return}
     list,list_error:=unreal.property_tagged_struct(f.pkg,f.property,true,context.temp_allocator)

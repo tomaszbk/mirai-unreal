@@ -678,7 +678,8 @@ entity, the imported meshes and the time.
   from the `PerInstanceSMData` array of their native payload, which follows what
   `StaticMeshComponent` stores (LODs and painted vertices, of variable length depending on the
   save): it is found by size, count and a first matrix of row vectors (`level.instances_read`, which
-  the foliage check also uses). A `SplineMeshComponent` is not translated: it is a warning.
+  the foliage check also uses). A `SplineMeshComponent` is a mesh too, bent by the `unreal_shapes`
+  bridge ([spline meshes](translators.md#spline-meshes-unreal_shapes)); without it, a warning.
   `SkeletalMeshComponent` (of a `SkeletalMeshActor` or any Blueprint, such as a character) is the
   same with the skinned mesh (`SkeletalMesh`, which wins as in Unreal, or `SkinnedAsset`), drawn in
   its bind pose as its import's prefab draws it. In `AnimationSingleNode` it plays the clip of the

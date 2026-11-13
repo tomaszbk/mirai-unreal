@@ -1,0 +1,7 @@
+{
+  "name": "unreal_shapes",
+  "version": "0.1.0",
+  "dependencies": ["unreal", "shapes"],
+  "parts": ["Editor"],
+  "automatic": true
+}

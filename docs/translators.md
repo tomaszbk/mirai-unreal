@@ -43,9 +43,9 @@ library (`editor.provided_all`).
   folder of the map's import), `entity_make` (at the root of a section, where the world transform
   puts it), `actor_entity`, `actor_key` and `component_set` (the scene), and `warn`.
 - A bridge is declared like any editor plugin: a storage with the provider and its default
-  (`Terrain_Unreal`, `Foliage_Unreal`, `Physics_Unreal`, `Fog_Unreal`, `Lens_Unreal`,
-  `Navigation_Unreal`, `Vfx_Unreal`, `Fluids_Unreal`). Without the bridge for a class, its actors
-  are warnings saying which plugin to enable.
+  (`Terrain_Unreal`, `Foliage_Unreal`, `Physics_Unreal`, `Shapes_Unreal`, `Fog_Unreal`,
+  `Lens_Unreal`, `Navigation_Unreal`, `Vfx_Unreal`, `Fluids_Unreal`). Without the bridge for a
+  class, its actors are warnings saying which plugin to enable.
 
 ## Terrain (`unreal_terrain`)
 
@@ -137,6 +137,19 @@ in the space of an entity at the scene origin.
     which takes the colliders the imported mesh stores, each shape as authored; a mesh that stores
     none collides with its triangles, or with convex pieces of them when it simulates.
   - `bSimulatePhysics` gives a dynamic `Rigid_Body`.
+
+## Spline meshes (`unreal_shapes`)
+
+A `SplineMeshComponent` is the entity of a `StaticMeshComponent` (its mesh and the materials of
+its slots) with a `Bend` of `shapes` (`spline_bend`), which draws the same shape: the curve of its
+`SplineParams` (`level.spline_mesh_of`) and its `SplineUpDir` in Mirai's space, positions,
+tangents, offsets and `SplineBoundaryMin` and `Max` in metres, roll and scale as they are,
+`bSmoothInterpRollScale` as `smooth`. Its `ForwardAxis` gives the axis of the mesh along the curve
+and the one along its up, both as the import turns Unreal's: X is -Z and Y, Y is X and -Z, Z is Y
+and X. It collides where its `BodyInstance` does, as above but with `NoCollision` when it stores
+none (the profile of a spline mesh), with an `External` collider: the child of the `Bend`
+collides with the collision of its mesh bent. Without the bridge a spline mesh is left out with a
+warning that names `shapes`, never drawn straight.
 
 ## Fog (`unreal_fog`)
 
@@ -297,6 +310,9 @@ the area the Blueprint simulates; at 1, those of the mesh. `PressureDivergenceBu
   `editor/material`.
 - Tests of `plugins/unreal_physics/editor`:
   `a_blocking_volume_of_an_unreal_level_is_a_static_box`.
+- Tests of `plugins/unreal_shapes/editor`:
+  `a_spline_mesh_of_unreal_bends_its_mesh_where_unreal_does` (against Unreal's definition of the
+  curve, for each forward axis) and `the_spline_meshes_of_an_unreal_level_bend_their_meshes`.
 - Tests of `plugins/unreal_fog/editor`:
   `the_height_fog_of_an_unreal_level_is_a_fog_of_the_whole_world`.
 - Tests of `plugins/unreal_lens/editor`:

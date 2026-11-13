@@ -159,6 +159,12 @@ vector_property :: proc(b:^Bytes,w:^Writer,property:string,value:[3]f64) {
     for x in value {if wide {put_f64(b,x)} else {put_f32(b,f32(x))}}
 }
 
+vector2_property :: proc(b:^Bytes,w:^Writer,property:string,value:[2]f64) {
+    wide:=w.desc.ue5>=1004
+    tag(b,w,property,"StructProperty",wide?16:8,{struct_name="Vector2D"})
+    for x in value {if wide {put_f64(b,x)} else {put_f32(b,f32(x))}}
+}
+
 // A struct property whose fields `inner` holds, ended by None.
 struct_property :: proc(b:^Bytes,w:^Writer,property,struct_name:string,inner:^Bytes) {
     none(inner,w)
