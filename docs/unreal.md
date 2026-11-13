@@ -300,8 +300,8 @@ arrives with its cause and offset.
     logic: a warning.
 - **Collision.** The `BodySetup`'s `AggGeom` (`umesh.body_read`) are the mesh's colliders: boxes,
   spheres and capsules as they are and each convex as a hull of its points; tapered capsules and
-  level sets are a warning. With `CTF_UseComplexAsSimple` there are no source colliders: the
-  collision is its triangles (the engine's collision).
+  level sets are a warning. With `CTF_UseComplexAsSimple` there are no source colliders: an `Auto`
+  collider of the mesh is its triangles, or convex pieces of them on a body that moves.
 
 ## Materials (`material`)
 

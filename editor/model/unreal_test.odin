@@ -170,14 +170,9 @@ the_simple_collision_of_a_mesh_is_its_colliders_unless_the_settings_force_theirs
     testing.expect(t,near(collision.points[hull.first_point+1],{1,0,0}),"Unreal's +Y is the engine's +X")
 
     cooked:importer.Cooked_Mesh
-    importer.mesh_cook(&model.meshes[0],{collision=.Mesh},{},&cooked,context.allocator)
-    testing.expect_value(t,len(cooked.collision.colliders),4)
-    testing.expect(t,cooked.collides,"the colliders of the source are those of the mesh")
+    importer.mesh_cook(&model.meshes[0],{},{},&cooked,context.allocator)
+    testing.expect(t,len(cooked.collision.colliders)==4 && cooked.collision.colliders[3].kind==.Hull,"the colliders of the source are those of the mesh, as authored")
     mem.dynamic_arena_destroy(&cooked.arena)
-    forced:importer.Cooked_Mesh
-    importer.mesh_cook(&model.meshes[0],{collision=.Hull,force_collision=true},{},&forced,context.allocator)
-    testing.expect(t,len(forced.collision.colliders)==1 && forced.collision.colliders[0].kind==.Hull,"forcing the setting makes a hull of the geometry")
-    mem.dynamic_arena_destroy(&forced.arena)
 }
 
 @(test)

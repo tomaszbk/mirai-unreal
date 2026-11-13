@@ -133,10 +133,9 @@ in the space of an entity at the scene origin.
   ([foliage](#foliage-unreal_foliage)).
   - Only boxes, spheres and capsules of `AggGeom`: colliders of child entities where they are in
     the mesh.
-  - With a convex, the entity collides with the colliders stored by the imported mesh: the convex's
-    `Hull` when it is the only shape; if there are more, the hulls of all as triangles (`Mesh`), or
-    the `Hull` of all in a simulating body.
-  - Without simple shapes, or with `CTF_UseComplexAsSimple`: the triangles (`Hull` if it simulates).
+  - With a convex, or without simple shapes, or with `CTF_UseComplexAsSimple`: an `Auto` collider,
+    which takes the colliders the imported mesh stores, each shape as authored; a mesh that stores
+    none collides with its triangles, or with convex pieces of them when it simulates.
   - `bSimulatePhysics` gives a dynamic `Rigid_Body`.
 
 ## Fog (`unreal_fog`)
