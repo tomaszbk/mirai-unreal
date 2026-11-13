@@ -150,10 +150,13 @@ warnings.
 
 ## Lens (`unreal_lens`)
 
-It takes `PostProcessVolume`: the importer's `post_process_add` makes each the entity of its
-`View_Volume` with its zone and `Volume` (`lens`: also when it overrides only `LENS_SETTINGS`), and
-the bridge adds a `Lens_Volume` of the same zone there with what it overrides of them; what it does
-not override is the lens's default.
+It takes `PostProcessVolume` and the scene of the map (`map_scene`): the importer's
+`post_process_add` makes each volume the entity of its `View_Volume` with its zone and `Volume`
+(`lens`: also when it overrides only `LENS_SETTINGS`), and `post_process_base` the entity of the
+look where no volume is. The bridge adds there a `Lens_Volume` of the same zone, for a volume when
+it overrides some of the lens: its settings as Unreal blends them (`post_real`, `post_vector`), what
+it overrides over the unbound volumes below it and the project's defaults (`BloomIntensity` 0.675
+unless `r.DefaultFeature.Bloom` is off, `VignetteIntensity` 0.4).
 
 - Bloom: Unreal's standard bloom adds to the image each of its six levels by its tint and a sixth
   of `BloomIntensity` × `BloomGaussianIntensity`, k of the light in all; the lens's `bloom` is the
@@ -297,8 +300,10 @@ the area the Blueprint simulates; at 1, those of the mesh. `PressureDivergenceBu
 - Tests of `plugins/unreal_fog/editor`:
   `the_height_fog_of_an_unreal_level_is_a_fog_of_the_whole_world`.
 - Tests of `plugins/unreal_lens/editor`:
-  `the_bloom_and_vignette_of_an_unreal_post_process_volume_are_a_lens_volume`; without the bridge,
-  `the_bloom_of_a_post_process_volume_without_its_bridge_names_the_lens_plugin` of `editor/scene`.
+  `the_bloom_and_vignette_of_an_unreal_post_process_volume_are_a_lens_volume`; the importer's
+  part and the warning without the bridge,
+  `a_post_process_volume_overrides_unreals_defaults_over_the_volumes_below_it` and
+  `a_level_without_post_process_volumes_has_unreals_default_look` of `editor/scene`.
 - Tests of `plugins/unreal_navigation/editor`:
   `the_navigation_actors_of_an_unreal_level_are_bounds_areas_and_links`.
 - Tests of `plugins/unreal_vfx/editor`: the names the Niagara translator writes and the VM bytecode

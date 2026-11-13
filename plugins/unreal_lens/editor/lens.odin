@@ -4,21 +4,21 @@ import "core:math"
 import unreal_scene "project:plugins/unreal/editor/scene"
 import lens "plugins:lens/runtime"
 
-// What the post process volumes of an Unreal level do through the lens: the
-// importer makes each one the entity of its View_Volume, over its zone and
-// Volume, and this adds there a Lens_Volume of its bloom and vignette. What
-// a volume does not override of them is the lens's default, which is none.
+// What the post process of an Unreal level does through the lens: the
+// importer makes the look where no volume is and each volume the entity of
+// its View_Volume, over its zone and Volume, and this adds there a
+// Lens_Volume of its bloom and vignette, as Unreal blends them over the
+// defaults of the project.
 @(storage)
 Lens_Unreal :: struct {provider:unreal_scene.Translator_Provider}
 
 lens_unreal_default :: proc() -> (l:Lens_Unreal) {
     l.provider.count=1
-    l.provider.translators[0]={classes={0="PostProcessVolume"},translate=post_processes_translate}
+    l.provider.translators[0]={classes={0="PostProcessVolume"},translate=post_processes_translate,map_scene=true}
     return
 }
 
 BLOOM_TINTS :: [6]string{"Bloom1Tint","Bloom2Tint","Bloom3Tint","Bloom4Tint","Bloom5Tint","Bloom6Tint"}
-BLOOM_TINT_DEFAULTS :: [6]f32{0.3465,0.138,0.1176,0.066,0.066,0.061}
 
 // Unreal's standard bloom adds to the image the blur of each of its six
 // levels times its tint and a sixth of the intensity, k of the light in all;
@@ -48,44 +48,49 @@ vignette_share :: proc "contextless" (intensity:f32) -> (share:f32,whole:bool) {
     return min(max(share,0),1),share<=1
 }
 
+// The lens of post process settings as Unreal blends them; label names
+// what overrides them in the warnings of what it overrides.
+lens_of :: proc(c:^unreal_scene.Context,s:^unreal_scene.Post_Settings,label:string) -> (l:lens.Lens) {
+    l=lens.LENS_DEFAULT
+    if unreal_scene.post_enum(c,s,"BloomMethod")=="BM_FFT" {
+        if unreal_scene.post_own(s,"BloomMethod") {unreal_scene.warn(c,"%s: its bloom is a convolution with an image in Unreal; Mirai's lens blurs by levels, so its bloom is not translated",label)}
+    } else {
+        intensity:=unreal_scene.post_real(c,s,"BloomIntensity")*unreal_scene.post_real(c,s,"BloomGaussianIntensity")
+        tints:[6][3]f32
+        tinted:=false
+        for name,i in BLOOM_TINTS {
+            v:=unreal_scene.post_vector(c,s,name)
+            tints[i]={f32(v.x),f32(v.y),f32(v.z)}
+            tinted||=unreal_scene.post_own(s,name) && (v.x!=v.y || v.y!=v.z)
+        }
+        if tinted {unreal_scene.warn(c,"%s: its bloom is tinted in Unreal; Mirai's lens scatters the light in its own colors",label)}
+        l.bloom=bloom_share(f32(intensity),tints)
+    }
+    intensity:=unreal_scene.post_real(c,s,"VignetteIntensity")
+    whole:bool
+    l.vignette,whole=vignette_share(f32(intensity))
+    if !whole && unreal_scene.post_own(s,"VignetteIntensity") {unreal_scene.warn(c,"%s: its vignette of %.3g darkens more than the natural falloff of a lens; Mirai's darkens the corners as much as that falloff",label,intensity)}
+    return
+}
+
+// Each volume that overrides some of the lens gets the Lens_Volume of its
+// settings; the look where no volume is, in the scene of the map, that of
+// Unreal's defaults.
 post_processes_translate :: proc(c:^unreal_scene.Context,actors:[]int) -> int {
     unreal_scene.zone(c,"lens.translate")
+    if c.section==0 {
+        if p,made:=unreal_scene.post_process_base(c);made {
+            look:=lens.Lens_Volume{lens=lens_of(c,&p.settings,"the defaults"),zone=p.zone}
+            if !unreal_scene.component_set(c,p.entity,"Lens_Volume",&look) {return 0}
+        }
+    }
     for a in actors {
         p,made:=unreal_scene.post_process_add(c,a,lens=true)
         if !made {continue}
-        s:=&p.settings
-        label:=c.d.actors[a].label
-        look:=lens.LENS_VOLUME_DEFAULT
-        look.zone=p.zone
-        bloomed:=false
-        for setting in unreal_scene.LENS_SETTINGS {
-            if setting!="VignetteIntensity" && unreal_scene.setting_overridden(s,setting) {bloomed=true}
-        }
-        if bloomed && unreal_scene.setting_overridden(s,"BloomMethod") && unreal_scene.chain_enum(s,"BloomMethod","BM_SOG")=="BM_FFT" {
-            unreal_scene.warn(c,"%s: its bloom is a convolution with an image in Unreal; Mirai's lens blurs by levels, so its bloom is not translated",label)
-            bloomed=false
-        }
-        if bloomed {
-            intensity,_:=unreal_scene.chain_real(s,"BloomIntensity",0.675)
-            gaussian,_:=unreal_scene.chain_real(s,"BloomGaussianIntensity",1)
-            tints:[6][3]f32
-            defaults:=BLOOM_TINT_DEFAULTS
-            tinted:=false
-            for name,i in BLOOM_TINTS {
-                tints[i],_=unreal_scene.chain_color(s,name,defaults[i])
-                tinted||=tints[i].r!=tints[i].g || tints[i].g!=tints[i].b
-            }
-            if tinted {unreal_scene.warn(c,"%s: its bloom is tinted in Unreal; Mirai's lens scatters the light in its own colors",label)}
-            look.lens.bloom=bloom_share(f32(intensity*gaussian),tints)
-        }
-        vignetted:=unreal_scene.setting_overridden(s,"VignetteIntensity")
-        if vignetted {
-            intensity,_:=unreal_scene.chain_real(s,"VignetteIntensity",0.4)
-            whole:bool
-            look.lens.vignette,whole=vignette_share(f32(intensity))
-            if !whole {unreal_scene.warn(c,"%s: its vignette of %.3g darkens more than the natural falloff of a lens; Mirai's darkens the corners as much as that falloff",label,intensity)}
-        }
-        if !bloomed && !vignetted {continue}
+        owned:=false
+        for setting in unreal_scene.LENS_SETTINGS {owned||=unreal_scene.post_own(&p.settings,setting)}
+        if !owned {continue}
+        look:=lens.Lens_Volume{lens=lens_of(c,&p.settings,c.d.actors[a].label),zone=p.zone}
         if !unreal_scene.component_set(c,p.entity,"Lens_Volume",&look) {break}
     }
     return len(actors)

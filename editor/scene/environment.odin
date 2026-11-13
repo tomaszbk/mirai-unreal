@@ -1,26 +1,18 @@
 package unreal_scene
 
 import "core:math"
-import "core:slice"
-import "core:strconv"
-import "core:strings"
-import "mirai:asset"
 import importer "mirai:cook/import"
 import material_write "project:plugins/unreal/editor/material/write"
 import "project:plugins/unreal/editor/level"
-import unreal "project:plugins/unreal/editor/package"
 import render "mirai:engine/render"
-import volume "mirai:engine/volume"
-import "mirai:project"
 import "mirai:std/base"
 import mm "mirai:std/math"
 
-// Cameras, the light of the sky, the sun and the exposure: what of Unreal's
-// has a physical equivalent in Mirai. A camera is its vertical field of view
-// and its exposure; a sky light, Mirai's sky at its intensity, with the image
-// of its cubemap when it names one; a post process
-// volume, a View_Volume with its exposure where its box is, or everywhere
-// when it is unbound. The rest is a warning.
+// Cameras, the light of the sky and the sun: what of Unreal's has a
+// physical equivalent in Mirai. A camera is its vertical field of view and
+// its exposure; a sky light, Mirai's sky at its intensity, with the image of
+// its cubemap when it names one; the post process, post_process.odin. The
+// rest is a warning.
 
 // The camera of a component on an entity under its actor that has the label
 // of the actor, as mirai capture --camera-entity names it. Unreal's camera
@@ -55,7 +47,9 @@ camera_add :: proc(c:^Context,a,k:int,cine:bool) -> bool {
     camera.active=activation!="Disabled"
     e:=component_entity(c,a,k,scale={1,1,1},name=d.actors[a].label) or_return
     if !component_set(c,e,"Camera",&camera) {return false}
-    settings:=struct_chain(d,ref,"PostProcessSettings")
+    // What the camera overrides is over the unbound volumes, everywhere.
+    weight,_:=level.real_of(d,ref,"PostProcessBlendWeight",1)
+    settings:=post_settings(c,-1,struct_chain(d,ref,"PostProcessSettings"),weight)
     aperture:=f32(0)
     if cine {
         stop,_:=level.real_of(d,ref,"CurrentAperture",2.8)
@@ -69,170 +63,6 @@ camera_add :: proc(c:^Context,a,k:int,cine:bool) -> bool {
 
     append(&c.report.cameras,note)
     return true
-}
-
-// The exposure of post process settings, from what they override; any is
-// false when they override none of it. aperture, when not zero, is that of
-// the lens of a cine camera, which Unreal takes as the f-number.
-@(private)
-exposure_from :: proc(c:^Context,s:^Struct_Chain,aperture:f32) -> (e:render.Exposure,any:bool) {
-    e=render.EXPOSURE_DEFAULT
-    overridden :: setting_overridden
-    if overridden(s,"AutoExposureMethod") {
-        any=true
-        if chain_enum(s,"AutoExposureMethod","AEM_Histogram")=="AEM_Manual" {e.mode=.Manual}
-    }
-    if overridden(s,"AutoExposureBias") {
-        any=true
-        bias,_:=chain_real(s,"AutoExposureBias",1)
-        e.compensation=f32(bias)
-    }
-    // Unreal exposes so that this brightness is white (1), where Mirai's meter
-    // puts middle gray: the EV100 that gives that luminance white. It is an
-    // EV100 of Unreal's when the project has the extended range (luminance
-    // luminance_max·2^EV100), else a luminance.
-    ev100 :: proc(c:^Context,value:f64) -> f32 {
-        white:=c.extended_luminance?c.luminance_max*math.pow(2,value):value
-        return render.ev100_white(f32(white))
-    }
-    if overridden(s,"AutoExposureMinBrightness") {
-        any=true
-        v,_:=chain_real(s,"AutoExposureMinBrightness",0)
-        e.min_ev100=ev100(c,v)
-    }
-    if overridden(s,"AutoExposureMaxBrightness") {
-        any=true
-        v,_:=chain_real(s,"AutoExposureMaxBrightness",0)
-        e.max_ev100=ev100(c,v)
-    }
-    if overridden(s,"AutoExposureSpeedDown") {
-        any=true
-        // Unreal changes as many EV a second, three times faster toward more light.
-        speed,_:=chain_real(s,"AutoExposureSpeedDown",1)
-        e.adaptation_mode=.Speed
-        e.adaptation=f32(1/max(speed,1e-3))
-    }
-    // A manual exposure is that of a physical camera: f-number, shutter and ISO.
-    stop,_:=chain_real(s,"DepthOfFieldFstop",4)
-    if aperture>0 && !overridden(s,"DepthOfFieldFstop") {stop=f64(aperture)}
-    shutter,_:=chain_real(s,"CameraShutterSpeed",60)
-    iso,_:=chain_real(s,"CameraISO",100)
-    e.aperture,e.shutter,e.iso=f32(max(stop,0.1)),f32(1/max(shutter,1e-3)),f32(max(iso,1))
-    if overridden(s,"AutoExposureApplyPhysicalCameraExposure") && !chain_bool(s,"AutoExposureApplyPhysicalCameraExposure") {
-        // EV100 zero: the bias alone.
-        e.aperture,e.shutter,e.iso=1,1,100
-    }
-    if e.mode==.Manual && (overridden(s,"DepthOfFieldFstop") || overridden(s,"CameraShutterSpeed") || overridden(s,"CameraISO")) {any=true}
-    return
-}
-
-// The settings of a post process volume that Mirai has an equivalent for.
-@(private)
-EXPOSURE_SETTINGS :: []string{
-    "AutoExposureMethod","AutoExposureBias","AutoExposureMinBrightness","AutoExposureMaxBrightness","AutoExposureSpeedUp",
-    "AutoExposureSpeedDown","AutoExposureApplyPhysicalCameraExposure","CameraShutterSpeed","CameraISO","DepthOfFieldFstop",
-}
-
-// Those the lens plugin translates, through its bridge (unreal_lens): the
-// light the bloom scatters and the vignette.
-LENS_SETTINGS :: []string{
-    "BloomIntensity","BloomGaussianIntensity","Bloom1Tint","Bloom2Tint","Bloom3Tint","Bloom4Tint","Bloom5Tint","Bloom6Tint",
-    "VignetteIntensity",
-}
-
-// Whether post process settings override a setting.
-setting_overridden :: proc(s:^Struct_Chain,name:string) -> bool {
-    return chain_bool(s,strings.concatenate({"bOverride_",name},context.temp_allocator))
-}
-
-// The entity a post process volume became and what its settings are, for
-// what a bridge adds to it over the same zone and Volume.
-Post_Process :: struct {
-    entity:base.Entity_Id,
-    zone:volume.Zone,
-    settings:Struct_Chain,
-}
-
-// A post process volume is a View_Volume with the exposure it overrides, by
-// its priority, over its blend radius: in its box when it is bound, which a
-// CubeBuilder gives, and everywhere otherwise. lens: the caller translates
-// LENS_SETTINGS on the entity, which is made for them too; without it they
-// are a warning that names the lens plugin. The rest is a warning.
-post_process_add :: proc(c:^Context,a:int,lens:=false) -> (p:Post_Process,made:bool) {
-    d:=c.d
-    ref:=d.actors[a].ref
-    label:=d.actors[a].label
-    unbound,_:=level.bool_of(d,ref,"bUnbound",false)
-    priority,_:=level.real_of(d,ref,"Priority",0)
-    blend,_:=level.real_of(d,ref,"BlendRadius",100)
-    look:=render.VIEW_VOLUME_DEFAULT
-    look.zone.priority,look.zone.blend=i32(math.round(priority)),max(f32(blend)/100,0)
-    place:=volume.world()
-    if !unbound {
-        builder:=-1
-        for k in d.actors[a].first_component..<d.actors[a].first_component+d.actors[a].component_count {
-            if d.components[k].class.name=="CubeBuilder" {builder=k;break}
-        }
-        if builder<0 {
-            warn(c,"%s: a post process volume whose brush is not the box of a CubeBuilder; its brush is not read",label)
-            return
-        }
-        // Unreal's X, Y and Z are Mirai's Z, X and Y.
-        x,_:=level.real_of(d,d.components[builder].ref,"X",200)
-        y,_:=level.real_of(d,d.components[builder].ref,"Y",200)
-        z,_:=level.real_of(d,d.components[builder].ref,"Z",200)
-        place=volume.box({f32(y)/200,f32(z)/200,f32(x)/200})
-    }
-    settings:=struct_chain(d,ref,"Settings")
-    others:=make([dynamic]string,context.temp_allocator)
-    lensed:=make([dynamic]string,context.temp_allocator)
-    for i in 0..<settings.count {
-        pkg:=settings.packages[i]
-        for &item in settings.lists[i].items {
-            name:=unreal.name_plain(pkg,item.name)
-            if !strings.has_prefix(name,"bOverride_") {continue}
-            v,error:=unreal.property_value(pkg,&item)
-            if error.code!=.None || v.kind!=.Boolean || !v.boolean {continue}
-            setting:=name[len("bOverride_"):]
-            if slice.contains(EXPOSURE_SETTINGS,setting) {continue}
-            into:=slice.contains(LENS_SETTINGS,setting)?&lensed:&others
-            if !slice.contains(into[:],setting) {append(into,setting)}
-        }
-    }
-    if len(others)>0 {
-        shown:=others[:min(len(others),8)]
-        warn(c,"%s: %d post process settings have no equivalent in Mirai: %s%s",label,len(others),strings.join(shown,", ",context.temp_allocator),len(others)>8?", ...":"")
-    }
-    if len(lensed)>0 && !lens {
-        missing:=len(c.translators)>0?"the lens plugin is not in the project":"the lens plugin translates them in an editor session: import the level there (mirai session start, then mirai rpc asset.import with its path)"
-        warn(c,"%s: its bloom and vignette (%s) are not translated: %s",label,strings.join(lensed[:],", ",context.temp_allocator),missing)
-    }
-    exposure,any:=exposure_from(c,&settings,0)
-    if !any && !(lens && len(lensed)>0) {return}
-    world,_,error:=level.actor_world(d,a)
-    if error.code!=.None {return}
-    if place.shape==.Box {place.extents=blend_beyond(place.extents,look.zone.blend,world.scale)}
-    e,entity_made:=entity_make(c,0,actor_key(c,a),label,world)
-    if !entity_made {return}
-    if any {
-        look.exposure=exposure
-        if !component_set(c,e,"View_Volume",&look) {return}
-    }
-    if place.shape!=.Unbounded && !component_set(c,e,"Volume",&place) {return}
-    return {entity=e,zone=look.zone,settings=settings},true
-}
-
-// Unreal blends a bound volume over its blend radius beyond its brush, and
-// Mirai over its blend inside its border: the box grows by the radius, in
-// metres of the world whatever the scale of the actor, so the look ends
-// where Unreal's ends and is whole inside the brush.
-@(private)
-blend_beyond :: proc "contextless" (extents:[3]f32,blend:f32,scale:[3]f32) -> (grown:[3]f32) {
-    for axis in 0..<3 {
-        grown[axis]=extents[axis]
-        if s:=abs(scale[axis]);s>0 {grown[axis]+=blend/s}
-    }
-    return
 }
 
 // A sky light lights from Mirai's sky at its intensity: Unreal captures it
@@ -295,11 +125,12 @@ sky_image_write :: proc(c:^Context,path:string) -> (id:base.Asset_Id,ok:bool) {
     return id,id!={}
 }
 
-// The sky of the scene, what is behind it, and one sun: the brightest, the
-// others turned off.
+// The look of the level where no volume is, the sky of the scene, what is
+// behind it, and one sun: the brightest, the others turned off.
 @(private)
 environment_finish :: proc(c:^Context) {
     if c.failed {return}
+    post_process_base(c)
     if len(c.suns)>1 {
         brightest:=0
         for sun,i in c.suns {if sun.brightness>c.suns[brightest].brightness {brightest=i}}
@@ -364,32 +195,3 @@ atmosphere_air :: proc(d:^level.Document,ref:level.Ref) -> render.Air {
     air.ozone=scaled(d,ref,"OtherAbsorption","OtherAbsorptionScale",{0.345561,1,0.045189},0.001881)
     return air
 }
-
-// The default of r.EyeAdaptation.LensAttenuation, at which Unreal's LuminanceMax is 1.
-@(private)
-UNREAL_LENS_ATTENUATION :: 0.78
-
-// How the auto exposure of the project of the level reads its brightness:
-// in EV100 when r.DefaultFeature.AutoExposure.ExtendDefaultLuminanceRange is
-// on, which UE5 projects turn on and UE4 ones leave off, with the luminance
-// of EV100 0 (LuminanceMax, from r.EyeAdaptation.LensAttenuation).
-luminance_range :: proc(mounts:[]unreal.Source_Mount,p:^unreal.Package) -> (extended:bool,luminance_max:f64) {
-    extended=p.summary.version_ue5>0
-    attenuation:=f64(UNREAL_LENS_ATTENUATION)
-    if text:=unreal.project_config_read(mounts,"DefaultEngine.ini");text!="" {
-        for line in strings.split_lines(text,context.temp_allocator) {
-            trimmed:=strings.trim_space(line)
-            EXTENDED :: "r.DefaultFeature.AutoExposure.ExtendDefaultLuminanceRange="
-            ATTENUATION :: "r.EyeAdaptation.LensAttenuation="
-            if strings.has_prefix(trimmed,EXTENDED) {
-                value:=strings.to_lower(strings.trim_space(trimmed[len(EXTENDED):]),context.temp_allocator)
-                extended=value=="true" || value=="1"
-            } else if strings.has_prefix(trimmed,ATTENUATION) {
-                if value,ok:=strconv.parse_f64(strings.trim_space(trimmed[len(ATTENUATION):]));ok && value>0 {attenuation=value}
-            }
-        }
-    }
-    luminance_max=f64(UNREAL_LENS_ATTENUATION)/attenuation
-    return
-}
-

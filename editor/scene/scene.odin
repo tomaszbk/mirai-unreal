@@ -227,8 +227,11 @@ Context :: struct {
     library_lock:sync.Mutex,    // held while lib and images are used
     decoder:kraken.Decoder,     // of the translators, made when first asked for
     decoder_ready:bool,
-    extended_luminance:bool, // the auto exposure of the project is in EV100 (ExtendDefaultLuminanceRange)
-    luminance_max:f64,       // the luminance of its EV100 0
+    post:Post_Defaults,         // of the post process of the project
+    post_volumes:[dynamic]Post_Volume, // the enabled unbound post process volumes by priority, once post_read
+    post_read:bool,
+    post_base:base.Entity_Id,   // the look where no volume is (post_process_base)
+    grades:[dynamic]Grade_Material,
     failed:bool,
     error:importer.Error,
 }
@@ -346,7 +349,7 @@ document_import :: proc(d:^level.Document,source:string,size,hash:u64,options:im
         c.options.registry=&registry
     }
     defer if options.registry==nil {asset.registry_destroy(&registry)}
-    c.extended_luminance,c.luminance_max=luminance_range(mounts,level.library_package(d.library,int(d.levels[0].ref.pkg)))
+    c.post=post_defaults_read(mounts,level.library_package(d.library,int(d.levels[0].ref.pkg)))
 
     outputs_zone:=importer.zone_begin(options,"level.outputs")
     if begin_error:=importer.outputs_begin(&c.outputs,source,asset.safe_name(stem),size,hash,importer.import_version(LEVEL_VERSION),c.options,allocator);begin_error.code!=.None {
@@ -395,6 +398,8 @@ document_import :: proc(d:^level.Document,source:string,size,hash:u64,options:im
     c.instanced.allocator=scratch
     c.tallies=make(map[string]int,scratch)
     c.kept=make(map[string]rawptr,scratch)
+    c.post_volumes=make([dynamic]Post_Volume,scratch)
+    c.grades=make([dynamic]Grade_Material,scratch)
 
     translate_zone:=importer.zone_begin(options,"level.translate")
     level_translate(&c,translators)

@@ -703,7 +703,8 @@ entity, the imported meshes and the time.
   actor's label (`Camera_Note.entity` is what `mirai capture --camera-entity` takes). Vertical fov:
   for a cine camera, from the sensor height (`Filmback`) and `CurrentFocalLength`; for another,
   from horizontal `FieldOfView` and `AspectRatio`. `active` if the actor is activated for a
-  player. What its `PostProcessSettings` override of exposure is its `Exposure`.
+  player. What its `PostProcessSettings` override of exposure, over the unbound post process
+  volumes, is its `Exposure`.
 - **Sky and exposure.** The level gives a `Sky` entity. Without a `SkyLight` it does not light, as
   in Unreal; with one, it lights by its `Intensity` and color with the sky-to-sun ratio of Mirai's
   `Sky`, taken from the level's brightest sun, and a warning: what Unreal captures from the scene
@@ -714,19 +715,26 @@ entity, the imported meshes and the time.
   engine's sky sphere), and otherwise black; with an atmosphere, the `Sky` is the air the sun lights
   (`atmosphere`), unless the `SkyLight` names a cube: Mirai's `Sky` draws the image or the air, and
   the cube wins, with a warning. `VolumetricCloud` is a warning: Mirai draws no clouds.
-  An unbounded `PostProcessVolume` (the highest priority) gives the `Sky`'s exposure: method (manual
-  or automatic), compensation, adaptation speed, the physical camera (f, shutter and ISO) and the
-  minimum and maximum brightness, which Unreal takes to white and Mirai to mid gray: the EV100 that
-  makes that luminance white (Unreal's EV100 over `LuminanceMax` if the project extends the range,
-  luminance as UE4 if not). A bounded one is that `View_Volume` in the box of its `CubeBuilder`
-  grown by its blend radius. Its bloom and vignette are a `Lens_Volume` of the `unreal_lens` bridge
-  on the same entity ([lens](translators.md#lens-unreal_lens)); without it they are a warning that
-  names the `lens` plugin. The rest of what it overrides is a warning: saturation and contrast too,
-  because the engine's `ColorGrade` has no saturation and its contrast is not Unreal's (a power
-  around middle gray); `ReflectionCapture`s, which GI replaces, what only Unreal's editor uses,
-  World Partition's HLOD (Mirai's is per cell), minimaps, `GPULightmass`, virtual texture volumes
-  (their layers are the terrain's), a Landscape's Nanite and proxy components, the PCG graph and a
-  packed level actor's level (its instances show it) are omitted without a warning.
+  The post process is Unreal's: the defaults of the project (`DefaultEngine.ini`: its
+  `r.DefaultFeature` bloom and auto exposure, method and bias, and the extended range) are a
+  `View_Volume` of the whole world, `Post process`, under every volume, also in a level without
+  volumes; each enabled `PostProcessVolume` is a `View_Volume` by its priority, in the box of its
+  `CubeBuilder` grown by its blend radius or everywhere if unbound, holding what it overrides by its
+  blend weight over what the unbound volumes below it and the defaults give. Its exposure: method
+  (manual or automatic), compensation, adaptation speed, the physical camera (f, shutter and ISO)
+  and the minimum and maximum brightness, which Unreal takes to white and Mirai to mid gray: the
+  EV100 that makes that luminance white (Unreal's EV100 over `LuminanceMax` if the project extends
+  the range, luminance as UE4 if not). Its saturation and contrast, with those of shadows, midtones
+  and highlights and their limits, are a layer of the engine's `ColorGrade` (a `Grade` material of
+  the import, one per grade); the luminance it weighs them by is that of Mirai's working space, not
+  Unreal's AP1. A camera's exposure is what it overrides over the unbound volumes. Bloom and
+  vignette are a `Lens_Volume` of the `unreal_lens` bridge on the same entities
+  ([lens](translators.md#lens-unreal_lens)); without it what a volume overrides of them is a warning
+  that names the `lens` plugin. The rest of what it overrides is a warning; `ReflectionCapture`s,
+  which GI replaces, what only Unreal's editor uses, World Partition's HLOD (Mirai's is per cell),
+  minimaps, `GPULightmass`, virtual texture volumes (their layers are the terrain's), a Landscape's
+  Nanite and proxy components, the PCG graph and a packed level actor's level (its instances show
+  it) are omitted without a warning.
 - **Texts.** `TextRenderComponent` is a fixed `World_Widget` on the component's entity, facing
   where the text faces in Unreal (its +X, Mirai's -Z), with its own `.ui` in the import: a
   line measures `WorldSize` times `YScale`, in its color, aligned as Unreal aligns it and with
