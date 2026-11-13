@@ -32,6 +32,7 @@ Inspect_Result :: struct {
 
 @(private)
 unreal_api_register :: proc(s:^editor.Session) {
+    fab_api_register(s)
     editor.api_method_register(s,{name="unreal.inspect",summary="Reads uncooked Unreal packages without Unreal and writes a report of what it read, to diagnose an import: tables, properties, payloads, textures, materials, meshes, animations or the actors of a map. Writes no assets.",params=type_info_of(Inspect_Params),result=type_info_of(Inspect_Result),flags={.Read_Only},run=unreal_api_inspect})
 }
 

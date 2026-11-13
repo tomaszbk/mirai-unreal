@@ -13,86 +13,147 @@ import "mirai:std/serial"
 
 // The packages of /Game a map reads, as files under mounts: those its
 // imports and its soft references name and theirs, and the actors and
-// objects World Partition keeps in packages of their own. Its build data
-// (lightmaps and the precomputed lighting of MapBuildDataRegistry) is not:
-// Mirai lights by GI. A package a reference names that is not there is left
-// out; the import says so when it needs it. Sorted, absolute, with forward
-// slashes, in allocator.
+// objects World Partition keeps in packages of their own (packages_walk).
+// A package a reference names that is not there is left out; the import
+// says so when it needs it. Sorted, absolute, with forward slashes, in
+// allocator.
 level_packages :: proc(path:string,mounts:[]unreal.Source_Mount,allocator:=context.allocator) -> (files:[]string,error:importer.Error) {
+    absolute,_:=filepath.abs(path,context.temp_allocator)
+    name,name_error:=unreal.source_package_name(absolute,mounts,context.temp_allocator)
+    if name_error.code!=.None {return nil,importer.error_make(.Unsupported,"%s is under no mount of its content: %s",path,name_error.field)}
+    if !os.is_file(absolute) {return nil,importer.error_make(.Read,"%s is not an Unreal package that can be read",path)}
+    disk:=Disk_Source{mounts}
+    all,walk_error:=packages_walk({name},{data=&disk,files=disk_files,under=disk_under},context.temp_allocator)
+    if walk_error.code!=.None {return nil,walk_error}
+    out:=make([dynamic]string,0,len(all),allocator)
+    root,_:=strings.replace_all(absolute,"\\","/",context.temp_allocator)
+    for file in all {
+        clean,_:=strings.replace_all(file,"\\","/",context.temp_allocator)
+        if clean!=root {append(&out,strings.clone(clean,allocator))}
+    }
+    slice.sort(out[:])
+    return out[:],{}
+}
+
+// Where packages_walk reads packages from. files gives the file of each name
+// ("" for one that is not there), all of them at once; under, the files of
+// the packages in a folder of names.
+Package_Source :: struct {
+    data:rawptr,
+    files:proc(data:rawptr,names:[]string,allocator:mem.Allocator) -> (files:[]string,error:importer.Error),
+    under:proc(data:rawptr,folder:string,allocator:mem.Allocator) -> (files:[]string,error:importer.Error),
+}
+
+// The files of the packages of /Game named in roots and of those they read:
+// the packages their imports and soft references name, and those World
+// Partition keeps of a map apart under /<mount>/__External*__/<path of the
+// map>/. Not the build data of a map (lightmaps and the precomputed lighting
+// of MapBuildDataRegistry): Mirai lights by GI. It asks source for each round
+// of names at once, so that a source that downloads them fetches a round
+// together. In allocator.
+packages_walk :: proc(roots:[]string,source:Package_Source,allocator:=context.allocator) -> (files:[]string,error:importer.Error) {
     arena:mem.Dynamic_Arena
     mem.dynamic_arena_init(&arena,context.allocator,context.allocator,block_size=1<<20,out_band_size=1<<20)
     defer mem.dynamic_arena_destroy(&arena)
     scratch:=base.dynamic_arena_allocator(&arena)
-    // Each package is read in this one, emptied once its imports are taken.
+    // Each package is read in this one, emptied once its references are taken.
     reading:mem.Dynamic_Arena
     mem.dynamic_arena_init(&reading,context.allocator,context.allocator,block_size=1<<20,out_band_size=1<<20)
     defer mem.dynamic_arena_destroy(&reading)
     read:=base.dynamic_arena_allocator(&reading)
     seen:=make(map[string]bool,scratch)
-    queue:=make([dynamic]string,scratch)
-    found:=make([dynamic]string,scratch)
-    // The packages p imports and those it names softly, queued once each.
-    scan :: proc(p:^unreal.Package,seen:^map[string]bool,queue:^[dynamic]string,allocator:mem.Allocator) {
-        queue_one :: proc(name:string,seen:^map[string]bool,queue:^[dynamic]string,allocator:mem.Allocator) {
-            if !strings.has_prefix(name,"/Game/") || seen[name] {return}
-            kept:=strings.clone(name,allocator)
-            seen[kept]=true
-            append(queue,kept)
-        }
-        for item,i in p.imports {
-            if item.outer!=0 || build_data_only(p,i) {continue}
-            queue_one(unreal.name_text(p,item.object_name,context.temp_allocator),seen,queue,allocator)
-        }
-        soft,_:=unreal.soft_packages(p,context.temp_allocator)
-        for name in soft {queue_one(name,seen,queue,allocator)}
+    found:=make([dynamic]string,allocator)
+    round:=make([dynamic]string,scratch)
+    for name in roots {
+        if seen[name] {continue}
+        seen[strings.clone(name,scratch)]=true
+        append(&round,strings.clone(name,scratch))
     }
-    // The package in file, opened in scratch; false when it cannot be read.
-    open :: proc(file:string,scratch:mem.Allocator) -> (p:unreal.Package,ok:bool) {
-        bytes,read_error:=serial.file_read(file,scratch,limit=i64(unreal.DEFAULT_LIMITS.source_bytes))
+    // The packages of the file, their references queued once each in next.
+    take :: proc(file:string,seen:^map[string]bool,next:^[dynamic]string,scratch,read:mem.Allocator) {
+        bytes,read_error:=serial.file_read(file,read,limit=i64(unreal.DEFAULT_LIMITS.source_bytes))
         if read_error!=.None {return}
-        opened,open_error:=unreal.package_open(bytes,scratch,unreal.DEFAULT_LIMITS)
-        return opened,open_error.code==.None
+        p,open_error:=unreal.package_open(bytes,read,unreal.DEFAULT_LIMITS)
+        if open_error.code!=.None {return}
+        for name in package_references(&p,read) {
+            if seen[name] {continue}
+            kept:=strings.clone(name,scratch)
+            seen[kept]=true
+            append(next,kept)
+        }
     }
-    absolute,_:=filepath.abs(path,scratch)
-    p,ok:=open(path,read)
-    if !ok {return nil,importer.error_make(.Read,"%s is not an Unreal package that can be read",path)}
-    name,name_error:=unreal.source_package_name(absolute,mounts,scratch)
-    if name_error.code!=.None {return nil,importer.error_make(.Unsupported,"%s is under no mount of its content: %s",path,name_error.field)}
-    seen[name]=true
-    scan(&p,&seen,&queue,scratch)
-    mem.dynamic_arena_reset(&reading)
-    // The packages World Partition keeps apart, under /<mount>/__External*__/<path of the map>/.
-    slash:=strings.index_byte(name[1:],'/')+1
-    for kind in ([2]string{"__ExternalActors__","__ExternalObjects__"}) {
-        external,path_error:=unreal.source_package_path(strings.concatenate({name[:slash],"/",kind,name[slash:]},scratch),mounts,scratch)
-        if path_error.code!=.None {continue}
-        directory:=external[:len(external)-len(".uasset")]
-        if !os.is_dir(directory) {continue}
-        walker:=os.walker_create(directory)
-        for info in os.walker_walk(&walker) {
-            if info.type!=.Regular || !strings.has_suffix(info.fullpath,".uasset") {continue}
-            file:=strings.clone(info.fullpath,scratch)
-            append(&found,file)
-            if q,opened:=open(file,read);opened {scan(&q,&seen,&queue,scratch)}
+    for len(round)>0 {
+        round_files,files_error:=source.files(source.data,round[:],scratch)
+        if files_error.code!=.None {return found[:],files_error}
+        next:=make([dynamic]string,scratch)
+        for file,i in round_files {
+            if file=="" {continue}
+            append(&found,strings.clone(file,allocator))
+            take(file,&seen,&next,scratch,read)
             mem.dynamic_arena_reset(&reading)
+            if !strings.has_suffix(file,".umap") {continue}
+            name:=round[i]
+            slash:=strings.index_byte(name[1:],'/')+1
+            for kind in ([2]string{"__ExternalActors__","__ExternalObjects__"}) {
+                externals,under_error:=source.under(source.data,strings.concatenate({name[:slash],"/",kind,name[slash:]},scratch),scratch)
+                if under_error.code!=.None {return found[:],under_error}
+                for external in externals {
+                    append(&found,strings.clone(external,allocator))
+                    take(external,&seen,&next,scratch,read)
+                    mem.dynamic_arena_reset(&reading)
+                }
+            }
         }
-        os.walker_destroy(&walker)
+        round=next
     }
-    for next:=0;next<len(queue);next+=1 {
-        file:=""
+    return found[:],{}
+}
+
+// The packages of /Game p imports, but for the build data of a map, and those
+// it names softly; in allocator.
+package_references :: proc(p:^unreal.Package,allocator:=context.allocator) -> []string {
+    out:=make([dynamic]string,allocator)
+    for item,i in p.imports {
+        if item.outer!=0 || build_data_only(p,i) {continue}
+        if name:=unreal.name_text(p,item.object_name,allocator);strings.has_prefix(name,"/Game/") {append(&out,name)}
+    }
+    soft,_:=unreal.soft_packages(p,allocator)
+    for name in soft {if strings.has_prefix(name,"/Game/") {append(&out,name)}}
+    return out[:]
+}
+
+// Packages as files of the content under mounts.
+@(private="file")
+Disk_Source :: struct {mounts:[]unreal.Source_Mount}
+
+@(private="file")
+disk_files :: proc(data:rawptr,names:[]string,allocator:mem.Allocator) -> (files:[]string,error:importer.Error) {
+    disk:=(^Disk_Source)(data)
+    out:=make([]string,len(names),allocator)
+    for name,i in names {
         for extension in ([2]string{".uasset",".umap"}) {
-            candidate,path_error:=unreal.source_package_path(queue[next],mounts,scratch,extension)
-            if path_error.code==.None && os.exists(candidate) {file=candidate;break}
+            candidate,path_error:=unreal.source_package_path(name,disk.mounts,allocator,extension)
+            if path_error.code==.None && os.exists(candidate) {out[i]=candidate;break}
         }
-        if file=="" {continue}
-        append(&found,file)
-        if q,opened:=open(file,read);opened {scan(&q,&seen,&queue,scratch)}
-        mem.dynamic_arena_reset(&reading)
     }
-    out:=make([]string,len(found),allocator)
-    for file,i in found {out[i],_=strings.replace_all(file,"\\","/",allocator)}
-    slice.sort(out)
     return out,{}
+}
+
+@(private="file")
+disk_under :: proc(data:rawptr,folder:string,allocator:mem.Allocator) -> (files:[]string,error:importer.Error) {
+    disk:=(^Disk_Source)(data)
+    path,path_error:=unreal.source_package_path(folder,disk.mounts,allocator)
+    if path_error.code!=.None {return nil,{}}
+    directory:=path[:len(path)-len(".uasset")]
+    if !os.is_dir(directory) {return nil,{}}
+    out:=make([dynamic]string,allocator)
+    walker:=os.walker_create(directory)
+    defer os.walker_destroy(&walker)
+    for info in os.walker_walk(&walker) {
+        if info.type==.Regular && strings.has_suffix(info.fullpath,".uasset") {append(&out,strings.clone(info.fullpath,allocator))}
+    }
+    slice.sort(out[:])
+    return out[:],{}
 }
 
 // Whether all p imports from its package import at index is the build data
