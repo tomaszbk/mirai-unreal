@@ -195,6 +195,87 @@ a_material_of_an_unmounted_engine_is_the_grid_of_mirai :: proc(t:^testing.T) {
     testing.expect(t,named,"the substitute names the material it stands for")
 }
 
+// M_Wood, whose base color, emission and normal sample T_Grain from the
+// Unreal uv sets reads (-1: none).
+@(private="file")
+wood_package :: proc(reads:[3]i32) -> []u8 {
+    p:=material_fixture.package_make()
+    wood:=material_fixture.export(&p,material_fixture.class(&p,"/Script/Engine","Material"),0,"M_Wood",nil)
+    grain:=material_fixture.external(&p,"/Game/Textures/T_Grain","/Script/Engine","Texture2D","T_Grain")
+    m:=material_fixture.writer(&p)
+    outputs:=[3][2]string{{"BaseColor","ColorMaterialInput"},{"EmissiveColor","ColorMaterialInput"},{"Normal","VectorMaterialInput"}}
+    for output,i in outputs {
+        if reads[i]<0 {continue}
+        w:=material_fixture.writer(&p)
+        material_fixture.object_put(&w,"Texture",grain)
+        material_fixture.int_put(&w,"ConstCoordinate",reads[i])
+        sample:=material_fixture.export(&p,material_fixture.class(&p,"/Script/Engine","MaterialExpressionTextureSample"),wood,output[0],material_fixture.finish(&w))
+        material_fixture.input_put(&m,output[0],output[1],{expression=sample,mask={true,true,true,false}})
+    }
+    p.exports[wood-1].data=material_fixture.finish(&m)
+    return material_fixture.package_bytes(&p,"/Game/Materials/M_Wood")
+}
+
+// A slot holds the Unreal uv sets its material reads, lowest first, and the
+// first set where it reads none; a set past those of the mesh is its last, as
+// Unreal reads it, and a material that reads more sets than a mesh holds is
+// a warning that names it.
+@(test)
+a_mesh_holds_the_uv_sets_the_material_of_each_slot_reads :: proc(t:^testing.T) {
+    Case :: struct {
+        name:string,
+        sets:int,     // of the mesh
+        reads:[3]i32, // what M_Wood samples (wood_package)
+        uv,uv1:f32,   // the u the corners of Wood hold; -1: that of set 0
+        has_uv1,warned:bool,
+    }
+    // Set 0 has u 0 or 1, set 1 u 0.75 and set 2 u 0.25.
+    cases:=[]Case{
+        {"third",3,{2,-1,-1},0.25,0.25,false,false},
+        {"clamped",2,{2,-1,-1},0.75,0.75,false,false},
+        {"past",3,{0,2,1},-1,0.25,true,true},
+    }
+    pixels:=make([]u8,4*4*4,context.temp_allocator)
+    for c in cases {
+        f:=quad(.Description)
+        f.uvs1=make([][2]f32,len(f.uvs),context.temp_allocator)
+        for &uv in f.uvs1 {uv={0.75,0.5}}
+        if c.sets>2 {
+            f.uvs2=make([][2]f32,len(f.uvs),context.temp_allocator)
+            for &uv in f.uvs2 {uv={0.25,0.5}}
+        }
+        folder,path:=project_with(fmt.tprintf("uv-%s",c.name),fixture.static_mesh_package(f))
+        defer os.remove_all(folder)
+        os.make_directory_all(fmt.tprintf("%s/Content/Materials",folder))
+        os.make_directory_all(fmt.tprintf("%s/Content/Textures",folder))
+        _=os.write_entire_file(fmt.tprintf("%s/Content/Materials/M_Wood.uasset",folder),wood_package(c.reads))
+        _=os.write_entire_file(fmt.tprintf("%s/Content/Textures/T_Grain.uasset",folder),material_fixture.texture_package("/Game/Textures/T_Grain","T_Grain",pixels,4,4))
+        options:=Options{engine_content="-"}
+        formats:=[1]importer.Format{format(&options)}
+        model,error:=importer.import_model(path,formats[:],{ignore_stored=true})
+        if !testing.expectf(t,error.code==.None,"%s: %s",c.name,error.message) {continue}
+        defer importer.model_destroy(&model)
+        if !testing.expect_value(t,len(model.meshes),1) {continue}
+        mesh:=&model.meshes[0]
+        testing.expectf(t,(.Has_Uv1 in mesh.flags)==c.has_uv1,"%s: uv1 only where a material reads a second set",c.name)
+        for i in 0..<len(mesh.indices)/3 {
+            for corner in importer.mesh_triangle(mesh,i) {
+                if corner.material!=0 {
+                    // M_Metal no mount holds reads no set: its slot holds the first.
+                    testing.expectf(t,corner.uv.x==0 || corner.uv.x==1,"%s: Metal holds set 0: %v",c.name,corner.uv)
+                    continue
+                }
+                wanted:=c.uv
+                if c.uv<0 {wanted=corner.uv.x==0 || corner.uv.x==1?corner.uv.x:-1}
+                testing.expectf(t,corner.uv.x==wanted && corner.uv1.x==c.uv1,"%s: Wood holds %v",c.name,corner.uv)
+            }
+        }
+        warned:=false
+        for w in model.warnings {warned||=strings.contains(w,"M_Wood") && strings.contains(w,"UV sets")}
+        testing.expectf(t,warned==c.warned,"%s: %v",c.name,model.warnings)
+    }
+}
+
 @(test)
 a_package_of_a_texture_is_that_texture :: proc(t:^testing.T) {
     pixels:=make([]u8,4*4*4,context.temp_allocator)

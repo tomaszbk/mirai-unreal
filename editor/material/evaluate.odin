@@ -131,14 +131,11 @@ Evaluator :: struct {
     material:string,        // the object path of the material translated
     prefix:string,          // before the names of the parameters of the material that writes a virtual texture read
     writing:bool,           // evaluating what a material writes to a virtual texture
+    uv_sets:Unreal_UV_Sets,      // the Unreal uv sets read, in the uv sets of the mesh
+    uv_sets_past:Unreal_UV_Sets, // those read past the UV_SETS of the mesh: not translated
 }
 
 @(private) MAX_EVALUATION_DEPTH :: 400
-
-// Mirai meshes keep the first two uv sets of Unreal; the sets after them
-// hold per-vertex data of vertex animation, which moves the surface.
-@(private)
-UV_SETS_PAST :: "a uv set past the two Mirai meshes keep: those after them carry vertex animation data, which goes with WorldPositionOffset"
 
 evaluator_init :: proc(e:^Evaluator,lib:^Library,g:^Graph,allocator:=context.allocator) {
     e.lib,e.g=lib,g
@@ -434,14 +431,12 @@ expression_build :: proc(e:^Evaluator,o:Object,output:i32,scope:i32) -> Value {
         return nodes(result)
     case "TextureCoordinate":
         if prop_bool(o,"UnMirrorU",false) || prop_bool(o,"UnMirrorV",false) {return untranslated(e,o,"unmirrored coordinates")}
-        index:=prop_int(o,"CoordinateIndex",0)
-        if (index<0 || index>1) && e.coordinates==nil {return untranslated(e,o,UV_SETS_PAST)}
-        uv:=uv_value(e,u32(index))
+        uv:=uv_value(e,o,prop_int(o,"CoordinateIndex",0))
         return nodes(binary(g,.Mul,uv,constant(g,{prop_float(o,"UTiling",1),prop_float(o,"VTiling",1),0,0},2)))
     case "BumpOffset":
         // The coordinates without the offset by the view: see legacy_adapted.
         uv,uv_connected:=pin(e,o,"Coordinate",scope)
-        if !uv_connected {uv=uv_value(e,u32(prop_int(o,"ConstCoordinate",0)))}
+        if !uv_connected {uv=uv_value(e,o,prop_int(o,"ConstCoordinate",0))}
         note(e,"bump offset: the surface is shaded where it is, without the relief")
         return nodes(uv)
     case "Panner":
@@ -452,7 +447,7 @@ expression_build :: proc(e:^Evaluator,o:Object,output:i32,scope:i32) -> Value {
         offset:=binary(g,.Mul,convert(g,time,1),convert(g,speed,2))
         if prop_bool(o,"bFractionalPart",false) {offset=unary(g,.Frac,offset)}
         uv,uv_connected:=pin(e,o,"Coordinate",scope)
-        if !uv_connected {uv=uv_value(e,u32(prop_int(o,"ConstCoordinate",0)))}
+        if !uv_connected {uv=uv_value(e,o,prop_int(o,"ConstCoordinate",0))}
         return nodes(binary(g,.Add,offset,uv))
     case "RotateAboutAxis":
         // The offset from Position to it turned about the axis through the pivot.
@@ -484,7 +479,7 @@ expression_build :: proc(e:^Evaluator,o:Object,output:i32,scope:i32) -> Value {
         if !connected {time=context_value(g,.Time,1)}
         time=binary(g,.Mul,time,scalar(g,prop_float(o,"Speed",0.25)))
         uv,uv_connected:=pin(e,o,"Coordinate",scope)
-        if !uv_connected {uv=uv_value(e,u32(prop_int(o,"ConstCoordinate",0)))}
+        if !uv_connected {uv=uv_value(e,o,prop_int(o,"ConstCoordinate",0))}
         center:=constant(g,{prop_float(o,"CenterX",0.5),prop_float(o,"CenterY",0.5),0,0},2)
         uv=binary(g,.Sub,convert(g,uv,2),center)
         c,s:=unary(g,.Cos,time),unary(g,.Sin,time)
@@ -1098,9 +1093,7 @@ texture_sample :: proc(e:^Evaluator,o:Object,scope:i32) -> Value {
     }
     uv,uv_connected:=pin(e,o,"Coordinates",scope)
     if !uv_connected {
-        index:=prop_int(o,"ConstCoordinate",0)
-        if index>1 {return untranslated(e,o,UV_SETS_PAST)}
-        uv=uv_value(e,u32(index))
+        uv=uv_value(e,o,prop_int(o,"ConstCoordinate",0))
     }
     // Coordinates that failed upstream were counted there.
     if uv==NONE {return NO_VALUE}
@@ -1305,7 +1298,7 @@ legacy_adapted :: proc(e:^Evaluator,function,output:Object,scope:i32) -> (value:
         case "Parallax UVs":
             note(e,"parallax occlusion mapping: the surface is shaded where it is, without the relief")
             if uv,found:=function_input_named(e,function,"UVs",scope);found {return uv,true}
-            return nodes(uv_value(e,0)),true
+            return nodes(uv_value(e,output,0)),true
         case "Pixel Depth Offset":return nodes(scalar(g,0)),true
         case "Shadow":return nodes(scalar(g,1)),true
         case "World Position":return nodes(world_place(e,.World_Position)),true

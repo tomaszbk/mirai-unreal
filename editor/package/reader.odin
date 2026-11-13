@@ -3,15 +3,12 @@ package unreal
 import "core:mem"
 import "core:unicode/utf8"
 
-@(private)
 Reader :: struct {bytes:[]u8,at,end:int,error:Error}
 
-@(private)
 bad :: proc(r:^Reader,code:Error_Code,field:string) {
     if r.error.code==.None {r.error={code,i64(r.at),field}}
 }
 
-@(private)
 take :: proc(r:^Reader,count:int,field:string) -> []u8 {
     if r.error.code!=.None {return nil}
     if count<0 || r.at<0 || r.end>len(r.bytes) || r.at>r.end || count>r.end-r.at {
@@ -23,7 +20,6 @@ take :: proc(r:^Reader,count:int,field:string) -> []u8 {
     return out
 }
 
-@(private)
 u8_read :: proc(r:^Reader,field:string) -> u8 {
     bytes:=take(r,1,field)
     return len(bytes)==1?bytes[0]:0
@@ -36,17 +32,14 @@ u16_read :: proc(r:^Reader,field:string) -> u16 {
     return u16(bytes[0]) | u16(bytes[1])<<8
 }
 
-@(private)
 u32_read :: proc(r:^Reader,field:string) -> u32 {
     bytes:=take(r,4,field)
     if len(bytes)!=4 {return 0}
     return u32(bytes[0]) | u32(bytes[1])<<8 | u32(bytes[2])<<16 | u32(bytes[3])<<24
 }
 
-@(private)
 i32_read :: proc(r:^Reader,field:string) -> i32 {return transmute(i32)u32_read(r,field)}
 
-@(private)
 i64_read :: proc(r:^Reader,field:string) -> i64 {
     low:=u32_read(r,field)
     high:=u32_read(r,field)
@@ -60,7 +53,6 @@ bool_read :: proc(r:^Reader,field:string) -> bool {
     return value==1
 }
 
-@(private)
 guid_read :: proc(r:^Reader,field:string) -> (out:Guid) {
     bytes:=take(r,16,field)
     copy(out[:],bytes)
@@ -69,7 +61,6 @@ guid_read :: proc(r:^Reader,field:string) -> (out:Guid) {
 
 Serialized_String :: struct {bytes:[]u8,wide:bool,source:Span}
 
-@(private)
 text_read :: proc(r:^Reader,limit:u32,field:string) -> (out:Serialized_String) {
     start:=r.at
     count:=i32_read(r,field)
@@ -87,7 +78,6 @@ text_read :: proc(r:^Reader,limit:u32,field:string) -> (out:Serialized_String) {
     return
 }
 
-@(private)
 text_decode :: proc(text:Serialized_String,allocator:mem.Allocator) -> (value:string,owned:[]u8,error:Error) {
     if text.wide && len(text.bytes)%2!=0 {return "",nil,{.Malformed,text.source.offset,"FString UTF16 byte count"}}
     if len(text.bytes)>max(int)/2 {return "",nil,{.Limit,text.source.offset,"FString conversion byte count"}}
