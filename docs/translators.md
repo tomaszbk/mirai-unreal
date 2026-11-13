@@ -153,13 +153,23 @@ warning that names `shapes`, never drawn straight.
 
 ## Fog (`unreal_fog`)
 
-`ExponentialHeightFog` is the whole-world fog with the albedo of its volumetric fog, and its
-`SecondFogData` is another one added to it from its height plus the offset; Unreal draws only the
-first of a scene, and the others are a warning. Its `FogInscatteringLuminance` and its directional
-light are radiance that Unreal adds, not an albedo: with a `SkyAtmosphere` Unreal lights the fog
-with the sky and sun, as Mirai always does, and they are omitted; the scale of non-white sky light
-and what depends on the eye, `StartDistance`, `FogCutoffDistance` and `FogMaxOpacity`, are
-warnings.
+`ExponentialHeightFog` is a fog in the box of what the level shows (the bounds of its actors),
+since a Mirai fog fills a bounded `Volume` and the haze past it is the air of the `Sky`; its
+density is that at the bottom of the box, thinning by its falloff over the actor's height, and its
+`SecondFogData` is another one in the same box from that height plus the offset. Unreal draws only
+the first of a scene, and the others are a warning.
+
+- Its inscattering luminance, which Unreal shows where the fog is thick whatever lights it, is the
+  `glow`; a package from before the luminance takes the color it saved, with its old default.
+- With `bEnableVolumetricFog` Unreal lights the fog with the lights of the scene, as Mirai does: the
+  albedo is that of its volumetric fog and the density half of `FogDensity` in powers of e, times
+  its extinction scale. Without it no light of the scene reaches the fog: the albedo is black, or
+  white under a `SkyAtmosphere`, whose sky and sun light it, and the density is `FogDensity` in
+  powers of two.
+- What Mirai does not draw is a warning: the distance where Unreal's volumetric fog ends and its
+  glow starts, the directional and cubemap colors it adds without shadows, the emissive of its
+  volumetric fog, the scale of the sky light, and what depends on the eye (`StartDistance`,
+  `EndDistance`, `FogCutoffDistance`, `FogMaxOpacity`).
 
 ## Lens (`unreal_lens`)
 
@@ -314,7 +324,7 @@ the area the Blueprint simulates; at 1, those of the mesh. `PressureDivergenceBu
   `a_spline_mesh_of_unreal_bends_its_mesh_where_unreal_does` (against Unreal's definition of the
   curve, for each forward axis) and `the_spline_meshes_of_an_unreal_level_bend_their_meshes`.
 - Tests of `plugins/unreal_fog/editor`:
-  `the_height_fog_of_an_unreal_level_is_a_fog_of_the_whole_world`.
+  `the_height_fog_of_an_unreal_level_fills_its_box_with_its_density_and_glow`.
 - Tests of `plugins/unreal_lens/editor`:
   `the_bloom_and_vignette_of_an_unreal_post_process_volume_are_a_lens_volume`; the importer's
   part and the warning without the bridge,

@@ -13,8 +13,8 @@ puts it in the project's `plugins/unreal` with its companions.
   importer and the API method `unreal.inspect`.
 - `plugins/`: its companions `unreal_terrain`, `unreal_foliage`, `unreal_physics`, `unreal_shapes`,
   `unreal_fog`, `unreal_lens`, `unreal_navigation`, `unreal_vfx` and `unreal_fluids`, automatic
-  bridges (`automatic: true`, editor-only). Each depends on `unreal` and on the plugin it translates for,
-  and gives the importer the translator for its actors or the textures its systems write.
+  bridges (`automatic: true`, editor-only). Each depends on `unreal` and on the plugin it translates
+  for, and gives the importer the translator for its actors or the textures its systems write.
 
 The `editor/` packages are imported as `project:plugins/unreal/editor/<package>`:
 
