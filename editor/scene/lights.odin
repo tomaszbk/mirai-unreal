@@ -30,6 +30,8 @@ Unreal_Light :: struct {
     inner_cone,outer_cone:f32, // half angles
     source_width,source_height:f32,
     broken_ev:bool, // a rectangle saved before RectLightFixedEVUnitConversion with EV units
+    indirect:f32,   // IndirectLightingIntensity: what multiplies the light of it that bounces
+    scattering:f32, // VolumetricScatteringIntensity: what multiplies the light of it a volumetric fog scatters
 }
 
 // What Mirai takes of it.
@@ -40,6 +42,7 @@ Converted_Light :: struct {
     radius:f32,     // m
     angle:f32,      // of a spot: its half angle, radians
     size:[2]f32,    // of a rectangle, m
+    indirect,scattering:f32, // what of its light bounces and what a fog scatters, as Unreal gives them
 }
 
 Light_Approximation :: enum u8 {
@@ -65,6 +68,7 @@ light_units_parse :: proc(text:string) -> Light_Units {
 light_convert :: proc(u:Unreal_Light) -> (m:Converted_Light,approximated:bit_set[Light_Approximation]) {
     m.range=max(u.attenuation_radius,0)/100
     m.radius=max(u.source_radius,0)/100
+    m.indirect,m.scattering=max(u.indirect,0),max(u.scattering,0)
     cos_cone:=f32(1)
     if u.kind==.Spot {
         // The outer half angle as Unreal clamps it: a hair wider than the inner one, up to 88.9°.
@@ -151,6 +155,9 @@ unreal_light :: proc(c:^Context,component:int,kind:Light_Kind) -> (u:Unreal_Ligh
     width,_:=level.real_of(d,ref,"SourceWidth",64)
     height,_:=level.real_of(d,ref,"SourceHeight",64)
     u.source_width,u.source_height=f32(width),f32(height)
+    indirect,_:=level.real_of(d,ref,"IndirectLightingIntensity",1)
+    scattering,_:=level.real_of(d,ref,"VolumetricScatteringIntensity",1)
+    u.indirect,u.scattering=f32(indirect),f32(scattering)
     if kind==.Rect && u.units==.EV {
         broken,found:=level.bool_of(d,ref,"bLightRequiresBrokenEVMath",false)
         if found {u.broken_ev=broken} else {u.broken_ev=fortnite_version(c,ref)<RECT_LIGHT_FIXED_EV}
@@ -183,17 +190,17 @@ light_add :: proc(c:^Context,actor,component:int,kind:Light_Kind) -> bool {
     value:=m.value
     switch kind {
     case .Directional:
-        sun:=render.Sun{color=m.color,illuminance=m.value,disc=true}
+        sun:=render.Sun{color=m.color,illuminance=m.value,disc=true,indirect=m.indirect,scattering=m.scattering}
         if !component_set(c,e,"Sun",&sun) {return false}
         append(&c.suns,Sun_Candidate{e,c.section,m.value*max(m.color.r,m.color.g,m.color.b)})
     case .Point:
-        light:=render.Point_Light{color=m.color,intensity=m.value,range=m.range,radius=m.radius}
+        light:=render.Point_Light{color=m.color,intensity=m.value,range=m.range,radius=m.radius,indirect=m.indirect,scattering=m.scattering}
         if !component_set(c,e,"Point_Light",&light) {return false}
     case .Spot:
-        light:=render.Spot_Light{color=m.color,intensity=m.value,range=m.range,radius=m.radius,angle=m.angle}
+        light:=render.Spot_Light{color=m.color,intensity=m.value,range=m.range,radius=m.radius,angle=m.angle,indirect=m.indirect,scattering=m.scattering}
         if !component_set(c,e,"Spot_Light",&light) {return false}
     case .Rect:
-        light:=render.Rect_Light{color=m.color,luminance=m.value,range=m.range}
+        light:=render.Rect_Light{color=m.color,luminance=m.value,range=m.range,indirect=m.indirect,scattering=m.scattering}
         if !component_set(c,e,"Rect_Light",&light) {return false}
     }
     unit:="cd"
@@ -218,3 +225,42 @@ light_add :: proc(c:^Context,actor,component:int,kind:Light_Kind) -> bool {
 }
 
 LIGHT_NAMES :: [Light_Kind]string{.Point="Point_Light",.Spot="Spot_Light",.Rect="Rect_Light",.Directional="Sun"}
+
+// The settings of a post process volume that are light of the world.
+@(private)
+LIGHT_SETTINGS :: []string{"IndirectLightingIntensity"}
+
+// The IndirectLightingIntensity of the unbound post process volume of the
+// highest priority that overrides it: the scale of the Bounce_Light of the
+// scene (bounce_finish).
+@(private)
+Bounce_Candidate :: struct {
+    scale,priority:f32,
+    found:bool,
+}
+
+// What a post process volume overrides of the light of the world. Unbound,
+// its IndirectLightingIntensity scales all the light that bounces; a bound
+// one changes it as the camera goes in and out of its box, and Mirai's light
+// does not follow the camera: it is a warning and nothing more.
+@(private)
+post_process_light :: proc(c:^Context,label:string,settings:^Struct_Chain,unbound:bool,priority:f32) {
+    if !chain_bool(settings,"bOverride_IndirectLightingIntensity") {return}
+    scale,_:=chain_real(settings,"IndirectLightingIntensity",1)
+    if !unbound {
+        warn(c,"%s: its IndirectLightingIntensity %.3g changes the indirect light as the camera goes into its box in Unreal; Mirai's light does not follow the camera, so it is not taken",label,scale)
+        return
+    }
+    if c.bounce.found && c.bounce.priority>priority {return}
+    c.bounce={scale=max(f32(scale),0),priority=priority,found=true}
+}
+
+// The Bounce_Light of the scene, when an unbound post process volume scales
+// the indirect light.
+@(private)
+bounce_finish :: proc(c:^Context) {
+    if c.failed || !c.bounce.found || c.bounce.scale==1 {return}
+    bounce:=render.BOUNCE_LIGHT_DEFAULT
+    bounce.scale=c.bounce.scale
+    if e,ok:=entity_make(c,0,"Bounce_Light","Bounce light",mm.TRANSFORM_IDENTITY);ok {component_set(c,e,"Bounce_Light",&bounce)}
+}

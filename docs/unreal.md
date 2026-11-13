@@ -702,7 +702,12 @@ entity, the imported meshes and the time.
   - the color is linear `LightColor` times `ColorTemperatureToLinear` with `bUseTemperature`; a
     channel above one goes to the intensity. `AttenuationRadius` is `range` and `SourceRadius`,
     `radius`. Unreal lights toward the component's +X, Mirai's -Z, and the entity has scale one.
-    False `bAffectsWorld` leaves the component off.
+    False `bAffectsWorld` leaves the component off. `IndirectLightingIntensity` is `indirect` and
+    `VolumetricScatteringIntensity` is `scattering`, on the sun too.
+  - The `IndirectLightingIntensity` an unbound `PostProcessVolume` overrides (the highest
+    priority) is the `scale` of the scene's `Bounce_Light`. A bound one that overrides it is a
+    warning: in Unreal the indirect light changes as the camera enters its box, and Mirai's light
+    does not follow the camera.
   - Warned, with count: no inverse-square falloff (candelas that give the same at half the radius),
     `SourceLength`, IES, light functions, no shadows and cones outside 1° to 89°.
   - Mirai lights with one sun: with several directionals the brightest stays on.

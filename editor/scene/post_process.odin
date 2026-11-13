@@ -363,7 +363,7 @@ post_process_add :: proc(c:^Context,a:int,lens:=false) -> (p:Post_Process,made:b
             v,error:=unreal.property_value(pkg,&item)
             if error.code!=.None || v.kind!=.Boolean || !v.boolean {continue}
             setting:=name[len("bOverride_"):]
-            if slice.contains(EXPOSURE_SETTINGS,setting) || grade_setting(setting) {continue}
+            if slice.contains(EXPOSURE_SETTINGS,setting) || slice.contains(LIGHT_SETTINGS,setting) || grade_setting(setting) {continue}
             into:=slice.contains(LENS_SETTINGS,setting)?&lensed:&others
             if !slice.contains(into[:],setting) {append(into,setting)}
         }
@@ -376,6 +376,7 @@ post_process_add :: proc(c:^Context,a:int,lens:=false) -> (p:Post_Process,made:b
         missing:=len(c.translators)>0?"the lens plugin is not in the project":"the lens plugin translates them in an editor session: import the level there (mirai session start, then mirai rpc asset.import with its path)"
         warn(c,"%s: its bloom and vignette (%s) are not translated: %s",label,strings.join(lensed[:],", ",context.temp_allocator),missing)
     }
+    post_process_light(c,label,&own,unbound,f32(priority))
     p.settings=post_settings(c,a,own,weight)
     exposure,exposed:=exposure_from(c,&p.settings,0)
     grade,graded:=grade_from(c,&p.settings)
