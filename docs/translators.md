@@ -171,11 +171,15 @@ the first of a scene, and the others are a warning.
   albedo is that of its volumetric fog and the density half of `FogDensity` in powers of e, times
   its extinction scale. Without it no light of the scene reaches the fog: the albedo is black and
   the density is `FogDensity` in powers of two.
-- What Mirai does not draw is a warning: the distance where Unreal's volumetric fog ends and its
-  glow starts, the lobe it adds around the sun without shadows (`DirectionalInscatteringLuminance`
-  times the luminance of the sun, plus the sun through the atmosphere over 4π; Mirai's fog
-  scatters the sun by its color and anisotropy instead), its cubemap colors, the emissive of its
-  volumetric fog and what depends on the eye (`StartDistance`, `EndDistance`,
+- Unreal leaves its height fog, and so its glow, out of the eye's first `StartDistance` and, with
+  its volumetric fog, out of what the volumetric fog covers (`VolumetricFogDistance`): the
+  `glow_start` is the farther of both.
+- What Mirai does not draw is a warning: the light of the scene and the density of the volumetric
+  fog past where it ends, the lobe Unreal adds around the sun without shadows
+  (`DirectionalInscatteringLuminance` times the luminance of the sun, plus the sun through the
+  atmosphere over 4π; Mirai's fog scatters the sun by its color and anisotropy instead), its
+  cubemap colors, the emissive of its volumetric fog and what else depends on the eye (the dimming
+  Unreal leaves out before `StartDistance` without volumetric fog, `EndDistance`,
   `FogCutoffDistance`, `FogMaxOpacity`).
 
 ## Lens (`unreal_lens`)

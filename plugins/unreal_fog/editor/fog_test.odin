@@ -19,16 +19,17 @@ import fog "plugins:fog/runtime"
 // its base, thinning over it by its falloff per metre in powers of e and
 // holding under it; it glows with its inscattering color, the one it saved or
 // the default of UE4. Its volumetric fog lights it with its albedo and stops
-// half of FogDensity in powers of e; without it, no light of the scene
-// reaches it and it stops FogDensity in powers of two. Its second fog is
-// another in the same box, from the actor raised by its offset; of two
-// height fogs, the first alone, as Unreal draws.
+// half of FogDensity in powers of e, and it glows only past the 60 m the
+// volumetric fog reaches; without it, no light of the scene reaches it, it
+// stops FogDensity in powers of two and glows from its StartDistance. Its
+// second fog is another in the same box, from the actor raised by its
+// offset; of two height fogs, the first alone, as Unreal draws.
 @(test)
 the_height_fog_of_an_unreal_level_fills_its_box_with_its_density_and_glow :: proc(t:^testing.T) {
-    Case :: struct {volumetric:bool,inscattering:[4]f32,glow,color:[3]f32,stops:f64}
+    Case :: struct {volumetric:bool,inscattering:[4]f32,glow,color:[3]f32,stops:f64,start,glow_start:f32}
     cases:=[]Case{
-        {volumetric=true,inscattering={0.171,0,1,1},glow={0.171,0,1},color={1,1,1},stops=0.5},
-        {glow={0.447,0.638,1},color={0,0,0},stops=math.LN2},
+        {volumetric=true,inscattering={0.171,0,1,1},glow={0.171,0,1},color={1,1,1},stops=0.5,glow_start=60},
+        {glow={0.447,0.638,1},color={0,0,0},stops=math.LN2,start=1500,glow_start=15},
     }
     directory,_:=os.temp_directory(context.temp_allocator)
     for test_case,n in cases {
@@ -55,6 +56,7 @@ the_height_fog_of_an_unreal_level_fills_its_box_with_its_density_and_glow :: pro
         fixture.float_property(&props,&l.w,"FogDensity",0.028094999492168427)
         if test_case.inscattering!={} {fixture.linear_color_property(&props,&l.w,"FogInscatteringColor",test_case.inscattering)}
         if test_case.volumetric {fixture.bool_property(&props,&l.w,"bEnableVolumetricFog",true)}
+        if test_case.start>0 {fixture.float_property(&props,&l.w,"StartDistance",test_case.start)}
         second:=fixture.bytes_make()
         fixture.float_property(&second,&l.w,"FogDensity",0.2)
         fixture.float_property(&second,&l.w,"FogHeightFalloff",0.1)
@@ -86,6 +88,7 @@ the_height_fog_of_an_unreal_level_fills_its_box_with_its_density_and_glow :: pro
             place,bounded:=asset.scene_get(&scene,e.id,"Volume",evolume.Volume)
             testing.expectf(t,bounded && place.shape==.Box && abs(place.extents.x-1024)<1e-2 && abs(place.extents.y-1024)<1e-2 && abs(place.extents.z-1024)<1e-2,"case %d: the box of the level: %v",n,place)
             testing.expectf(t,volume.glow==test_case.glow && volume.color==test_case.color,"case %d: glow %v, color %v",n,volume.glow,volume.color)
+            testing.expectf(t,abs(volume.glow_start-test_case.glow_start)<1e-4,"case %d: its glow starts %v m from the eye, not %v",n,volume.glow_start,test_case.glow_start)
             if e.name=="Mist" {
                 found=true
                 transform,_:=asset.scene_get(&scene,e.id,"Transform",core.Transform)
