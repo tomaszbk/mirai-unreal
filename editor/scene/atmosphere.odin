@@ -78,8 +78,10 @@ unreal_air_read :: proc(d:^level.Document,ref:level.Ref) -> (air:Unreal_Air) {
 // through the air over 4π, which the fog shows around the sun in its
 // directional lobe. Zero without a SkyAtmosphere or a sun of it.
 // sun_luminance: of the light of the sun of the fog, which multiplies its
-// DirectionalInscatteringLuminance.
-Fog_Sky :: struct {ambient,sun:[3]f32,sun_luminance:f32}
+// DirectionalInscatteringLuminance. light and scattering: that sun as the
+// import writes it, its illuminance in each channel (lux) and the share of
+// it media scatter.
+Fog_Sky :: struct {ambient,sun,light:[3]f32,sun_luminance,scattering:f32}
 
 fog_sky :: proc(c:^Context) -> (f:Fog_Sky) {
     d:=c.d
@@ -109,7 +111,11 @@ fog_sky :: proc(c:^Context) -> (f:Fog_Sky) {
         if sun<0 || unreal_luminance(light)>unreal_luminance(sun_light) {sun,sun_light=k,light}
     }
     if sun>=0 {any,any_light=sun,sun_light}
-    if any>=0 {f.sun_luminance=f32(unreal_luminance(any_light))}
+    if any>=0 {
+        f.sun_luminance=f32(unreal_luminance(any_light))
+        _,m,_:=light_written(c,any,.Directional)
+        f.light,f.scattering=m.color*m.value,m.scattering
+    }
     if atmosphere<0 || sun<0 {return}
     world,error:=level.component_world(d,sun)
     if error.code!=.None {return}

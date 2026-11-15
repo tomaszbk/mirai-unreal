@@ -167,16 +167,22 @@ the first of a scene, and the others are a warning.
   with Unreal's transmittance and multiple-scattering tables and its directions over the sphere)
   times `HeightFogContribution` and `SkyAtmosphereAmbientContributionColorScale`
   (`unreal_scene.fog_sky`, worked out on import).
-- With `bEnableVolumetricFog` Unreal lights the fog with the lights of the scene, as Mirai does: the
-  albedo is that of its volumetric fog and the density half of `FogDensity` in powers of e, times
-  its extinction scale. Without it no light of the scene reaches the fog: the albedo is black and
-  the density is `FogDensity` in powers of two.
+- The density is `FogDensity` in powers of two, the height fog Unreal draws at every quality and
+  to the horizon; its volumetric fog, drawn only near the eye and at high scalability, is not
+  taken.
+- The lobe it adds around the sun without shadows (`DirectionalInscatteringLuminance` times the
+  luminance of the sun, plus the sun through the atmosphere over 4π, times the power
+  `DirectionalInscatteringExponent` of the cosine) is the sun Mirai's fog scatters, with shadows
+  (`lobe_scatter`): the `anisotropy` whose phase gathers its light toward the sun as the lobe
+  does (same peak over the whole), and the `color` with which thick fog seen toward the sun shows
+  the lobe's luminance under the `Sun` as imported (its illuminance, its `scattering` and the
+  phase at 0°), each channel held in [0, 1]. No sun, no lobe or a sun that scatters nothing: a
+  black `color`.
 - What Mirai does not draw is a warning: the distance where Unreal's volumetric fog ends and its
-  glow starts, the lobe it adds around the sun without shadows (`DirectionalInscatteringLuminance`
-  times the luminance of the sun, plus the sun through the atmosphere over 4π; Mirai's fog
-  scatters the sun by its color and anisotropy instead), its cubemap colors, the emissive of its
-  volumetric fog and what depends on the eye (`StartDistance`, `EndDistance`,
-  `FogCutoffDistance`, `FogMaxOpacity`).
+  glow starts, with its albedo and scattering distribution and what the import took instead;
+  that Mirai's scattered sun is shadowed, starts at the eye and also scatters the light around
+  by its `color`; its cubemap colors and what depends on the eye (`StartDistance`,
+  `EndDistance`, `FogCutoffDistance`, `FogMaxOpacity`).
 
 ## Lens (`unreal_lens`)
 
@@ -343,8 +349,9 @@ the area the Blueprint simulates; at 1, those of the mesh. `PressureDivergenceBu
   `a_spline_mesh_of_unreal_bends_its_mesh_where_unreal_does` (against Unreal's definition of the
   curve, for each forward axis) and `the_spline_meshes_of_an_unreal_level_bend_their_meshes`.
 - Tests of `plugins/unreal_fog/editor`:
-  `the_height_fog_of_an_unreal_level_fills_its_box_with_its_density_and_glow` and
-  `under_a_sky_atmosphere_the_height_fog_glows_with_the_light_of_its_sky`.
+  `the_height_fog_of_an_unreal_level_fills_its_box_with_its_density_and_glow`,
+  `under_a_sky_atmosphere_the_height_fog_glows_with_the_light_of_its_sky` and
+  `the_lobe_around_the_sun_is_the_sun_the_fog_scatters`.
 - Tests of `plugins/unreal_lens/editor`:
   `the_bloom_and_vignette_of_an_unreal_post_process_volume_are_a_lens_volume`; the importer's
   part and the warning without the bridge,

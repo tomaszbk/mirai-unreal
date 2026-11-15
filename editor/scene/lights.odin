@@ -181,19 +181,25 @@ fortnite_version :: proc(c:^Context,ref:level.Ref) -> i32 {
 }
 
 
-// The light of a component on an entity under its actor: it shines toward
-// the -Z of its entity, the +X of Unreal, and takes its shape from the scale
-// of the entity, which Unreal's does not have.
-light_add :: proc(c:^Context,actor,component:int,kind:Light_Kind) -> bool {
-    u:=unreal_light(c,component,kind)
-    m,approximated:=light_convert(u)
-    // What Unreal's post process multiplied of a light that does not move:
-    // all of a Static one's light, the bounce of a Stationary one.
+// A light of a component as the import writes it, with what Unreal's post
+// process multiplied of a light that does not move: all of a Static one's
+// light, the bounce of a Stationary one.
+light_written :: proc(c:^Context,component:int,kind:Light_Kind) -> (u:Unreal_Light,m:Converted_Light,approximated:bit_set[Light_Approximation]) {
+    u=unreal_light(c,component,kind)
+    m,approximated=light_convert(u)
     switch light_mobility(c,component) {
     case .Static:m.value*=post_indirect(c)
     case .Stationary:m.indirect*=post_indirect(c)
     case .Movable:
     }
+    return
+}
+
+// The light of a component on an entity under its actor: it shines toward
+// the -Z of its entity, the +X of Unreal, and takes its shape from the scale
+// of the entity, which Unreal's does not have.
+light_add :: proc(c:^Context,actor,component:int,kind:Light_Kind) -> bool {
+    u,m,approximated:=light_written(c,component,kind)
     scale:=[3]f32{1,1,1}
     if kind==.Rect {scale={max(m.size.x,1e-3),max(m.size.y,1e-3),1}}
     e,ok:=component_entity(c,actor,component,scale=scale)
