@@ -664,16 +664,18 @@ entity, the imported meshes and the time.
   first's stays apart, with a warning.
 - **Meshes.** `StaticMeshComponent` is `Mesh_Renderer` with the imported mesh and, per slot row, the
   material of `OverrideMaterials[index]` (the slot id is Unreal's index plus one); one equal to the
-  mesh's, or of a slot the mesh does not draw, does not count. A material the level stores inside an
-  actor (a construction script's `MaterialInstanceDynamic`) is translated from its `.umap`, named by
-  the objects that contain it and goes to the root of the import, together with the level's others
-  in a single import at the end, after the translators: it reads by UV the textures they added
-  (`texture_read_add`, the render target a Niagara component gives its system). Writes of one
-  package in an import number their materials after the previous ones (`material_index`): the
-  importer pairs by index a material it does not recognize by name. Instanced components
-  (`InstancedStaticMeshComponent`, the hierarchical one and the foliage one, and those PCG and
-  packed level actors bake) are never one entity per instance: the translator with `instanced` in
-  its scene takes them, the `foliage` one, as foliage batches
+  mesh's, or of a slot the mesh does not draw, does not count. It casts shadows unless `CastShadow`
+  or `bCastDynamicShadow` is false (`shadows`): every Mirai light casts what Unreal calls dynamic
+  shadows; the same holds for spline meshes and instanced batches. A material the level stores
+  inside an actor (a construction script's `MaterialInstanceDynamic`) is translated from its
+  `.umap`, named by the objects that contain it and goes to the root of the import, together with
+  the level's others in a single import at the end, after the translators: it reads by UV the
+  textures they added (`texture_read_add`, the render target a Niagara component gives its system).
+  Writes of one package in an import number their materials after the previous ones
+  (`material_index`): the importer pairs by index a material it does not recognize by name.
+  Instanced components (`InstancedStaticMeshComponent`, the hierarchical one and the foliage one,
+  and those PCG and packed level actors bake) are never one entity per instance: the translator with
+  `instanced` in its scene takes them, the `foliage` one, as foliage batches
   ([foliage](translators.md#foliage-unreal_foliage)); without it, their actor is a warning saying
   how to import it. Those hidden in game are left out, with a warning. Their instance matrices come
   from the `PerInstanceSMData` array of their native payload, which follows what
@@ -723,34 +725,36 @@ entity, the imported meshes and the time.
   player. What its `PostProcessSettings` override of exposure, over the unbound post process
   volumes, is its `Exposure`.
 - **Sky and exposure.** The level gives a `Sky` entity. Without a `SkyLight` it does not light, as
-  in Unreal. With `SLS_SpecifiedCubemap`, the `Sky`'s image is its `Cubemap` turned on import into
-  a long-lat image (`sky_of_cube`, a `.tex` next to the materials, import of the cube's package)
-  and its `luminance` its `Intensity` times its color, as Unreal lights from the cube; under the
-  horizon the image goes toward `LowerHemisphereColor` by its alpha when `bLowerHemisphereIsBlack`
-  (a lower half other than black is a `.tex` of its own), and its entity rotates by
-  `SourceCubemapAngle` around up, as Unreal rotates the cube. A sky light that captures the scene
-  lights by its `Intensity` and color with the sky-to-sun ratio of Mirai's `Sky`, taken from the
-  level's brightest sun, and a warning: what Unreal captures from the scene has no equivalent.
-  Behind the scene the sky shows if the level draws it (`SkyAtmosphere`, `AtmosphericFog` or the
-  engine's sky sphere), and otherwise black; with an atmosphere, the `Sky` is the air the sun lights
-  (`atmosphere`), unless the `SkyLight` names a cube: Mirai's `Sky` draws the image or the air, and
-  the cube wins, with a warning. `VolumetricCloud` is a warning: Mirai draws no clouds.
-  The post process is Unreal's: the defaults of the Unreal project of the level (Unreal's under
-  its `DefaultEngine.ini`: its `r.DefaultFeature` bloom and auto exposure, method and bias, and
-  the extended range, off unless it is set) or, for content copied without its project, those of
-  a new project of Unreal 5, which extends the range; a warning says which. They are a
-  `View_Volume` of the whole world, `Post process`, under every volume, also in a level without
-  volumes; each enabled `PostProcessVolume` is a `View_Volume` by its priority, in the box of its
-  `CubeBuilder` grown by its blend radius or everywhere if unbound, holding what it overrides by its
-  blend weight over what the unbound volumes below it and the defaults give. Its exposure: method
-  (manual or automatic), compensation, adaptation speed, the physical camera (f, shutter and ISO)
-  and the minimum and maximum brightness, which Unreal takes to white and Mirai to mid gray: the
-  EV100 that makes that luminance white (Unreal's EV100 over `LuminanceMax` if the project extends
-  the range, luminance as UE4 if not). Its saturation and contrast, with those of shadows, midtones
-  and highlights and their limits, are a layer of the engine's `ColorGrade` (a `Grade` material of
-  the import, one per grade); the luminance it weighs them by is that of Mirai's working space, not
-  Unreal's AP1. A camera's exposure is what it overrides over the unbound volumes. Bloom and
-  vignette are a `Lens_Volume` of the `unreal_lens` bridge on the same entities
+  in Unreal. With `SLS_SpecifiedCubemap`, the `Sky`'s image is its `Cubemap` turned on import into a
+  long-lat image (`sky_of_cube`, a `.tex` next to the materials, import of the cube's package) and
+  its `luminance` its `Intensity` times its color, as Unreal lights from the cube; under the horizon
+  the image goes toward `LowerHemisphereColor` by its alpha when `bLowerHemisphereIsBlack` (a lower
+  half other than black is a `.tex` of its own), and its entity rotates by `SourceCubemapAngle`
+  around up, as Unreal rotates the cube. A sky light that captures the scene lights by its
+  `Intensity` and color with the sky-to-sun ratio of Mirai's `Sky`, taken from the level's brightest
+  sun, and a warning: what Unreal captures from the scene has no equivalent. Behind the scene the
+  sky shows if the level draws it (`SkyAtmosphere`, `AtmosphericFog`, the engine's sky sphere or a
+  dome), and otherwise black; a dome is a static mesh that casts no shadow, whose materials are all
+  unlit and whose bounds hold what every other actor shows: it is the level's sky, not drawn and
+  warned like the engine's sphere, since Mirai's `Sky` stands for it; with an atmosphere, the `Sky`
+  is the air the sun lights (`atmosphere`), unless the `SkyLight` names a cube: Mirai's `Sky` draws
+  the image or the air, and the cube wins, with a warning. `VolumetricCloud` is a warning: Mirai
+  draws no clouds. The post process is Unreal's: the defaults of the Unreal project of the level
+  (Unreal's under its `DefaultEngine.ini`: its `r.DefaultFeature` bloom and auto exposure, method
+  and bias, and the extended range, off unless it is set) or, for content copied without its
+  project, those of a new project of Unreal 5, which extends the range; a warning says which. They
+  are a `View_Volume` of the whole world, `Post process`, under every volume, also in a level
+  without volumes; each enabled `PostProcessVolume` is a `View_Volume` by its priority, in the box
+  of its `CubeBuilder` grown by its blend radius or everywhere if unbound, holding what it overrides
+  by its blend weight over what the unbound volumes below it and the defaults give. Its exposure:
+  method (manual or automatic), compensation, adaptation speed, the physical camera (f, shutter and
+  ISO) and the minimum and maximum brightness, which Unreal takes to white and Mirai to mid gray:
+  the EV100 that makes that luminance white (Unreal's EV100 over `LuminanceMax` if the project
+  extends the range, luminance as UE4 if not). Its saturation and contrast, with those of shadows,
+  midtones and highlights and their limits, are a layer of the engine's `ColorGrade` (a `Grade`
+  material of the import, one per grade); the luminance it weighs them by is that of Mirai's working
+  space, not Unreal's AP1. A camera's exposure is what it overrides over the unbound volumes. Bloom
+  and vignette are a `Lens_Volume` of the `unreal_lens` bridge on the same entities
   ([lens](translators.md#lens-unreal_lens)); without it what a volume overrides of them is a warning
   that names the `lens` plugin. The rest of what it overrides is a warning; `ReflectionCapture`s,
   which GI replaces, what only Unreal's editor uses, World Partition's HLOD (Mirai's is per cell),

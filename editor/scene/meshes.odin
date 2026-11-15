@@ -230,6 +230,7 @@ custom_reads :: proc(c:^Context,path:string) -> bool {
 mesh_renderer :: proc(c:^Context,a,k:int,skeletal:bool) -> (shown:render.Mesh_Renderer,ok:bool) {
     d:=c.d
     ref:=d.components[k].ref
+    shown.shadows=casts_shadows(d,ref)
     path:string
     if skeletal {
         // SkeletalMesh, deprecated, wins over SkinnedAsset, as in Unreal.
@@ -279,6 +280,29 @@ mesh_renderer :: proc(c:^Context,a,k:int,skeletal:bool) -> (shown:render.Mesh_Re
     }
     if shown.shape!=.None && !overridden[0] {append(&c.held,Held_Slot{0,BASIC_SHAPE_MATERIAL})}
     return shown,true
+}
+
+// Whether a mesh component casts shadows: not when CastShadow or
+// bCastDynamicShadow is false, since every light of Mirai casts what Unreal
+// calls dynamic shadows.
+casts_shadows :: proc(d:^level.Document,ref:level.Ref) -> bool {
+    casts,_:=level.bool_of(d,ref,"CastShadow",true)
+    dynamic_casts,_:=level.bool_of(d,ref,"bCastDynamicShadow",true)
+    return casts && dynamic_casts
+}
+
+// Whether the material at path translates unlit; false for one that cannot
+// be translated.
+@(private)
+material_unlit :: proc(c:^Context,path:string) -> bool {
+    if path=="" || engine_missing(c,path) {return false}
+    library_lock(c)
+    defer library_unlock(c)
+    object:=material.object_find(c.lib,path) or_return
+    t,error:=material.translate(c.lib,object,{reads=c.texture_reads[:],writers=c.writers},context.temp_allocator)
+    if error.code!=.None {return false}
+    defer material.translated_destroy(&t)
+    return t.info.unlit
 }
 
 // What a SkeletalMeshComponent plays: in AnimationSingleNode, the clip of

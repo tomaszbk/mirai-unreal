@@ -59,10 +59,12 @@ red_package :: proc() -> []u8 {
 }
 
 // A map with a rock (a StaticMeshActor whose root shows the quad with M_Red
-// over its slot and whose second mesh is hidden in game), a spot light of
+// over its slot and whose second mesh is hidden in game and casts no shadow),
+// a spot light of
 // 1000 lumens, a Movable and a Static point light, a cine camera, an
 // ExponentialHeightFog (a plugin's), a sound and two lamps of a Blueprint, a
-// base with a shade over it, the second's shade hidden.
+// base with a shade over it that casts no dynamic shadow, the second's shade
+// hidden.
 @(private="file")
 map_package :: proc() -> []u8 {
     l:=fixture.level_begin("/Game/Maps/Map")
@@ -84,6 +86,7 @@ map_package :: proc() -> []u8 {
     fixture.object_property(&moss_props,w,"AttachParent",root)
     fixture.vector_property(&moss_props,w,"RelativeLocation",{10,0,0})
     fixture.bool_property(&moss_props,w,"bHiddenInGame",true)
+    fixture.bool_property(&moss_props,w,"CastShadow",false)
     fixture.component_add(&l,rock,mesh_class,"Moss",moss_props)
     fixture.actor_set(&l,rock,root)
 
@@ -170,6 +173,7 @@ map_package :: proc() -> []u8 {
         fixture.object_property(&shade_props,w,"StaticMesh",mesh)
         fixture.object_property(&shade_props,w,"AttachParent",lamp_base)
         fixture.vector_property(&shade_props,w,"RelativeLocation",{0,0,150})
+        fixture.bool_property(&shade_props,w,"bCastDynamicShadow",false)
         if i==1 {fixture.bool_property(&shade_props,w,"bHiddenInGame",true)}
         fixture.component_add(&l,lamp,mesh_class,"Shade",shade_props)
         fixture.actor_set(&l,lamp,lamp_base)
@@ -262,6 +266,7 @@ a_map_becomes_a_scene_of_entities_meshes_lights_and_cameras_in_the_units_of_mira
     testing.expect(t,close3(local.position,{}) && local.scale==[3]f32{1,1,1},"the root's mesh sits on its actor")
     renderer,has_renderer:=asset.scene_get(&scene,shown,"Mesh_Renderer",render.Mesh_Renderer)
     testing.expect(t,has_renderer && renderer.mesh!={})
+    testing.expect(t,renderer.shadows,"a mesh without CastShadow casts shadows")
     red_id:base.Asset_Id
     for a in report.imports.assets {if a.kind==asset.KIND_MATERIAL && a.name=="Red/Red" {red_id=a.id}}
     testing.expect(t,red_id!={} && renderer.materials[0]==red_id,"OverrideMaterials[0] is the material of slot 1, the first")
@@ -272,6 +277,8 @@ a_map_becomes_a_scene_of_entities_meshes_lights_and_cameras_in_the_units_of_mira
 
     _,moss_hidden:=asset.scene_get(&scene,moss,"Hidden",render.Hidden)
     testing.expect(t,moss_hidden,"bHiddenInGame hides")
+    moss_renderer,_:=asset.scene_get(&scene,moss,"Mesh_Renderer",render.Mesh_Renderer)
+    testing.expect(t,!moss_renderer.shadows,"a false CastShadow casts no shadows")
 
     // The spot: 1000 lm over its cone of 30°, pointing down as SpotLight's
     // constructor turns it. Its light is all it shows: the entity of its actor.
@@ -358,6 +365,9 @@ a_map_becomes_a_scene_of_entities_meshes_lights_and_cameras_in_the_units_of_mira
             testing.expect_value(t,asset.scene_entity(&prefab,row).name,"Lamp")
             placed,_:=asset.scene_get(&prefab,root,"Transform",core.Transform)
             testing.expect(t,close3(placed.position,{}),"the root of the prefab at the origin")
+            shade,_,_:=entity_named(&prefab,"Shade")
+            shade_renderer,has_shade:=asset.scene_get(&prefab,shade,"Mesh_Renderer",render.Mesh_Renderer)
+            testing.expect(t,has_shade && !shade_renderer.shadows,"a false bCastDynamicShadow casts no shadows")
         }
     }
 
@@ -387,6 +397,81 @@ a_map_becomes_a_scene_of_entities_meshes_lights_and_cameras_in_the_units_of_mira
     again_renderer,_:=asset.scene_get(&second,again_shown,"Mesh_Renderer",render.Mesh_Renderer)
     testing.expect_value(t,again_renderer.mesh,renderer.mesh)
     testing.expect_value(t,again_renderer.materials[0],renderer.materials[0])
+}
+
+// A box of 2 m whose one slot shows the material at path.
+@(private="file")
+box_package :: proc(name,material:string) -> []u8 {
+    f:fixture.Mesh_Fixture
+    f.layout=.Raw_Mesh
+    f.name=name
+    f.positions=slice.clone([][3]f32{{-100,-100,-100},{100,-100,100},{100,100,-100},{-100,100,100}},context.temp_allocator)
+    f.corners=slice.clone([]u32{0,1,2, 0,2,3},context.temp_allocator)
+    up:=[3]f32{0,0,1}
+    f.normals=slice.clone([][3]f32{up,up,up,up,up,up},context.temp_allocator)
+    f.uvs=slice.clone([][2]f32{{0,1},{1,0},{1,1},{0,1},{1,1},{0,0}},context.temp_allocator)
+    f.groups=slice.clone([]u32{0,0},context.temp_allocator)
+    f.smoothing=slice.clone([]u32{1,1},context.temp_allocator)
+    f.slots=slice.clone([]fixture.Mesh_Slot{{name="Main",imported_name="Main",material=material}},context.temp_allocator)
+    f.bounds_min,f.bounds_max,f.has_bounds={-100,-100,-100},{100,100,100},true
+    return fixture.static_mesh_package(f)
+}
+
+// M_Sky: an unlit blue.
+@(private="file")
+sky_package :: proc() -> []u8 {
+    p:=fx.package_make()
+    sky:=fx.export(&p,fx.class(&p,"/Script/Engine","Material"),0,"M_Sky",nil)
+    constant:=fx.writer(&p)
+    fx.color_put(&constant,"Constant",{0.2,0.4,1,1})
+    value:=fx.export(&p,fx.class(&p,"/Script/Engine","MaterialExpressionConstant3Vector"),sky,"Blue",fx.finish(&constant))
+    w:=fx.writer(&p)
+    fx.enum_put(&w,"ShadingModel","EMaterialShadingModel","MSM_Unlit")
+    fx.input_put(&w,"EmissiveColor","ColorMaterialInput",{expression=value,mask={true,true,true,false}})
+    p.exports[0].data=fx.finish(&w)
+    return fx.package_bytes(&p,"/Game/Materials/M_Sky")
+}
+
+// A dome of the level casts no shadow, is unlit and holds the rest of the
+// level: it is the sky, which the Sky of the scene is, and is not drawn. A
+// mesh that casts no shadow and holds nothing is drawn, without shadows.
+@(test)
+a_dome_that_encloses_the_level_is_its_sky_and_is_not_drawn :: proc(t:^testing.T) {
+    f:=folders_make("dome")
+    defer folders_remove(f)
+    _=os.write_entire_file(fmt.tprintf("%s/Content/Meshes/SM_Dome.uasset",f.unreal),box_package("SM_Dome","/Game/Materials/M_Sky"))
+    _=os.write_entire_file(fmt.tprintf("%s/Content/Meshes/SM_Box.uasset",f.unreal),box_package("SM_Box","/Game/Materials/M_Red"))
+    _=os.write_entire_file(fmt.tprintf("%s/Content/Materials/M_Sky.uasset",f.unreal),sky_package())
+    l:=fixture.level_begin("/Game/Maps/Map")
+    w:=&l.w
+    mesh_class:=fixture.engine_class(w,"StaticMeshComponent")
+    for label,i in ([3]string{"Dome","Crate","Glow"}) {
+        mesh:=fixture.package_object(w,i==1?"/Game/Meshes/SM_Box":"/Game/Meshes/SM_Dome","/Script/Engine","StaticMesh",i==1?"SM_Box":"SM_Dome")
+        actor:=fixture.actor_add(&l,fixture.engine_class(w,"StaticMeshActor"),fmt.tprintf("StaticMeshActor_%d",i),label)
+        props:=fixture.bytes_make()
+        fixture.object_property(&props,w,"StaticMesh",mesh)
+        fixture.vector_property(&props,w,"RelativeLocation",{f64(500*i),0,0})
+        if i==0 {fixture.vector_property(&props,w,"RelativeScale3D",{100,100,100})}
+        fixture.bool_property(&props,w,"CastShadow",false)
+        fixture.actor_set(&l,actor,fixture.component_add(&l,actor,mesh_class,"StaticMeshComponent0",props))
+    }
+    _=os.write_entire_file(f.map_path,fixture.level_bytes(&l))
+
+    report,error:=level_import(f.map_path,{root=f.mirai},engine_content="-")
+    if !testing.expectf(t,error.code==.None,"%v: %s",error.code,error.message) {return}
+    defer level_report_destroy(&report)
+    types:asset.Types;asset.types_init(&types);defer asset.types_destroy(&types)
+    scene:asset.Scene
+    if !testing.expect_value(t,asset.scene_load(&scene,&types,report.scene_path),asset.Error.None) {return}
+    defer asset.scene_destroy(&scene)
+    for row in 0..<asset.scene_entity_count(&scene) {
+        e:=asset.scene_entity(&scene,row)
+        renderer,shown:=asset.scene_get(&scene,e.id,"Mesh_Renderer",render.Mesh_Renderer)
+        testing.expectf(t,e.name!="Dome" || !shown,"the dome is not drawn")
+        if e.name=="Crate" || e.name=="Glow" {testing.expectf(t,shown && !renderer.shadows,"%s is drawn without shadows",e.name)}
+    }
+    testing.expect(t,has_warning(&report,"Dome","encloses the level","not drawn"),"the dome is a warning")
+    testing.expect(t,!has_warning(&report,"Glow","encloses"),"a lit or enclosed mesh is drawn")
 }
 
 // The same map in a project that lights with Lumen, as L_showcase_map's of

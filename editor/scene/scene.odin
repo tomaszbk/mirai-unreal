@@ -220,8 +220,10 @@ Context :: struct {
     sky:render.Sky,           // of the entity of the sky, when the level has a sky light
     sky_lit:bool,             // by a sky light of the level
     sky_turn:f32,             // of the image of the sky about up, radians
-    sky_drawn:bool,           // the level draws a sky behind the scene: an atmosphere or the engine's sky sphere
+    sky_drawn:bool,           // the level draws a sky behind the scene: an atmosphere, the engine's sky sphere or a dome
     sky_atmosphere:bool,      // by an atmosphere (SkyAtmosphere, or AtmosphericFog of UE4)
+    actor_boxes:[]mm.Aabb,    // what each actor shows, once a sky dome is looked for (sky_dome)
+    boxes:map[string]level.Mesh_Box, // the box of each mesh, by object path
     notes:[Note]int,
     left:map[string]int, // components that were not translated, by class
     reads:Reads,                // the packages of meshes read ahead (reads.odin)
@@ -644,16 +646,24 @@ actor_translate :: proc(c:^Context,a:int,native:level.Class) -> (translated,sile
     }
     components:=d.components[actor.first_component:][:actor.component_count]
     editor_only:=make([]bool,len(components),context.temp_allocator)
-    shown:=0
+    domes:=make([]bool,len(components),context.temp_allocator)
+    shown,dome_count:=0,0
     for component,i in components {
         editor_only[i],_=level.bool_of(d,component.ref,"bIsEditorOnly",false)
-        if !editor_only[i] && (slice.contains(ENTITY_COMPONENTS,component.class.name) || component_claimed(c,component.class.name)) {shown+=1}
+        if editor_only[i] {continue}
+        if domes[i]=sky_dome(c,a,actor.first_component+i);domes[i] {
+            importer.output_warn(&c.outputs,"%s: %s encloses the level as its sky and is not drawn: the Sky of the scene is Mirai's sky",actor.label,component.name)
+            c.sky_drawn=true
+            dome_count+=1
+            continue
+        }
+        if slice.contains(ENTITY_COMPONENTS,component.class.name) || component_claimed(c,component.class.name) {shown+=1}
     }
     c.actor_flat[a]=shown==1
     count:=0
     left:=make([dynamic]string,context.temp_allocator)
     for component,i in components {
-        if editor_only[i] {continue}
+        if editor_only[i] || domes[i] {continue}
         k:=actor.first_component+i
         ok:=false
         switch component.class.name {
@@ -687,7 +697,7 @@ actor_translate :: proc(c:^Context,a:int,native:level.Class) -> (translated,sile
         if c.failed {return}
         if ok {count+=1}
     }
-    if count==0 {return false,false}
+    if count==0 {return false,dome_count>0 && len(left)==0}
     for class in left {c.left[class]+=1}
     if hidden,_:=level.bool_of(d,actor.ref,"bHidden",false);hidden {
         if e,ok:=actor_entity(c,a);ok {hidden_set(c,e)}

@@ -428,7 +428,7 @@ instanced_batches :: proc(c:^unreal_scene.Context) -> []Instanced_Batch {
         t:=Instanced_Type{name=unreal.asset_name(object),mesh=shown.mesh,materials=shown.materials}
         end,_:=level.real_of(d,ref,"InstanceEndCullDistance",0)
         if end>0 {t.cull_distance=f32(end)/100}
-        t.casts_shadow,_=level.bool_of(d,ref,"CastShadow",true)
+        t.casts_shadow=shown.shadows
         t.ray_visible,_=level.bool_of(d,ref,"bVisibleInRayTracing",true)
         if profile,enabled,_:=level.component_collision(d,ref);level.profile_collides(profile,enabled) {
             if box:=level.mesh_box(d,path,&boxes);box.ok {t.size=mm.aabb_size(box.box)}

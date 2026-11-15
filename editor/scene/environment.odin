@@ -118,6 +118,43 @@ sky_light_add :: proc(c:^Context,a,k:int) -> bool {
     return true
 }
 
+// Whether the component k of actor a is the dome of the level: a static
+// mesh that casts no shadow, whose materials are all unlit and whose bounds
+// hold everything the other actors show. It is the sky, which the Sky of the
+// scene is in Mirai: it is not drawn.
+@(private)
+sky_dome :: proc(c:^Context,a,k:int) -> bool {
+    d:=c.d
+    ref:=d.components[k].ref
+    if d.components[k].class.name!="StaticMeshComponent" || casts_shadows(d,ref) {return false}
+    if c.boxes.allocator.procedure==nil {c.boxes.allocator=c.meshes.allocator}
+    box:=level.component_bounds(d,k,&c.boxes) or_return
+    if c.actor_boxes==nil {
+        c.actor_boxes=make([]mm.Aabb,len(d.actors),c.meshes.allocator)
+        for actor,i in d.actors {
+            c.actor_boxes[i]=mm.AABB_EMPTY
+            for other in actor.first_component..<actor.first_component+actor.component_count {
+                if shown,ok:=level.component_bounds(d,other,&c.boxes);ok {c.actor_boxes[i]=mm.aabb_merge(c.actor_boxes[i],shown)}
+            }
+        }
+    }
+    rest:=mm.AABB_EMPTY
+    for other,i in c.actor_boxes {
+        if i!=a && !mm.aabb_is_empty(other) {rest=mm.aabb_merge(rest,other)}
+    }
+    if mm.aabb_is_empty(rest) || !mm.aabb_contains(box,rest) {return false}
+    overrides:=level.paths_of(d,ref,"OverrideMaterials")
+    own:=mesh_slot_paths(c,level.path_of(d,ref,"StaticMesh"),false)
+    shown:=0
+    for i in 0..<max(len(own),len(overrides)) {
+        path:=i<len(overrides) && overrides[i]!="" ? overrides[i] : (i<len(own) ? own[i] : "")
+        if path=="" {continue}
+        if !material_unlit(c,path) {return false}
+        shown+=1
+    }
+    return shown>0
+}
+
 // The .tex of the sky of the Unreal cube texture at path, its lower half
 // toward below, with the images of the materials; zero, with a warning,
 // when it cannot be written.
