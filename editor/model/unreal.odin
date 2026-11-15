@@ -523,7 +523,7 @@ mounts_find :: proc(path:string,options:Options,p:^upackage.Package=nil,allocato
         parent:=filepath.dir(folder)
         if strings.equal_fold(filepath.base(folder),"Content") {
             if content=="" {content=folder}
-            if project_file(parent) {content=folder;break}
+            if upackage.uproject_in(parent) {content=folder;break}
         }
         if parent==folder || parent=="" || parent=="." {break}
     }
@@ -549,16 +549,6 @@ mounts_find :: proc(path:string,options:Options,p:^upackage.Package=nil,allocato
         if plugins {append(&mounts,..upackage.engine_plugin_mounts(engine,allocator))}
     }
     return mounts[:]
-}
-
-@(private="file")
-project_file :: proc(folder:string) -> bool {
-    entries,error:=os.read_all_directory_by_path(folder,context.temp_allocator)
-    if error!=nil {return false}
-    for entry in entries {
-        if entry.type!=.Directory && strings.equal_fold(filepath.ext(entry.name),".uproject") {return true}
-    }
-    return false
 }
 
 // The grid of the engine standing for the material at path, with the images it needs.

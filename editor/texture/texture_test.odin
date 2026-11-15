@@ -209,7 +209,7 @@ cubes_and_arrays_keep_their_slices_with_the_axes_of_mirai :: proc(t:^testing.T) 
     }
     // Its sky: the zenith (Unreal's +Z) on the top row, the nadir on the bottom one, and across
     // the middle rows -X, -Z, +X and +Z of Mirai (Unreal's -Y, +X, +Y and -X).
-    sky,sky_error:=sky_of_cube(input.source,true,context.temp_allocator)
+    sky,sky_error:=sky_of_cube(input.source,true,{},context.temp_allocator)
     if !testing.expect(t,sky_error.code==.None && sky.width==8 && sky.height==4 && sky.layers==1 && !sky.cube) {return}
     red :: proc(sky:textures.Source,column,row:int) -> int {return int(sky.texels[(row*sky.width+column)*4])}
     for column in 0..<8 {
@@ -218,7 +218,13 @@ cubes_and_arrays_keep_their_slices_with_the_axes_of_mirai :: proc(t:^testing.T) 
     for face,column in ([4]int{3,0,2,1}) {
         for row in 1..=2 {testing.expectf(t,abs(red(sky,2*column,row)-face*40)<=1,"column %d row %d is face %d of Unreal: %d",2*column,row,face,red(sky,2*column,row))}
     }
-    _,cube_error:=sky_of_cube({width=2,height=2,layers=1,format=.RGBA8,texels=make([]u8,16,context.temp_allocator)},true)
+    // Unreal's sky light makes the lower half of its cube black: the rows under the horizon.
+    lower,_:=sky_of_cube(input.source,true,{0,0,0,1},context.temp_allocator)
+    for column in 0..<8 {
+        testing.expectf(t,red(lower,column,0)==red(sky,column,0) && red(lower,column,1)==red(sky,column,1),"column %d keeps the upper half",column)
+        testing.expectf(t,red(lower,column,2)==0 && red(lower,column,3)==0,"column %d is black below the horizon",column)
+    }
+    _,cube_error:=sky_of_cube({width=2,height=2,layers=1,format=.RGBA8,texels=make([]u8,16,context.temp_allocator)},true,{})
     testing.expect(t,cube_error.code!=.None,"an image that is not a cube has no sky")
     build_input_destroy(&input)
     decoded_destroy(&decoded)

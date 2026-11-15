@@ -159,3 +159,65 @@ a_level_without_post_process_volumes_has_unreals_default_look :: proc(t:^testing
     }
     testing.expect(t,found,"the defaults are a View_Volume of the whole world")
 }
+
+// The post process volume of the crystal cave of Fab, a UE4 level copied
+// without its project, fixes the exposure at a brightness of one. In an
+// Unreal project, Unreal reads it as its project says (as a luminance when
+// DefaultEngine.ini does not extend the range); a level copied without its
+// project is read as a new project of Unreal 5 reads it, as an EV100 of one:
+// white at twice the luminance. A warning says which defaults were taken.
+@(test)
+the_post_process_of_a_level_without_its_project_takes_the_defaults_of_a_new_unreal_project :: proc(t:^testing.T) {
+    Case :: struct {project:bool,white:f32,warned:string}
+    cases:=[]Case{
+        {project=false,white=2,warned="not in an Unreal project"},
+        {project=true,white=1,warned="defaults of the Unreal project of the level"},
+    }
+    directory,_:=os.temp_directory(context.temp_allocator)
+    for test_case,n in cases {
+        top:=fmt.tprintf("%s/mirai-unreal-post-project-%d-%d",directory,os.get_pid(),n)
+        os.remove_all(top)
+        defer os.remove_all(top)
+        root:=fmt.tprintf("%s/project",top)
+        os.make_directory_all(root)
+        m:=project.manifest_default("Levels")
+        project.manifest_write(project.path(root,project.PROJECT_FILE,allocator=context.temp_allocator),&m)
+        os.make_directory_all(fmt.tprintf("%s/assets/Unreal/Content/Maps",root))
+        if test_case.project {_=os.write_entire_file(fmt.tprintf("%s/assets/Unreal/Cave.uproject",root),"{}")}
+        l:=fixture.level_begin("/Game/Maps/Cave")
+        volume:=fixture.actor_add(&l,fixture.engine_class(&l.w,"PostProcessVolume"),"PostProcessVolume_0","PostProcessVolume")
+        settings:=fixture.bytes_make()
+        for name in ([?]string{"AutoExposureMinBrightness","AutoExposureMaxBrightness","AutoExposureBias"}) {fixture.bool_property(&settings,&l.w,fmt.tprintf("bOverride_%s",name),true)}
+        fixture.float_property(&settings,&l.w,"AutoExposureBias",0.3)
+        fixture.float_property(&settings,&l.w,"AutoExposureMinBrightness",1)
+        fixture.float_property(&settings,&l.w,"AutoExposureMaxBrightness",1)
+        props:=fixture.bytes_make()
+        fixture.bool_property(&props,&l.w,"bUnbound",true)
+        fixture.struct_property(&props,&l.w,"Settings","PostProcessSettings",&settings)
+        fixture.actor_set(&l,volume,fixture.component_add(&l,volume,fixture.engine_class(&l.w,"BrushComponent"),"BrushComponent0",fixture.bytes_make()),props)
+        level:=fmt.tprintf("%s/assets/Unreal/Content/Maps/Cave.umap",root)
+        _=os.write_entire_file(level,fixture.level_bytes(&l))
+        report,error:=level_import(level,{root=root},{},"-")
+        if !testing.expectf(t,error.code==.None,"%s",error.message) {return}
+        defer level_report_destroy(&report)
+        warned:=false
+        for w in report.imports.warnings {warned||=strings.contains(w,test_case.warned)}
+        testing.expectf(t,warned,"case %d: a warning says which defaults were taken",n)
+        types:asset.Types;asset.types_init(&types);defer asset.types_destroy(&types)
+        scene:asset.Scene
+        if !testing.expect_value(t,asset.scene_load(&scene,&types,report.scene_path),asset.Error.None) {return}
+        defer asset.scene_destroy(&scene)
+        found:=false
+        for row in 0..<asset.scene_entity_count(&scene) {
+            e:=asset.scene_entity(&scene,row)
+            if e.name!="PostProcessVolume" {continue}
+            look,ok:=asset.scene_get(&scene,e.id,"View_Volume",render.View_Volume)
+            if !testing.expectf(t,ok,"case %d: the volume is a View_Volume",n) {continue}
+            found=true
+            white:=render.ev100_white(test_case.white)
+            testing.expectf(t,abs(look.exposure.min_ev100-white)<1e-4 && abs(look.exposure.max_ev100-white)<1e-4,"case %d: EV100 %v and %v, not %v",n,look.exposure.min_ev100,look.exposure.max_ev100,white)
+            testing.expect_value(t,look.exposure.compensation,f32(0.3))
+        }
+        testing.expectf(t,found,"case %d: the volume is in the scene",n)
+    }
+}

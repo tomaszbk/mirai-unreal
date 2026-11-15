@@ -352,7 +352,7 @@ document_import :: proc(d:^level.Document,source:string,size,hash:u64,options:im
         c.options.registry=&registry
     }
     defer if options.registry==nil {asset.registry_destroy(&registry)}
-    c.post=post_defaults_read(mounts,level.library_package(d.library,int(d.levels[0].ref.pkg)))
+    c.post=post_defaults_read(mounts)
 
     outputs_zone:=importer.zone_begin(options,"level.outputs")
     if begin_error:=importer.outputs_begin(&c.outputs,source,asset.safe_name(stem),size,hash,importer.import_version(LEVEL_VERSION),c.options,allocator);begin_error.code!=.None {

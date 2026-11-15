@@ -1,6 +1,7 @@
 package unreal_scene
 
 import "core:math"
+import "core:path/filepath"
 import "core:slice"
 import "core:strconv"
 import "core:strings"
@@ -21,8 +22,8 @@ import "mirai:std/base"
 // Its exposure is the Exposure of the view and its saturation and contrast,
 // a layer of the engine's ColorGrade. What has no equivalent is a warning.
 
-// What the project of the level makes the defaults of its post process
-// (DefaultEngine.ini), which Unreal applies with or without a volume.
+// What Unreal makes the defaults of the post process of the level, which it
+// applies with or without a volume.
 Post_Defaults :: struct {
     extended:bool,      // the auto exposure reads EV100 (ExtendDefaultLuminanceRange)
     luminance_max:f64,  // the luminance of its EV100 0 (from LensAttenuation)
@@ -30,17 +31,25 @@ Post_Defaults :: struct {
     auto_exposure:bool, // r.DefaultFeature.AutoExposure
     basic:bool,         // r.DefaultFeature.AutoExposure.Method is 1: AEM_Basic
     bias:f64,           // r.DefaultFeature.AutoExposure.Bias
+    project:string,     // the folder of the Unreal project they are of; "": a new project's
 }
 
 // The default of r.EyeAdaptation.LensAttenuation, at which Unreal's LuminanceMax is 1.
 @(private)
 UNREAL_LENS_ATTENUATION :: 0.78
 
-// The defaults of the post process of the project of the level: UE5
-// projects turn on the extended range of the auto exposure, UE4 ones leave
-// it off, unless DefaultEngine.ini says otherwise.
-post_defaults_read :: proc(mounts:[]unreal.Source_Mount,p:^unreal.Package) -> (defaults:Post_Defaults) {
-    defaults={extended=p.summary.version_ue5>0,bloom=true,auto_exposure=true,bias=1}
+// The defaults of the post process of the level: in its Unreal project,
+// Unreal's own under what its DefaultEngine.ini sets, where the extended
+// range of the auto exposure is off unless it turns it on; for content
+// copied without its project, those of a new project of Unreal 5, which
+// turns it on.
+post_defaults_read :: proc(mounts:[]unreal.Source_Mount) -> (defaults:Post_Defaults) {
+    defaults={bloom=true,auto_exposure=true,bias=1,luminance_max=1}
+    defaults.project=unreal.project_folder(mounts)
+    if defaults.project=="" {
+        defaults.extended=true
+        return
+    }
     attenuation:=f64(UNREAL_LENS_ATTENUATION)
     if text:=unreal.project_config_read(mounts,"DefaultEngine.ini");text!="" {
         for line in strings.split_lines(text,context.temp_allocator) {
@@ -420,6 +429,11 @@ post_process_base :: proc(c:^Context) -> (p:Post_Process,made:bool) {
     defer section_use(c,previous)
     e,entity_made:=entity_make(c,0,"Post process","Post process",{rotation=1,scale=1})
     if !entity_made {return}
+    if c.post.project!="" {
+        warn(c,"the post process starts from the defaults of the Unreal project of the level, %s, with what its Config/DefaultEngine.ini sets",filepath.base(c.post.project))
+    } else {
+        warn(c,"the level is not in an Unreal project (no .uproject next to its Content folder): the post process starts from the defaults of a new project of Unreal 5, whose auto exposure reads EV100 (extended luminance range)")
+    }
     look.exposure,_=exposure_from(c,&p.settings,0)
     look.layers[0],_=grade_from(c,&p.settings)
     if !component_set(c,e,"View_Volume",&look) {return}
