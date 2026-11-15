@@ -60,7 +60,7 @@ Document :: struct {
     levels:[dynamic]Level,
     actors:[dynamic]Actor,
     components:[dynamic]Component,
-    properties:map[Ref]Object_Properties, // of every object opened, archetypes included
+    properties:map[Ref]^Object_Properties, // of every object opened, archetypes included: they stay where they are as more open
     by_ref:map[Ref]int,                   // the component of an export
     templates:map[Ref]Template,           // the archetype of every object asked for
     texts:[dynamic][]u8,                  // converted labels
@@ -93,7 +93,10 @@ Found :: struct {
 @(private) ICH_SCENE_ROOT_PREFIX :: "ICH-" // the name prefix of an overridden default scene root
 
 document_destroy :: proc(d:^Document) {
-    for _,&held in d.properties {unreal.properties_destroy(&held.list)}
+    for _,held in d.properties {
+        unreal.properties_destroy(&held.list)
+        free(held,d.allocator)
+    }
     for text in d.texts {delete(text,d.allocator)}
     for item in d.superseded {delete(item.actor,d.allocator);delete(item.left,d.allocator);delete(item.kept,d.allocator)}
     delete(d.superseded)
@@ -271,13 +274,23 @@ sibling_of_template :: proc(d:^Document,index:int,q:^unreal.Package,object:unrea
 
 // The properties of an object, read once.
 object_properties :: proc(d:^Document,ref:Ref) -> (held:^Object_Properties,error:unreal.Error) {
-    if found,ok:=&d.properties[ref];ok {return found,found.error}
+    if found,ok:=d.properties[ref];ok {return found,found.error}
     p:=library_package(d.library,int(ref.pkg))
     if ref.object<=0 || int(ref.object)>len(p.exports) {return nil,{.Invalid_Reference,0,"level object"}}
     list,list_error:=unreal.export_properties(p,int(ref.object)-1,true,d.allocator)
     if list_error.code==.Out_Of_Memory {return nil,list_error}
-    d.properties[ref]=Object_Properties{list=list,error=list_error}
-    held=&d.properties[ref]
+    allocation_error:mem.Allocator_Error
+    held,allocation_error=new(Object_Properties,d.allocator)
+    if allocation_error!=nil {
+        unreal.properties_destroy(&list)
+        return nil,{.Out_Of_Memory,0,"level object properties"}
+    }
+    held^={list=list,error=list_error}
+    if _,insert_error:=map_insert(&d.properties,ref,held);insert_error!=nil {
+        unreal.properties_destroy(&held.list)
+        free(held,d.allocator)
+        return nil,{.Out_Of_Memory,0,"level object properties"}
+    }
     return held,held.error
 }
 

@@ -24,9 +24,11 @@ import "plugins:vfx/runtime/effect"
 Vfx_Unreal :: struct {provider:unreal_scene.Translator_Provider}
 
 vfx_unreal_default :: proc() -> (v:Vfx_Unreal) {
-    v.provider.count=2
-    v.provider.translators[0]={classes={0="Emitter",1="NiagaraActor"},translate=particles_translate}
-    v.provider.translators[1]={classes={0="ParticleSystemComponent",1="NiagaraComponent"},component=particles_component}
+    // One translator for each class of actor: the import counts what each translates.
+    v.provider.count=3
+    v.provider.translators[0]={classes={0="Emitter"},translate=particles_translate}
+    v.provider.translators[1]={classes={0="NiagaraActor"},translate=particles_translate}
+    v.provider.translators[2]={classes={0="ParticleSystemComponent",1="NiagaraComponent"},component=particles_component}
     return
 }
 
@@ -441,30 +443,16 @@ dist_at :: proc(d:Dist,time:f32) -> [3]f32 {
     return vfx.keys_at(times[:d.key_count],values[:d.key_count],time)
 }
 
-// A curve of an effect from a value over the life of a particle: its keys
-// when they fit, else the value at evenly spread times. scale: what it is
-// taken as one of.
-dist_curve :: proc(d:Dist,axis:int,scale:f32=1) -> (c:effect.Particle_Curve) {
-    c=effect.PARTICLE_CURVE_ONE
-    if d.key_count==0 {return}
-    count:=min(d.key_count,effect.PARTICLE_CURVE_KEYS)
-    for i in 0..<effect.PARTICLE_CURVE_KEYS {
-        if i>=count {c.values[i],c.times[i]=c.values[count-1],1;continue}
-        t:=d.times[i] if d.key_count<=effect.PARTICLE_CURVE_KEYS else f32(i)/f32(count-1)
-        c.times[i]=clamp(t,i>0?c.times[i-1]:0,1)
-        c.values[i]=max(dist_at(d,t)[axis]/scale,0)
-    }
-    return
-}
-
 // A Cascade distribution of a module (RawDistributionFloat or
-// RawDistributionVector): the object it names (constant, uniform or a
-// curve), else the values the package baked with it.
+// RawDistributionVector): the table the package baked from it, which is
+// what Unreal samples as particles run, else the object it names (constant,
+// uniform or a curve), else the range the package keeps with it.
 @(private)
 cascade_dist :: proc(d:^level.Document,module:level.Ref,name:string) -> (out:Dist) {
     s:=struct_at(d,module,name)
     if !s.ok {return}
     out.found=true
+    if table,baked:=cascade_table(s.p,struct_field(&s,"Table"));baked {return table}
     if v,ok:=value_vector(s.p,struct_field(&s,"MinValueVec"));ok {out.min=v} else if v,ok=value_vector(s.p,struct_field(&s,"MinValue"));ok {out.min=v}
     if v,ok:=value_vector(s.p,struct_field(&s,"MaxValueVec"));ok {out.max=v} else if v,ok=value_vector(s.p,struct_field(&s,"MaxValue"));ok {out.max=v}
     distribution,ok:=object_resolve(d,module,value_object(s.p,struct_field(&s,"Distribution")))
@@ -496,6 +484,48 @@ cascade_dist :: proc(d:^level.Document,module:level.Ref,name:string) -> (out:Dis
         if out.key_count==0 {out.min,out.max={},{}}
     }
     return
+}
+
+// The lookup table of a raw distribution (DistributionLookupTable): entries
+// of EntryStride floats from TimeBias, one every 1/TimeScale of the time it
+// is sampled at. Op None keeps one value an entry; Random and Extreme the
+// least and the most, SubEntryStride floats each, between which each
+// particle takes one. False for a table never baked (Op Uninitialized).
+@(private)
+cascade_table :: proc(p:^unreal.Package,property:^unreal.Property) -> (out:Dist,ok:bool) {
+    RDO_NONE :: 1
+    if property==nil {return}
+    list,error:=unreal.property_tagged_struct(p,property,true,context.temp_allocator)
+    if error.code!=.None {return}
+    field :: proc(p:^unreal.Package,list:^unreal.Property_List,name:string) -> f64 {
+        value,_:=level.value_real(p,unreal.property_find(p,list,name),0)
+        return value
+    }
+    op,count,stride,sub:=int(field(p,&list,"Op")),int(field(p,&list,"EntryCount")),int(field(p,&list,"EntryStride")),int(field(p,&list,"SubEntryStride"))
+    scale,bias:=f32(field(p,&list,"TimeScale")),f32(field(p,&list,"TimeBias"))
+    if op==0 || count<1 || stride<1 {return}
+    if op==RDO_NONE {sub=stride} else if sub<1 {sub=stride/2}
+    values:=property_floats(p,unreal.property_find(p,&list,"Values"))
+    if sub<1 || sub>3 || len(values)<count*stride || op!=RDO_NONE && stride<sub*2 {return}
+    entry :: proc(values:[]f32,at,sub:int) -> (v:[3]f32) {
+        for i in 0..<3 {v[i]=values[at+min(i,sub-1)]}
+        return
+    }
+    low,high:=entry(values,0,sub),entry(values,op==RDO_NONE?0:sub,sub)
+    out.found=true
+    out.min,out.max=low,high
+    if count==1 {return out,true}
+    // A curve: its keys are the middle of each entry, at most DIST_KEYS of them spread evenly.
+    keys:=min(count,DIST_KEYS)
+    for k in 0..<keys {
+        i:=k if count<=DIST_KEYS else int(math.round(f32(k)*f32(count-1)/f32(keys-1)))
+        lo,hi:=entry(values,i*stride,sub),entry(values,i*stride+(op==RDO_NONE?0:sub),sub)
+        out.times[k]=bias+(f32(i)/scale if scale>0 else 0)
+        out.values[k]=(lo+hi)*0.5
+        out.min,out.max=linalg.min(out.min,lo),linalg.max(out.max,hi)
+    }
+    out.key_count=keys
+    return out,true
 }
 
 // A vector of Unreal (centimetres, Z up) in Mirai's space, metres.

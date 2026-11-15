@@ -69,7 +69,7 @@ niagara_interfaces_add :: proc(w:^Niagara_Writer,interfaces:[]Niagara_Interface)
         known:=false
         for di in w.interfaces {known||=di.name==each.name}
         if known {continue}
-        di:=Niagara_Di{name=each.name,symbol=niagara_symbol(each.name),class=strings.trim_prefix(each.class,"NiagaraDataInterface"),object=each.object,found=each.found}
+        di:=Niagara_Di{name=each.name,symbol=each.symbol if each.symbol!="" else niagara_symbol(each.name),class=strings.trim_prefix(each.class,"NiagaraDataInterface"),object=each.object,found=each.found}
         di.named=make([dynamic]Niagara_Attribute,context.temp_allocator)
         if !di.found && w.emitter!=nil && w.emitter.source!=nil {
             di.object,di.found=niagara_object_named(w.d,w.emitter.source.object.pkg,each.class,each.name)
@@ -135,6 +135,23 @@ niagara_name_at :: proc(p:^unreal.Package,raw:[]u8) -> string {
     number,_:=endian.get_i32(raw[4:],.Little)
     if !unreal.name_valid(p,{index,number}) {return ""}
     return unreal.name_text(p,{index,number},context.temp_allocator)
+}
+
+// Whether the scripts of the emitter or of its system call a function of a
+// data interface: its symbol is in their HLSL. A module's own copy that the
+// compilation replaced with another is named and never called.
+@(private)
+niagara_di_called :: proc(w:^Niagara_Writer,di:^Niagara_Di) -> bool {
+    called :: proc(script:Maybe(Niagara_Compiled),symbol:string) -> bool {
+        compiled,ok:=script.?
+        return ok && strings.contains(compiled.hlsl,symbol)
+    }
+    symbol:=strings.concatenate({"_",di.symbol},context.temp_allocator)
+    if w.emitter!=nil && w.emitter.source!=nil {
+        src:=w.emitter.source
+        if called(src.gpu,symbol) || called(src.spawn,symbol) || called(src.update,symbol) {return true}
+    }
+    return w.system!=nil && (called(w.system.spawn,symbol) || called(w.system.update,symbol))
 }
 
 // The data interface a function of the scripts belongs to, by the symbol in its name.
@@ -302,7 +319,7 @@ niagara_interfaces_resolve :: proc(w:^Niagara_Writer) {
         case .Vector_Field:
             field,read:=niagara_vector_field(w,&di)
             if !read {
-                append(&w.problems,fmt.tprintf("%s names no vector field this import reads: it samples zero",di.name))
+                if niagara_di_called(w,&di) {append(&w.problems,fmt.tprintf("%s names no vector field this import reads: it samples zero",di.name))}
                 continue
             }
             di.field=field
@@ -316,7 +333,7 @@ niagara_interfaces_resolve :: proc(w:^Niagara_Writer) {
             if di.class!="Texture" {continue}
             baked,read:=niagara_texture(w,&di)
             if !read {
-                append(&w.problems,fmt.tprintf("%s names no texture this import reads: it samples zero",di.name))
+                if niagara_di_called(w,&di) {append(&w.problems,fmt.tprintf("%s names no texture this import reads: it samples zero",di.name))}
                 continue
             }
             di.texture=baked

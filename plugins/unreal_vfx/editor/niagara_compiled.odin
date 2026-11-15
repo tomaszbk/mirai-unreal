@@ -18,10 +18,11 @@ Niagara_Compiled :: struct {
 }
 
 // A data interface a script calls: the name the parameter map gives it
-// ("Emitter.Grid2DCollection"), its class (NiagaraDataInterfaceGrid2DCollection)
-// and the object with its properties, when the script keeps one.
+// ("Emitter.Grid2DCollection"), its class (NiagaraDataInterfaceGrid2DCollection),
+// the symbol the HLSL of the script names it by and the object with its
+// properties, when the script keeps one.
 Niagara_Interface :: struct {
-    name,class:string,
+    name,class,symbol:string,
     object:level.Ref,
     found:bool,
 }
@@ -120,6 +121,7 @@ niagara_compiled :: proc(d:^level.Document,script:level.Ref) -> (c:Niagara_Compi
             }
         }
     }
+    for &each in interfaces {each.symbol=niagara_interface_symbol(c.hlsl,each.name)}
     c.interfaces=interfaces[:]
     stages:=make([dynamic]Niagara_Stage_Info,context.temp_allocator)
     if meta:=struct_field(&vm,"SimulationStageMetaData");meta!=nil {
@@ -172,6 +174,20 @@ niagara_compiled :: proc(d:^level.Document,script:level.Ref) -> (c:Niagara_Compi
     }
     c.problems=problems[:]
     return c,true
+}
+
+// The symbol of a data interface in the HLSL of a script: its name as
+// niagara_symbol writes it, or, in the HLSL of a save before UE5, without the
+// dots (Emitter.Scale Alpha.FloatCurve: EmitterScaleAlphaFloatCurve), as
+// the functions it calls show.
+@(private)
+niagara_interface_symbol :: proc(hlsl,name:string) -> string {
+    symbol:=niagara_symbol(name)
+    if strings.contains(hlsl,strings.concatenate({"_",symbol},context.temp_allocator)) {return symbol}
+    dotless,_:=strings.replace_all(name,".","",context.temp_allocator)
+    old:=niagara_symbol(dotless)
+    if strings.contains(hlsl,strings.concatenate({"_",old},context.temp_allocator)) {return old}
+    return symbol
 }
 
 // What a script that writes or handles an event of Niagara uses in Mirai instead.

@@ -586,9 +586,12 @@ SILENT_COMPONENTS :: []string{
     "PCGComponent","LevelInstanceComponent","MaterialInstanceDynamic","WorldPartitionHLODSourceActorsFromCell",
 }
 
-// The classes plugins of Mirai translate in an editor session.
+// The classes plugins of Mirai translate in an editor session, and the plugin each bridges to.
 @(private)
-PLUGIN_CLASSES :: []string{"Landscape","LandscapeProxy","LandscapeStreamingProxy","InstancedFoliageActor","BlockingVolume","ExponentialHeightFog"}
+PLUGIN_CLASSES :: [?][2]string{
+    {"Landscape","terrain"},{"LandscapeProxy","terrain"},{"LandscapeStreamingProxy","terrain"},{"InstancedFoliageActor","foliage"},
+    {"BlockingVolume","physics"},{"ExponentialHeightFog","fog"},{"Emitter","vfx"},{"NiagaraActor","vfx"},
+}
 
 // The component classes a bridge plugin translates in an editor session, and the plugin it bridges to.
 @(private)
@@ -596,13 +599,13 @@ PLUGIN_COMPONENTS :: [?][2]string{{"SplineMeshComponent","shapes"},{"ParticleSys
 
 @(private)
 untranslated_reason :: proc(c:^Context,a:int,native:level.Class,with_translators:bool) -> string {
-    if slice.contains(PLUGIN_CLASSES,native.name) {
-        if with_translators {return "the plugin that translates it is not in the project"}
+    for bridged in PLUGIN_CLASSES {
+        if bridged[0]!=native.name {continue}
+        if with_translators {return fmt.tprintf("the %s plugin translates it and is not in the project",bridged[1])}
         return "a plugin translates it in an editor session: import the level there (mirai session start, then mirai rpc asset.import with its path)"
     }
     switch native.name {
     case "AmbientSound":return "Mirai imports no sounds of Unreal"
-    case "Emitter":return "a Cascade particle system"
     case "Brush":return "BSP geometry"
     case "PlayerStart":return "a spawn point: place a Spawn_Point (plugin spawn)"
     case "DecalActor":return "a decal"

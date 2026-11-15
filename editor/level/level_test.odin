@@ -1,5 +1,6 @@
 package level
 
+import "core:fmt"
 import "core:math"
 import "core:math/linalg"
 import "core:testing"
@@ -340,4 +341,28 @@ an_inherited_component_a_blueprint_changes_takes_its_override_template :: proc(t
     testing.expect(t,held_error.code==.None && held.origin==.Archetype)
     testing.expect_value(t,library_package(&lib,int(held.owner.pkg)).source_package,"/Game/BP_Parent")
     testing.expect_value(t,held.pkg,library_package(&lib,int(held.owner.pkg)))
+}
+
+// What object_properties gives of an object stays where it is while those of
+// others are read: a caller keeps it across its reads.
+@(test)
+the_properties_of_an_object_stay_put_as_others_are_read :: proc(t:^testing.T) {
+    b:=fixture.builder_make()
+    class:=fixture.class_import(&b,"/Script/Engine","Actor")
+    for i in 0..<64 {
+        _=fixture.export_begin(&b,class,0,fmt.tprintf("Actor_%d",i))
+        fixture.properties_end(&b);fixture.export_end(&b)
+    }
+    p:=fixture.package_of(&b,"/Game/Many")
+    lib:Library
+    library_init(&lib,nil)
+    defer library_destroy(&lib)
+    index,_:=library_add(&lib,"/Game/Many",&p)
+    d:=Document{library=&lib,allocator=context.allocator}
+    defer document_destroy(&d)
+    first,error:=object_properties(&d,{i32(index),1})
+    if !testing.expect_value(t,error.code,unreal.Error_Code.None) {return}
+    for i in 2..=64 {object_properties(&d,{i32(index),unreal.Object_Ref(i)})}
+    again,_:=object_properties(&d,{i32(index),1})
+    testing.expect(t,again==first,"the properties of the first object moved")
 }
