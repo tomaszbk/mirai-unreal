@@ -1,8 +1,13 @@
 package unreal_scene
 
+import "core:fmt"
 import "core:math"
+import "core:math/linalg"
+import "core:strings"
 import importer "mirai:cook/import"
+import material "project:plugins/unreal/editor/material"
 import material_write "project:plugins/unreal/editor/material/write"
+import unreal_mesh "project:plugins/unreal/editor/mesh"
 import "project:plugins/unreal/editor/level"
 import unreal "project:plugins/unreal/editor/package"
 import render "mirai:engine/render"
@@ -91,7 +96,7 @@ sky_light_add :: proc(c:^Context,a,k:int) -> bool {
     }
     source,_:=level.enum_of(d,ref,"SourceType","SLS_CapturedScene")
     if source!="SLS_SpecifiedCubemap" {
-        warn(c,"%s: Unreal captures the light of the sky from the scene; Mirai's sky gives it at %.3g times its luminance",label,intensity)
+        c.sky_captured=true
         return true
     }
     cubemap:=level.path_of(d,ref,"Cubemap")
@@ -155,15 +160,125 @@ sky_dome :: proc(c:^Context,a,k:int) -> bool {
     return shown>0
 }
 
-// The .tex of the sky of the Unreal cube texture at path, its lower half
-// toward below, with the images of the materials; zero, with a warning,
-// when it cannot be written.
+// A dome of the level that may give the Sky its image (dome_add).
+Sky_Dome :: struct {
+    name:string,      // its actor and component
+    texture:string,   // the object path of the texture its material shows
+    luminance:[3]f32, // what its material multiplies the texture by, nits
+    turn:f32,         // of the Sky about up for its image to lie as on the dome, radians
+    found:bool,
+}
+
+// How far, in uv units, the uv of a corner of a dome may be from where a
+// latitude-longitude image puts its direction.
+@(private) DOME_UV_TOLERANCE :: 0.01
+// Corners whose direction is closer to a pole than this sine say nothing by
+// their u.
+@(private) DOME_POLE_SINE :: 0.05
+
+// The dome k of actor a, which is not drawn: the Sky stands for it. Its image
+// is the Sky's when its material shows one texture as it is
+// (translated_plain_emission) and its mesh lays that texture over the sphere
+// by latitude and longitude, as the Sky lays its image, turned about up at
+// most; environment_finish takes the first such dome. Any other is a warning.
+@(private)
+dome_add :: proc(c:^Context,a,k:int) {
+    d:=c.d
+    name:=fmt.tprintf("%s: %s",d.actors[a].label,d.components[k].name)
+    dome,reason:=dome_image(c,k)
+    switch {
+    case reason!="":warn(c,"%s encloses the level as its sky and is not drawn: %s, so the Sky of the scene is Mirai's sky",name,reason)
+    case c.dome.found:warn(c,"%s encloses the level as its sky and is not drawn: the image of the Sky is that of %s",name,c.dome.name)
+    case:
+        dome.name=name
+        c.dome=dome
+    }
+}
+
+// What the dome k gives the Sky, or why it gives nothing.
+@(private)
+dome_image :: proc(c:^Context,k:int) -> (dome:Sky_Dome,reason:string) {
+    d:=c.d
+    ref:=d.components[k].ref
+    mesh_path:=level.path_of(d,ref,"StaticMesh")
+    overrides:=level.paths_of(d,ref,"OverrideMaterials")
+    own:=mesh_slot_paths(c,mesh_path,false)
+    path:=""
+    for i in 0..<max(len(own),len(overrides)) {
+        slot:=i<len(overrides) && overrides[i]!="" ? overrides[i] : (i<len(own) ? own[i] : "")
+        if slot=="" {continue}
+        if path!="" && slot!=path {return {},"its slots show different materials"}
+        path=slot
+    }
+    library_lock(c)
+    defer library_unlock(c)
+    object,found:=material.object_find(c.lib,path)
+    if !found {return {},"its material could not be read"}
+    t,error:=material.translate(c.lib,object,{reads=c.texture_reads[:],writers=c.writers},context.temp_allocator)
+    if error.code!=.None {return {},"its material could not be translated"}
+    defer material.translated_destroy(&t)
+    texture,set,luminance,plain:=material.translated_plain_emission(&t)
+    if !plain {return {},"its material is more than one texture as it is"}
+    mesh_object,mesh_found:=material.object_find(c.lib,mesh_path)
+    if !mesh_found {return {},"its mesh could not be read"}
+    source,read_error:=unreal_mesh.mesh_read(&mesh_object.pkg.p,mesh_object.export,.Lod0,context.temp_allocator)
+    if read_error.code!=.None {return {},"its mesh could not be read"}
+    textures,_:=decoder(c)
+    geometry,decode_error:=unreal_mesh.mesh_decode(&mesh_object.pkg.p,&source,textures,context.temp_allocator,context.temp_allocator)
+    if decode_error.code!=.None {return {},"its mesh could not be read"}
+    world,world_error:=level.component_world(d,k)
+    if world_error.code!=.None {return {},"its place could not be read"}
+    turn,lat_long:=lat_long_turn(&geometry,set,world)
+    if !lat_long {return {},"its mesh does not lay its texture over the sphere by latitude and longitude"}
+    return {texture=strings.clone(texture,context.temp_allocator),luminance=luminance,turn=turn,found=true},""
+}
+
+// The turn about up of a Sky whose image lies over the sphere as the uv set
+// of mesh m placed at world lays it: the v of each corner is the angle of its
+// direction from up over π, and its u the angle about up over 2π (as the Sky
+// reads its image) plus that turn over 2π, within DOME_UV_TOLERANCE. The
+// directions are from the centre of its bounds.
+@(private)
+lat_long_turn :: proc(m:^unreal_mesh.Mesh,set:int,world:mm.Transform) -> (turn:f32,ok:bool) {
+    if set<0 || set>=m.uv_count || len(m.corner_uvs[set])!=len(m.corner_vertex) {return}
+    // Unreal's x, y and z in centimetres are Mirai's -z, x and y in metres.
+    placed :: proc(world:mm.Transform,p:[3]f32) -> [3]f32 {return mm.transform_point(world,[3]f32{p.y,p.z,-p.x}/100)}
+    centre:=placed(world,(m.bounds_min+m.bounds_max)/2)
+    directions:=make([][3]f32,len(m.positions),context.temp_allocator)
+    for p,i in m.positions {
+        directions[i]=linalg.normalize0(placed(world,p)-centre)
+        if directions[i]=={} {return}
+    }
+    around :: proc(d:[3]f32) -> f64 {return math.atan2(f64(d.z),f64(d.x))/(2*math.PI)+0.5}
+    uvs:=m.corner_uvs[set]
+    sum:[2]f64
+    for vertex,i in m.corner_vertex {
+        d:=directions[vertex]
+        if abs(f64(uvs[i].y)-math.acos(clamp(f64(d.y),-1,1))/math.PI)>DOME_UV_TOLERANCE {return}
+        if 1-d.y*d.y<DOME_POLE_SINE*DOME_POLE_SINE {continue}
+        angle:=2*math.PI*(f64(uvs[i].x)-around(d))
+        sum+={math.cos(angle),math.sin(angle)}
+    }
+    if sum=={} {return}
+    turned:=math.atan2(sum.y,sum.x)
+    for vertex,i in m.corner_vertex {
+        d:=directions[vertex]
+        if 1-d.y*d.y<DOME_POLE_SINE*DOME_POLE_SINE {continue}
+        gap:=f64(uvs[i].x)-around(d)-turned/(2*math.PI)
+        if abs(gap-math.round(gap))>DOME_UV_TOLERANCE {return}
+    }
+    return f32(turned),true
+}
+
+// The .tex of the sky of the Unreal texture at path (material_write.sky_write),
+// with the images of the materials; zero, with a warning, when it cannot be
+// written.
 @(private)
 sky_image_write :: proc(c:^Context,path:string,below:[4]f32) -> (id:base.Asset_Id,ok:bool) {
     package_name,_:=object_split(path)
     file:=package_file(c,package_name)
     if file=="" {
-        warn(c,"its cubemap %s is not under the mounts of the level",path)
+        warn(c,"the texture %s of the sky is not under the mounts of the level",path)
         return
     }
     textures,_:=decoder(c)
@@ -171,7 +286,7 @@ sky_image_write :: proc(c:^Context,path:string,below:[4]f32) -> (id:base.Asset_I
     id,error=material_write.sky_write(c.lib,path,below,&c.outputs,package_prefix(c,file),c.options,context.temp_allocator,&c.images,&c.library_lock,textures)
     defer images_trim(c)
     if error.code!=.None {
-        warn(c,"the sky of the cubemap %s could not be written: %s",path,error.message)
+        warn(c,"the sky of the texture %s could not be written: %s",path,error.message)
         return
     }
     return id,id!={}
@@ -195,6 +310,24 @@ environment_finish :: proc(c:^Context) {
         section_use(c,previous)
         warn(c,"%d directional lights: Mirai lights with one sun, the brightest; the others are turned off",len(c.suns))
     }
+    // A sky light that captures the scene lights by the dome of the level,
+    // which is what Mirai's Sky shows; a cube it names wins over the dome.
+    if c.dome.found {
+        switch {
+        case !c.sky_lit:warn(c,"%s encloses the level as its sky and is not drawn: without a sky light Unreal's sky gives no light, and Mirai's Sky lights by what it shows",c.dome.name)
+        case c.sky.image!={}:warn(c,"%s encloses the level as its sky and is not drawn: the Sky lights from the cube of the sky light, as Unreal does, and shows it",c.dome.name)
+        case:
+            if c.sky.image,_=sky_image_write(c,c.dome.texture,{});c.sky.image=={} {
+                warn(c,"%s encloses the level as its sky and is not drawn: its image could not be written",c.dome.name)
+                break
+            }
+            if c.sky.luminance!={1,1,1} {warn(c,"%s: Unreal lights by %v times what its sky light captures of the dome; Mirai's Sky lights by what it shows, the image of the dome at %v nits",c.dome.name,c.sky.luminance,c.dome.luminance)}
+            c.sky.luminance=c.dome.luminance
+            c.sky_turn=c.dome.turn
+            warn(c,"%s encloses the level as its sky and is not drawn: its image is the Sky's, which shows it behind the scene",c.dome.name)
+        }
+    }
+    if c.sky_captured && c.sky.image=={} {warn(c,"Unreal captures the light of the sky from the scene; Mirai's sky gives it at %.3g times its luminance",max(c.sky.luminance.r,c.sky.luminance.g,c.sky.luminance.b))}
     if c.sky_lit && c.sky.image=={} {
         sun:=render.SUN_DEFAULT.illuminance
         if len(c.suns)>0 {
@@ -216,7 +349,7 @@ environment_finish :: proc(c:^Context) {
     // Unreal lights from the cube its sky light names over its atmosphere; Mirai's
     // atmosphere replaces the image, so the cube wins.
     c.sky.atmosphere=c.sky_atmosphere && c.sky.image=={}
-    if c.sky_atmosphere && !c.sky.atmosphere {warn(c,"the sky lights from the image of the cube of its sky light: Mirai's sky draws one or the other, so the atmosphere of the level is not drawn")}
+    if c.sky_atmosphere && !c.sky.atmosphere {warn(c,"the sky lights from an image: Mirai's sky draws an image or the air, so the atmosphere of the level is not drawn")}
     place:=mm.TRANSFORM_IDENTITY
     place.rotation=mm.quat_axis_angle({0,1,0},c.sky_turn)
     if e,ok:=entity_make(c,0,"Sky","Sky",place);ok {component_set(c,e,"Sky",&c.sky)}

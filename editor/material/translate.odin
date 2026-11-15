@@ -105,6 +105,32 @@ translated_destroy :: proc(t:^Translated_Material) {
 // Whether the material is the standard model alone.
 translated_is_standard :: proc(t:^Translated_Material) -> bool {return t.program.name==""}
 
+// The texture an unlit material shows as it is: its emission is the color of
+// one texture at the coordinates of one uv set of the mesh, untransformed,
+// times a constant, and nothing covers it. texture is its object path,
+// uv_set the Unreal uv set it reads, luminance the constant in nits.
+translated_plain_emission :: proc(t:^Translated_Material) -> (texture:string,uv_set:int,luminance:[3]f32,ok:bool) {
+    info:=&t.info
+    if !info.unlit || !translated_is_standard(t) || info.alpha_mode!=.Opaque || info.emission_mode!=.Physical {return}
+    m:=asset.material_maps(&info.maps)[.Emission]
+    if m.scale!=(asset.MATERIAL_MAP_DEFAULT.scale) || m.offset!=(asset.MATERIAL_MAP_DEFAULT.offset) || m.rotation!=0 {return}
+    g:=&t.graph
+    sample:=NONE
+    for c in 0..<3 {
+        n:=t.images[.Emission].channels[c]
+        if n==NONE || g.nodes[n].op!=.Swizzle || g.nodes[n].width!=1 || int(g.nodes[n].swizzle[0])!=c {return}
+        if c==0 {sample=g.nodes[n].args[0]}
+        if g.nodes[n].args[0]!=sample {return}
+    }
+    s:=g.nodes[sample]
+    if s.op!=.Sample || g.nodes[s.args[0]].op!=.Texture || g.nodes[s.args[1]].op!=.UV {return}
+    ref:=g.textures[g.nodes[s.args[0]].index]
+    if ref.read.function!="" {return}
+    sources:=uv_set_sources(t.uv_sets)
+    if int(m.uv_set)>=len(sources) || sources[m.uv_set]<0 {return}
+    return ref.path,int(sources[m.uv_set]),info.emission,true
+}
+
 @(private)
 BLEND_NAMES :: []string{"BLEND_Opaque","BLEND_Masked","BLEND_Translucent","BLEND_Additive","BLEND_Modulate","BLEND_AlphaComposite","BLEND_AlphaHoldout","BLEND_TranslucentColoredTransmittance"}
 @(private)

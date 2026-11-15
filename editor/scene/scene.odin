@@ -219,6 +219,8 @@ Context :: struct {
     suns:[dynamic]Sun_Candidate,
     sky:render.Sky,           // of the entity of the sky, when the level has a sky light
     sky_lit:bool,             // by a sky light of the level
+    sky_captured:bool,        // by a sky light that captures the scene
+    dome:Sky_Dome,            // the dome whose image the Sky may take (dome_add)
     sky_turn:f32,             // of the image of the sky about up, radians
     sky_drawn:bool,           // the level draws a sky behind the scene: an atmosphere, the engine's sky sphere or a dome
     sky_atmosphere:bool,      // by an atmosphere (SkyAtmosphere, or AtmosphericFog of UE4)
@@ -652,7 +654,7 @@ actor_translate :: proc(c:^Context,a:int,native:level.Class) -> (translated,sile
         editor_only[i],_=level.bool_of(d,component.ref,"bIsEditorOnly",false)
         if editor_only[i] {continue}
         if domes[i]=sky_dome(c,a,actor.first_component+i);domes[i] {
-            importer.output_warn(&c.outputs,"%s: %s encloses the level as its sky and is not drawn: the Sky of the scene is Mirai's sky",actor.label,component.name)
+            dome_add(c,a,actor.first_component+i)
             c.sky_drawn=true
             dome_count+=1
             continue

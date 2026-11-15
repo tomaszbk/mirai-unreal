@@ -464,11 +464,12 @@ names_prefix :: proc(model:^importer.Imported_Model,prefix:string,allocator:mem.
     for &m in model.animations {m.name=named(prefix,m.name,allocator)}
 }
 
-// Writes the sky of the Unreal cube texture at path as one .tex of the
-// import of outputs, named prefix and the texture: the image of a Sky
-// (texture.sky_of_cube), its lower half toward below. One whose lower half
-// is not Unreal's default, black, is named apart. shared, lock and decoder
-// as materials_write.
+// Writes the sky of the Unreal texture at path as one .tex of the import of
+// outputs, named prefix and the texture: the image of a Sky. A cube turns
+// into one (texture.sky_of_cube), its lower half toward below, and one whose
+// lower half is not Unreal's default, black, is named apart; a plain texture
+// is a latitude-longitude image already, taken as it is. shared, lock and
+// decoder as materials_write.
 sky_write :: proc(lib:^material.Library,path:string,below:[4]f32,outputs:^importer.Outputs,prefix:string,options:importer.Import_Options={},allocator:=context.allocator,shared:^Builder=nil,lock:^sync.Mutex=nil,decoder:^kraken.Decoder=nil) -> (id:base.Asset_Id,error:importer.Error) {
     arena:mem.Dynamic_Arena
     mem.dynamic_arena_init(&arena,allocator,allocator,block_size=1<<20,out_band_size=1<<20)
@@ -494,10 +495,24 @@ sky_write :: proc(lib:^material.Library,path:string,below:[4]f32,outputs:^import
         for w,i in b.warnings {notes[i]=strings.clone(w,scratch)}
         clear(&b.warnings)
         if !decoded {return {},importer.error_make(.Read,"texture %s could not be read: %s",path,strings.join(notes,"; ",context.temp_allocator))}
-        sky,sky_error:=texture.sky_of_cube(cube.input.source,cube.usage==.Color,below,scratch)
-        if sky_error.code!=.None {return {},importer.error_make(.Unsupported,"texture %s is not a cube: the sky is drawn from a cube",path)}
+        source:=cube.input.source
+        sky:textures.Source
+        switch {
+        case source.cube:
+            sky_error:unreal.Error
+            if sky,sky_error=texture.sky_of_cube(source,cube.usage==.Color,below,scratch);sky_error.code!=.None {
+                return {},importer.error_make(.Unsupported,"texture %s: the faces of its cube are not square",path)
+            }
+        case source.layers<=1:
+            sky=source
+            clone_error:mem.Allocator_Error
+            if sky.texels,clone_error=slice.clone(source.texels,scratch);clone_error!=nil {return {},importer.error_make(.Write,"texture %s: out of memory",path)}
+            sky.allocator=scratch
+        case:
+            return {},importer.error_make(.Unsupported,"texture %s holds %d images: a sky is one",path,source.layers)
+        }
         name:=strings.concatenate({unreal.asset_name(path[strings.last_index_any(path,"./")+1:]),"_Sky"},scratch)
-        if below!={0,0,0,1} {
+        if source.cube && below!={0,0,0,1} {
             lower:=below
             name=fmt.aprintf("%s_%08x",name,hash.fnv32a(mem.ptr_to_bytes(&lower)),allocator=scratch)
         }

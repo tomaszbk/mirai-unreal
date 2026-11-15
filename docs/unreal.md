@@ -736,9 +736,15 @@ entity, the imported meshes and the time.
   sky shows if the level draws it (`SkyAtmosphere`, `AtmosphericFog`, the engine's sky sphere or a
   dome), and otherwise black; a dome is a static mesh that casts no shadow, whose materials are all
   unlit and whose bounds hold what every other actor shows: it is the level's sky, not drawn and
-  warned like the engine's sphere, since Mirai's `Sky` stands for it; with an atmosphere, the `Sky`
-  is the air the sun lights (`atmosphere`), unless the `SkyLight` names a cube: Mirai's `Sky` draws
-  the image or the air, and the cube wins, with a warning. `VolumetricCloud` is a warning: Mirai
+  warned like the engine's sphere, since Mirai's `Sky` stands for it. When the material of a dome
+  is one texture as it is times a constant (`translated_plain_emission`) and the uvs of its mesh
+  lay it over the sphere by latitude and longitude as the `Sky` reads its image (each corner within
+  a tolerance, turned about up at most), and a sky light captures the scene, the first such dome
+  gives the `Sky` that texture as its image (`sky_write`), the constant as its `luminance` and the
+  turn to its entity; the sky light's own `Intensity` and color are a warning, since Mirai's `Sky`
+  lights by what it shows. A cube of the sky light wins over a dome. With an atmosphere, the `Sky`
+  is the air the sun lights (`atmosphere`), unless it has an image: Mirai's `Sky` draws the image or
+  the air, and the image wins, with a warning. `VolumetricCloud` is a warning: Mirai
   draws no clouds. The post process is Unreal's: the defaults of the Unreal project of the level
   (Unreal's under its `DefaultEngine.ini`: its `r.DefaultFeature` bloom and auto exposure, method
   and bias, and the extended range, off unless it is set) or, for content copied without its
