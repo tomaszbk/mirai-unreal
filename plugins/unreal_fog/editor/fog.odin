@@ -22,15 +22,10 @@ import fog "plugins:fog/runtime"
 // light of the sky of the atmosphere too (unreal_scene.fog_sky): Mirai's
 // glow. With its volumetric fog, Unreal lights the fog by the lights of the
 // scene, as Mirai does, with the albedo of the volumetric fog and stopping
-// half of FogDensity in powers of e, and its glow takes over only past
-// VolumetricFogDistance, where the volumetric fog ends: there Mirai's glow
-// starts. Without it, no light of the scene reaches the fog, so its albedo
-// is black, and its glow starts at StartDistance; past both, as Unreal takes
-// the farther. Unreal's volumetric fog ends at a depth of the view and
-// Mirai's glow starts at a distance from the eye: the same ahead, farther in
-// Unreal toward the sides. What else depends on the eye (where the fog stops
-// being drawn and the opacity it stops at), the glow it adds around the sun
-// and its cubemap colors are left out with a warning.
+// half of FogDensity in powers of e. Without it, no light of the scene
+// reaches the fog, so its albedo is black. What depends on the eye (where the
+// fog starts and stops being drawn and the opacity it stops at), the glow it
+// adds around the sun and its cubemap colors are left out with a warning.
 // Unreal draws one height fog in a scene, the first: so does the import.
 @(storage)
 Fog_Unreal :: struct {provider:unreal_scene.Translator_Provider}
@@ -108,10 +103,7 @@ fogs_translate :: proc(c:^unreal_scene.Context,actors:[]int) -> int {
         // Unreal goes from its glow to the light of its sky light by this share.
         sky_share,_:=level.real_of(d,ref,"SkyLightCaptureAffectsHeightFogStrength",0)
         glow*=f32(1-clamp(sky_share,0,1))
-        // Unreal draws no volumetric fog that reaches no distance.
-        reach,_:=level.real_of(d,ref,"VolumetricFogDistance",6000)
         volumetric,_:=level.bool_of(d,ref,"bEnableVolumetricFog",false)
-        volumetric&&=reach>0
         density,_:=level.real_of(d,ref,"FogDensity",0.02)
         falloff,_:=level.real_of(d,ref,"FogHeightFalloff",0.2)
         scattering,_:=level.real_of(d,ref,"VolumetricFogScatteringDistribution",0.2)
@@ -120,8 +112,6 @@ fogs_translate :: proc(c:^unreal_scene.Context,actors:[]int) -> int {
         volume.color={}
         if volumetric {volume.color,_=unreal_scene.color_of(d,ref,"VolumetricFogAlbedo",{1,1,1})}
         volume.glow=glow
-        start,_:=level.real_of(d,ref,"StartDistance",0)
-        volume.glow_start=f32(max(start,volumetric?reach:0)/100)
         volume.falloff=f32(fog_rate(falloff))
         volume.anisotropy=clamp(f32(scattering),-0.95,0.95)
         volume.zone.blend=0
@@ -148,17 +138,20 @@ fogs_translate :: proc(c:^unreal_scene.Context,actors:[]int) -> int {
         unreal_scene.warn(c,"%s: Unreal's height fog fills the world; Mirai's fills the box of what the level shows, %.3g by %.3g by %.3g m, and past it the haze is the air of the Sky",label,size.x,size.y,size.z)
         if volume.base>0 {unreal_scene.warn(c,"%s: under the height of its actor Unreal's fog grows thicker without end, %.3g times at the bottom of the level, %.3g m lower; Mirai's holds its density there",label,math.exp(f64(volume.falloff*volume.base)),volume.base)}
         if volumetric {
-            unreal_scene.warn(c,"%s: Unreal lights its fog by the scene only to %.3g m from the eye, its volumetric fog, and past that stops %.2g times as much; Mirai's fog is lit by the scene all the way, at the density of the near one",label,reach/100,math.LN2/0.5/max(extinction,1e-6))
+            distance,_:=level.real_of(d,ref,"VolumetricFogDistance",6000)
+            start,_:=level.real_of(d,ref,"VolumetricFogStartDistance",0)
+            unreal_scene.warn(c,"%s: Unreal lights its fog by the scene only to %.3g m from the eye, its volumetric fog, and past that shows its glow at %.2g times the density; Mirai's fog is lit by the scene and glows all the way, at the density of the near one",label,(start+distance)/100,math.LN2/0.5/max(extinction,1e-6))
             if emissive,_:=unreal_scene.color_of(d,ref,"VolumetricFogEmissive",{});emissive!={} {unreal_scene.warn(c,"%s: its volumetric fog gives off %v in Unreal, as much wherever it is drawn whatever its density; Mirai's glow follows the density and is its inscattering color",label,emissive)}
             if override,_:=level.bool_of(d,ref,"bOverrideLightColorsWithFogInscatteringColors",false);override {unreal_scene.warn(c,"%s: Unreal lights its volumetric fog with its inscattering colors in place of the sun and the sky; Mirai's fog takes the light of the sun and the sky",label)}
-            if near,_:=level.real_of(d,ref,"VolumetricFogStartDistance",0);near>0 {unreal_scene.warn(c,"%s: its volumetric fog starts %.3g m from the eye in Unreal; Mirai's medium is in the world and starts at the eye",label,near/100)}
-        } else if start>0 {unreal_scene.warn(c,"%s: its fog dims nothing within %.3g m of the eye in Unreal; Mirai's dims from the eye",label,start/100)}
+            if start>0 {unreal_scene.warn(c,"%s: its volumetric fog starts %.3g m from the eye in Unreal; Mirai's medium is in the world and starts at the eye",label,start/100)}
+        }
         // The lobe Unreal adds around the sun: its directional luminance times the luminance of the sun, and the sun through the atmosphere.
         if lobe:=directional*sky.sun_luminance+(cubemap!=0?{}:sky.sun);lobe!={} {
             exponent,_:=level.real_of(d,ref,"DirectionalInscatteringExponent",4)
             unreal_scene.warn(c,"%s: Unreal adds to its fog a glow around its sun, %v nits looking at it and the power %.3g of the cosine away from it, without shadows; Mirai's fog scatters the sun itself, by its anisotropy and with its shadows",label,lobe,exponent)
         }
         if opacity,_:=level.real_of(d,ref,"FogMaxOpacity",1);opacity<1 {unreal_scene.warn(c,"%s: its fog stops at an opacity of %.2g in Unreal; a medium in Mirai lets less through the more of it there is",label,opacity)}
+        if start,_:=level.real_of(d,ref,"StartDistance",0);start>0 {unreal_scene.warn(c,"%s: its fog starts %.3g m from the eye in Unreal; Mirai's medium is in the world and starts at the eye",label,start/100)}
         if cutoff,_:=level.real_of(d,ref,"FogCutoffDistance",0);cutoff>0 {unreal_scene.warn(c,"%s: its fog stops %.3g m from the eye in Unreal; Mirai's medium is in the world and goes on to the sky",label,cutoff/100)}
         if end,_:=level.real_of(d,ref,"EndDistance",0);end>0 {unreal_scene.warn(c,"%s: its fog thickens only to %.3g m from the eye in Unreal; Mirai's medium thickens all the way",label,end/100)}
         translated+=1
