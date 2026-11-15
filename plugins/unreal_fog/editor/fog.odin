@@ -13,7 +13,9 @@ import fog "plugins:fog/runtime"
 // with the height over where the actor is, and its second fog
 // (SecondFogData) another one added to it over where the actor is raised by
 // its offset. Unreal's fills the world; a fog of Mirai fills a box, that of
-// what the level shows, with its density where the bottom of the box is.
+// what the level shows, with its base, where it has its density, at the
+// height of the actor: over it both thin alike, and under it Unreal's grows
+// without end and Mirai's holds.
 // Unreal's density and height falloff are FogDensity/1000 per centimetre in
 // powers of two. Where it is thick, Unreal's fog shows its
 // FogInscatteringLuminance whatever lights it: Mirai's glow. With its
@@ -49,10 +51,9 @@ INSCATTERING_LUMINANCE_VERSION :: 47
 INSCATTERING_COLOR_DEFAULT :: [3]f32{0.447,0.638,1}
 DIRECTIONAL_COLOR_DEFAULT :: [3]f32{0.25,0.25,0.125}
 
-// Of a density of Unreal at a height, Mirai's at another, per metre.
-fog_density_at :: proc(density,falloff,height,at:f64,volumetric:bool,extinction:f64) -> f64 {
-    stops:=volumetric?volumetric_rate(density)*max(extinction,0):fog_rate(density)
-    return stops*math.exp(-fog_rate(falloff)*(at-height))
+// FogDensity of Unreal as what Mirai's fog stops per metre at the height of the actor.
+fog_density :: proc(density:f64,volumetric:bool,extinction:f64) -> f32 {
+    return f32(volumetric?volumetric_rate(density)*max(extinction,0):fog_rate(density))
 }
 
 fogs_translate :: proc(c:^unreal_scene.Context,actors:[]int) -> int {
@@ -113,13 +114,9 @@ fogs_translate :: proc(c:^unreal_scene.Context,actors:[]int) -> int {
         volume.falloff=f32(fog_rate(falloff))
         volume.anisotropy=clamp(f32(scattering),-0.95,0.95)
         volume.zone.blend=0
-        height,base:=f64(world.position.y),f64(box.min.y)
-        first:=fog_density_at(density,falloff,height,base,volumetric,extinction)
-        if !(first<f64(max(f32))) {
-            unreal_scene.warn(c,"%s: its fog is denser than a float holds at the bottom of the level, %.3g m under it; it is left out",label,height-base)
-            continue
-        }
-        volume.density=f32(first)
+        height:=world.position.y
+        volume.density=fog_density(density,volumetric,extinction)
+        volume.base=height-box.min.y
         place:=evolume.box(mm.aabb_half(box))
         key:=unreal_scene.actor_key(c,a)
         e,made:=unreal_scene.entity_make(c,0,key,label,{position=mm.aabb_center(box),rotation=1,scale=1})
@@ -129,7 +126,8 @@ fogs_translate :: proc(c:^unreal_scene.Context,actors:[]int) -> int {
             second_falloff,_:=unreal_scene.chain_real(&second,"FogHeightFalloff",0.2)
             offset,_:=unreal_scene.chain_real(&second,"FogHeightOffset",0)
             added:=volume
-            added.density=f32(min(fog_density_at(second_density,second_falloff,height+offset/100,base,volumetric,extinction),f64(max(f32))))
+            added.density=fog_density(second_density,volumetric,extinction)
+            added.base=volume.base+f32(offset/100)
             added.falloff=f32(fog_rate(second_falloff))
             // Added over the first, which it comes after.
             added.zone.mode,added.zone.priority=.Add,1
@@ -137,6 +135,7 @@ fogs_translate :: proc(c:^unreal_scene.Context,actors:[]int) -> int {
             if !child_made || !unreal_scene.component_set(c,child,"Fog_Volume",&added) || !unreal_scene.component_set(c,child,"Volume",&place) {return translated}
         }
         unreal_scene.warn(c,"%s: Unreal's height fog fills the world; Mirai's fills the box of what the level shows, %.3g by %.3g by %.3g m, and past it the haze is the air of the Sky",label,size.x,size.y,size.z)
+        if volume.base>0 {unreal_scene.warn(c,"%s: under the height of its actor Unreal's fog grows thicker without end, %.3g times at the bottom of the level, %.3g m lower; Mirai's holds its density there",label,math.exp(f64(volume.falloff*volume.base)),volume.base)}
         if volumetric {
             distance,_:=level.real_of(d,ref,"VolumetricFogDistance",6000)
             start,_:=level.real_of(d,ref,"VolumetricFogStartDistance",0)

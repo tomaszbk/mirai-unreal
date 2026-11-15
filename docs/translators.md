@@ -154,9 +154,10 @@ warning that names `shapes`, never drawn straight.
 ## Fog (`unreal_fog`)
 
 `ExponentialHeightFog` is a fog in the box of what the level shows (the bounds of its actors),
-since a Mirai fog fills a bounded `Volume` and the haze past it is the air of the `Sky`; its
-density is that at the bottom of the box, thinning by its falloff over the actor's height, and its
-`SecondFogData` is another one in the same box from that height plus the offset. Unreal draws only
+since a Mirai fog fills a bounded `Volume` and the haze past it is the air of the `Sky`. Its
+`base` is the actor's height, where it has Unreal's density: over it it thins by its falloff,
+under it it holds (Unreal's grows without end, a warning). Its `SecondFogData` is another one in
+the same box with its base raised by the offset. Unreal draws only
 the first of a scene, and the others are a warning.
 
 - Its inscattering luminance, which Unreal shows where the fog is thick whatever lights it, is the
