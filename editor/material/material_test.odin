@@ -445,10 +445,11 @@ the_view_is_taken_head_on_and_eye_adaptation_makes_emission_relative :: proc(t:^
     testing.expect(t,strings.contains(translated.program.source,"ctx.depth"),"the eye as far as the view sees the point")
 }
 
-// A two-sided Subsurface material reflects its base color and sends its
-// SubsurfaceColor through: a diffuse transmission that splits the light
-// between the two, here half each. One-sided, the scattered light is part of
-// the reflection.
+// A two-sided Subsurface material is seen from both sides, reflects its base
+// color and sends its SubsurfaceColor through: a diffuse transmission that
+// splits the light between the two, here half each. One-sided, it has a back
+// that is not drawn and the scattered light is part of the reflection. An
+// instance whose BasePropertyOverrides set TwoSided overrides its parent.
 @(test)
 subsurface_on_a_thin_surface_is_diffuse_transmission :: proc(t:^testing.T) {
     leaf :: proc(two_sided:bool) -> []u8 {
@@ -461,14 +462,32 @@ subsurface_on_a_thin_surface_is_diffuse_transmission :: proc(t:^testing.T) {
         b.p.exports[0].data=fx.finish(&m)
         return fx.package_bytes(&b.p,"/Game/M/M_Leaf")
     }
+    // An instance of the leaf that sets TwoSided to the opposite.
+    flipped :: proc(two_sided:bool) -> []u8 {
+        p:=fx.package_make()
+        instance:=fx.writer(&p)
+        fx.object_put(&instance,"Parent",fx.external(&p,"/Game/M/M_Leaf","/Script/Engine","Material","M_Leaf"))
+        overrides:=fx.writer(&p)
+        fx.bool_put(&overrides,"bOverride_TwoSided",true)
+        fx.bool_put(&overrides,"TwoSided",two_sided)
+        fx.struct_put(&instance,"BasePropertyOverrides","MaterialInstanceBasePropertyOverrides",fx.end(&overrides))
+        fx.export(&p,fx.class(&p,"/Script/Engine","MaterialInstanceConstant"),0,"MI_Leaf",fx.finish(&instance))
+        return fx.package_bytes(&p,"/Game/M/MI_Leaf")
+    }
     for two_sided in ([]bool{true,false}) {
         lib:Library
-        library_with(&lib,{"/Game/M/M_Leaf",leaf(two_sided)})
+        library_with(&lib,{"/Game/M/M_Leaf",leaf(two_sided)},{"/Game/M/MI_Leaf",flipped(!two_sided)})
         defer library_destroy(&lib)
         material,_:=object_find(&lib,"/Game/M/M_Leaf")
         translated,error:=translate(&lib,material)
         if !testing.expect_value(t,error.code,Error_Code.None) {return}
         defer translated_destroy(&translated)
+        testing.expect_value(t,translated.info.two_sided,two_sided)
+        instance,_:=object_find(&lib,"/Game/M/MI_Leaf")
+        overridden,instance_error:=translate(&lib,instance)
+        if !testing.expect_value(t,instance_error.code,Error_Code.None) {return}
+        defer translated_destroy(&overridden)
+        testing.expect_value(t,overridden.info.two_sided,!two_sided)
         transmission:=translated.info.diffuse_transmission
         if two_sided {
             testing.expectf(t,abs(transmission.weight-0.5)<1e-5,"weight %v",transmission.weight)

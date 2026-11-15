@@ -187,6 +187,7 @@ translate :: proc(lib:^Library,material:Object,options:Options={},allocator:=con
     clip:=base.clip_set?base.clip:prop_float(base_material,"OpacityMaskClipValue",0.3333)
     // A two-sided material is drawn on single sheets: a thin surface.
     thin:=base.two_sided_set?base.two_sided:prop_bool(base_material,"TwoSided",false)
+    t.info.two_sided=thin
 
     e:Evaluator
     evaluator_init(&e,lib,&t.graph,out)
