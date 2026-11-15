@@ -30,6 +30,7 @@ Post_Defaults :: struct {
     bloom:bool,         // r.DefaultFeature.Bloom
     auto_exposure:bool, // r.DefaultFeature.AutoExposure
     basic:bool,         // r.DefaultFeature.AutoExposure.Method is 1: AEM_Basic
+    lumen:bool,         // r.DynamicGlobalIlluminationMethod is 1: Lumen, which leaves out the light computed ahead
     bias:f64,           // r.DefaultFeature.AutoExposure.Bias
     project:string,     // the folder of the Unreal project they are of; "": a new project's
 }
@@ -42,12 +43,12 @@ UNREAL_LENS_ATTENUATION :: 0.78
 // Unreal's own under what its DefaultEngine.ini sets, where the extended
 // range of the auto exposure is off unless it turns it on; for content
 // copied without its project, those of a new project of Unreal 5, which
-// turns it on.
+// turns it on, and Lumen with it.
 post_defaults_read :: proc(mounts:[]unreal.Source_Mount) -> (defaults:Post_Defaults) {
     defaults={bloom=true,auto_exposure=true,bias=1,luminance_max=1}
     defaults.project=unreal.project_folder(mounts)
     if defaults.project=="" {
-        defaults.extended=true
+        defaults.extended,defaults.lumen=true,true
         return
     }
     attenuation:=f64(UNREAL_LENS_ATTENUATION)
@@ -63,6 +64,7 @@ post_defaults_read :: proc(mounts:[]unreal.Source_Mount) -> (defaults:Post_Defau
             case "r.DefaultFeature.Bloom":defaults.bloom=on
             case "r.DefaultFeature.AutoExposure":defaults.auto_exposure=on
             case "r.DefaultFeature.AutoExposure.Method":defaults.basic=value=="1"
+            case "r.DynamicGlobalIlluminationMethod":defaults.lumen=value=="1"
             case "r.DefaultFeature.AutoExposure.Bias":
                 if v,ok:=strconv.parse_f64(value);ok {defaults.bias=v}
             case "r.EyeAdaptation.LensAttenuation":

@@ -273,9 +273,11 @@ LIGHT_SETTINGS :: []string{"IndirectLightingIntensity"}
 // multiply the light of the lights that do not move by: their
 // IndirectLightingIntensity. Unreal scales with it only the light it
 // computed ahead for those lights (light_add); Movable lights and what
-// glows are not touched.
+// glows are not touched. Lumen leaves that light out and computes all the
+// bounce itself, which the volumes do not scale: then one.
 @(private)
 post_indirect :: proc(c:^Context) -> f32 {
+    if c.post.lumen {return 1}
     v:=1.0
     for &u in post_unbound(c) {
         if !setting_overridden(&u.layer.settings,"IndirectLightingIntensity") {continue}
@@ -286,11 +288,11 @@ post_indirect :: proc(c:^Context) -> f32 {
 }
 
 // A bound post process volume that overrides IndirectLightingIntensity: in
-// Unreal it changes the light as the camera goes in and out of its box, and
-// Mirai's light does not follow the camera.
+// Unreal it changes the light computed ahead as the camera goes in and out
+// of its box, and Mirai's light does not follow the camera.
 @(private)
 post_process_light :: proc(c:^Context,label:string,settings:^Struct_Chain,unbound:bool) {
-    if unbound || !chain_bool(settings,"bOverride_IndirectLightingIntensity") {return}
+    if unbound || c.post.lumen || !chain_bool(settings,"bOverride_IndirectLightingIntensity") {return}
     scale,_:=chain_real(settings,"IndirectLightingIntensity",1)
     warn(c,"%s: its IndirectLightingIntensity %.3g changes the indirect light as the camera goes into its box in Unreal; Mirai's light does not follow the camera, so it is not taken",label,scale)
 }

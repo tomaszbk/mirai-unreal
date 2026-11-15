@@ -389,6 +389,31 @@ a_map_becomes_a_scene_of_entities_meshes_lights_and_cameras_in_the_units_of_mira
     testing.expect_value(t,again_renderer.materials[0],renderer.materials[0])
 }
 
+// The same map in a project that lights with Lumen, as L_showcase_map's of
+// the Crystal Mine does: Lumen computes all the bounce itself and leaves
+// out the light computed ahead, so no post process volume scales a light.
+@(test)
+under_lumen_the_indirect_lighting_intensity_of_a_post_process_scales_no_light :: proc(t:^testing.T) {
+    f:=folders_make("lumen")
+    defer folders_remove(f)
+    os.make_directory_all(fmt.tprintf("%s/Config",f.unreal))
+    _=os.write_entire_file(fmt.tprintf("%s/Config/DefaultEngine.ini",f.unreal),"[/Script/Engine.RendererSettings]\nr.DynamicGlobalIlluminationMethod=1\n")
+    report,error:=level_import(f.map_path,{root=f.mirai},engine_content="-")
+    if !testing.expectf(t,error.code==.None,"%v: %s",error.code,error.message) {return}
+    defer level_report_destroy(&report)
+    types:asset.Types;asset.types_init(&types);defer asset.types_destroy(&types)
+    scene:asset.Scene
+    if !testing.expect_value(t,asset.scene_load(&scene,&types,report.scene_path),asset.Error.None) {return}
+    defer asset.scene_destroy(&scene)
+    spot,_,_:=entity_named(&scene,"Spot")
+    light,has_light:=asset.scene_get(&scene,spot,"Spot_Light",render.Spot_Light)
+    testing.expectf(t,has_light && light.indirect==4,"a Stationary light bounces its own IndirectLightingIntensity: %v",light.indirect)
+    torch,_,_:=entity_named(&scene,"Static")
+    bulb,has_bulb:=asset.scene_get(&scene,torch,"Point_Light",render.Point_Light)
+    testing.expectf(t,has_bulb && close(bulb.intensity,100) && bulb.indirect==1,"a Static light as it is: %v cd, %v of its bounce",bulb.intensity,bulb.indirect)
+    testing.expect(t,!has_warning(&report,"Cellar","IndirectLightingIntensity"),"a bound volume changes nothing as the camera goes in")
+}
+
 @(private="file")
 sky_of :: proc(path:string,types:^asset.Types) -> (sky:render.Sky,found:bool) {
     a:asset.Asset
