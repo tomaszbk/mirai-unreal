@@ -18,17 +18,16 @@ import fog "plugins:fog/runtime"
 // actors at its corners, with Unreal's density at the height of the actor,
 // its base, thinning over it by its falloff per metre in powers of e and
 // holding under it; it glows with its inscattering color, the one it saved or
-// the default of UE4. Its volumetric fog lights it with its albedo and stops
-// half of FogDensity in powers of e; without it, no light of the scene
-// reaches it and it stops FogDensity in powers of two. Its second fog is
+// the default of UE4. No light of the scene reaches it, with or without its
+// volumetric fog, and it stops FogDensity in powers of two. Its second fog is
 // another in the same box, from the actor raised by its offset; of two
 // height fogs, the first alone, as Unreal draws.
 @(test)
 the_height_fog_of_an_unreal_level_fills_its_box_with_its_density_and_glow :: proc(t:^testing.T) {
-    Case :: struct {volumetric:bool,inscattering:[4]f32,glow,color:[3]f32,stops:f64}
+    Case :: struct {volumetric:bool,inscattering:[4]f32,glow:[3]f32}
     cases:=[]Case{
-        {volumetric=true,inscattering={0.171,0,1,1},glow={0.171,0,1},color={1,1,1},stops=0.5},
-        {glow={0.447,0.638,1},color={0,0,0},stops=math.LN2},
+        {volumetric=true,inscattering={0.171,0,1,1},glow={0.171,0,1}},
+        {glow={0.447,0.638,1}},
     }
     directory,_:=os.temp_directory(context.temp_allocator)
     for test_case,n in cases {
@@ -85,13 +84,12 @@ the_height_fog_of_an_unreal_level_fills_its_box_with_its_density_and_glow :: pro
             if !ok {continue}
             place,bounded:=asset.scene_get(&scene,e.id,"Volume",evolume.Volume)
             testing.expectf(t,bounded && place.shape==.Box && abs(place.extents.x-1024)<1e-2 && abs(place.extents.y-1024)<1e-2 && abs(place.extents.z-1024)<1e-2,"case %d: the box of the level: %v",n,place)
-            testing.expectf(t,volume.glow==test_case.glow && volume.color==test_case.color,"case %d: glow %v, color %v",n,volume.glow,volume.color)
+            testing.expectf(t,volume.glow==test_case.glow && volume.color=={},"case %d: glow %v, color %v",n,volume.glow,volume.color)
             if e.name=="Mist" {
                 found=true
                 transform,_:=asset.scene_get(&scene,e.id,"Transform",core.Transform)
                 testing.expectf(t,abs(transform.position.y-199.66)<1e-2,"case %d: the box is centred at %v",n,transform.position)
-                // About 0.0014 per metre with the volumetric fog.
-                expected:=f32(0.028094999492168427/10*test_case.stops)
+                expected:=f32(0.028094999492168427/10*math.LN2)
                 testing.expectf(t,abs(volume.density-expected)<1e-6*expected,"case %d: density %v, not %v",n,volume.density,expected)
                 testing.expectf(t,abs(volume.base-base)<1e-2,"case %d: base %v m over the bottom, not %v",n,volume.base,base)
                 testing.expect(t,abs(volume.falloff-f32(0.02*math.LN2))<1e-6)
@@ -100,7 +98,7 @@ the_height_fog_of_an_unreal_level_fills_its_box_with_its_density_and_glow :: pro
             added=true
             testing.expectf(t,e.name=="Mist second fog","only the first height fog and its second: %s",e.name)
             testing.expect(t,volume.zone.mode==.Add,"the second fog adds to the first")
-            expected:=f32(0.2/10*test_case.stops)
+            expected:=f32(0.2/10*math.LN2)
             testing.expectf(t,abs(volume.density-expected)<1e-6*expected,"case %d: second density %v, not %v",n,volume.density,expected)
             testing.expectf(t,abs(volume.base-(base+3))<1e-2,"case %d: second base %v",n,volume.base)
             testing.expect(t,abs(volume.falloff-f32(0.01*math.LN2))<1e-6)
@@ -114,15 +112,15 @@ the_height_fog_of_an_unreal_level_fills_its_box_with_its_density_and_glow :: pro
 // its height fog the light of the sky of the atmosphere far away, lit by its
 // warm sun of 25 lux 38° over the horizon, which takes the violet of its
 // inscattering color toward beige; with no atmosphere the glow is that color
-// alone. A fog without its volumetric fog takes no light of the scene, also
-// under an atmosphere. Unreal's lobe around the sun is a warning.
+// alone. The fog takes no light of the scene, also under an atmosphere.
+// Unreal's lobe around the sun is a warning.
 @(test)
 under_a_sky_atmosphere_the_height_fog_glows_with_the_light_of_its_sky :: proc(t:^testing.T) {
-    Case :: struct {atmosphere,volumetric:bool,sky:[3]f32,color:[3]f32}
+    Case :: struct {atmosphere,volumetric:bool,sky:[3]f32}
     cases:=[]Case{
-        {atmosphere=true,volumetric=true,sky={0.413,0.350,0.184},color={1,1,1}},
+        {atmosphere=true,volumetric=true,sky={0.413,0.350,0.184}},
         {atmosphere=true,volumetric=false,sky={0.413,0.350,0.184}},
-        {volumetric=true,color={1,1,1}},
+        {volumetric=true},
     }
     inscattering:=[3]f32{0.171429,0,1}
     directory,_:=os.temp_directory(context.temp_allocator)
@@ -185,7 +183,7 @@ under_a_sky_atmosphere_the_height_fog_glows_with_the_light_of_its_sky :: proc(t:
             found=true
             sky:=volume.glow-inscattering
             for c in 0..<3 {testing.expectf(t,abs(sky[c]-test_case.sky[c])<=0.05*max(test_case.sky[c],0.01),"case %d: the sky adds %v to the glow, not %v",n,sky,test_case.sky)}
-            testing.expectf(t,volume.color==test_case.color,"case %d: color %v",n,volume.color)
+            testing.expectf(t,volume.color=={},"case %d: color %v",n,volume.color)
         }
         testing.expectf(t,found,"case %d: the fog is an entity",n)
     }
