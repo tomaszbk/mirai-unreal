@@ -376,7 +376,7 @@ post_process_add :: proc(c:^Context,a:int,lens:=false) -> (p:Post_Process,made:b
         missing:=len(c.translators)>0?"the lens plugin is not in the project":"the lens plugin translates them in an editor session: import the level there (mirai session start, then mirai rpc asset.import with its path)"
         warn(c,"%s: its bloom and vignette (%s) are not translated: %s",label,strings.join(lensed[:],", ",context.temp_allocator),missing)
     }
-    post_process_light(c,label,&own,unbound,f32(priority))
+    post_process_light(c,label,&own,unbound)
     p.settings=post_settings(c,a,own,weight)
     exposure,exposed:=exposure_from(c,&p.settings,0)
     grade,graded:=grade_from(c,&p.settings)

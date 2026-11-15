@@ -1,6 +1,7 @@
 package unreal_scene
 
 import "core:math"
+import "core:slice"
 import "project:plugins/unreal/editor/level"
 import unreal "project:plugins/unreal/editor/package"
 import render "mirai:engine/render"
@@ -182,6 +183,13 @@ fortnite_version :: proc(c:^Context,ref:level.Ref) -> i32 {
 light_add :: proc(c:^Context,actor,component:int,kind:Light_Kind) -> bool {
     u:=unreal_light(c,component,kind)
     m,approximated:=light_convert(u)
+    // What Unreal's post process multiplied of a light that does not move:
+    // all of a Static one's light, the bounce of a Stationary one.
+    switch light_mobility(c,component) {
+    case .Static:m.value*=post_indirect(c)
+    case .Stationary:m.indirect*=post_indirect(c)
+    case .Movable:
+    }
     scale:=[3]f32{1,1,1}
     if kind==.Rect {scale={max(m.size.x,1e-3),max(m.size.y,1e-3),1}}
     e,ok:=component_entity(c,actor,component,scale=scale)
@@ -226,41 +234,60 @@ light_add :: proc(c:^Context,actor,component:int,kind:Light_Kind) -> bool {
 
 LIGHT_NAMES :: [Light_Kind]string{.Point="Point_Light",.Spot="Spot_Light",.Rect="Rect_Light",.Directional="Sun"}
 
+@(private)
+Mobility :: enum u8 {Movable,Stationary,Static}
+
+// The native light actors whose constructor makes their LightComponent0
+// Stationary.
+@(private)
+STATIONARY_LIGHT_ACTORS :: []string{"PointLight","SpotLight","RectLight","DirectionalLight"}
+
+// The Mobility of a light component, from it or its archetypes; where none
+// keeps one, that of the constructor of its actor's native class or of its
+// own class.
+@(private)
+light_mobility :: proc(c:^Context,component:int) -> Mobility {
+    d:=c.d
+    k:=d.components[component]
+    text,found:=level.enum_of(d,k.ref,"Mobility","Movable")
+    if !found {
+        native:=level.actor_native_class(d,k.actor)
+        stationary:=native.pkg=="/Script/Engine" && slice.contains(STATIONARY_LIGHT_ACTORS,native.name) && k.name=="LightComponent0"
+        if stationary || k.class.name=="SkyLightComponent" {text="Stationary"}
+    }
+    switch text {
+    case "Static":return .Static
+    case "Stationary":return .Stationary
+    }
+    return .Movable
+}
+
 // The settings of a post process volume that are light of the world.
 @(private)
 LIGHT_SETTINGS :: []string{"IndirectLightingIntensity"}
 
-// The IndirectLightingIntensity of the unbound post process volume of the
-// highest priority that overrides it: the scale of the Bounce_Light of the
-// scene (bounce_finish).
+// What Unreal's unbound post process volumes, blended by priority and weight,
+// multiply the light of the lights that do not move by: their
+// IndirectLightingIntensity. Unreal scales with it only the light it
+// computed ahead for those lights (light_add); Movable lights and what
+// glows are not touched.
 @(private)
-Bounce_Candidate :: struct {
-    scale,priority:f32,
-    found:bool,
-}
-
-// What a post process volume overrides of the light of the world. Unbound,
-// its IndirectLightingIntensity scales all the light that bounces; a bound
-// one changes it as the camera goes in and out of its box, and Mirai's light
-// does not follow the camera: it is a warning and nothing more.
-@(private)
-post_process_light :: proc(c:^Context,label:string,settings:^Struct_Chain,unbound:bool,priority:f32) {
-    if !chain_bool(settings,"bOverride_IndirectLightingIntensity") {return}
-    scale,_:=chain_real(settings,"IndirectLightingIntensity",1)
-    if !unbound {
-        warn(c,"%s: its IndirectLightingIntensity %.3g changes the indirect light as the camera goes into its box in Unreal; Mirai's light does not follow the camera, so it is not taken",label,scale)
-        return
+post_indirect :: proc(c:^Context) -> f32 {
+    v:=1.0
+    for &u in post_unbound(c) {
+        if !setting_overridden(&u.layer.settings,"IndirectLightingIntensity") {continue}
+        own,found:=chain_real(&u.layer.settings,"IndirectLightingIntensity",v)
+        if found {v+=(own-v)*u.layer.weight}
     }
-    if c.bounce.found && c.bounce.priority>priority {return}
-    c.bounce={scale=max(f32(scale),0),priority=priority,found=true}
+    return max(f32(v),0)
 }
 
-// The Bounce_Light of the scene, when an unbound post process volume scales
-// the indirect light.
+// A bound post process volume that overrides IndirectLightingIntensity: in
+// Unreal it changes the light as the camera goes in and out of its box, and
+// Mirai's light does not follow the camera.
 @(private)
-bounce_finish :: proc(c:^Context) {
-    if c.failed || !c.bounce.found || c.bounce.scale==1 {return}
-    bounce:=render.BOUNCE_LIGHT_DEFAULT
-    bounce.scale=c.bounce.scale
-    if e,ok:=entity_make(c,0,"Bounce_Light","Bounce light",mm.TRANSFORM_IDENTITY);ok {component_set(c,e,"Bounce_Light",&bounce)}
+post_process_light :: proc(c:^Context,label:string,settings:^Struct_Chain,unbound:bool) {
+    if unbound || !chain_bool(settings,"bOverride_IndirectLightingIntensity") {return}
+    scale,_:=chain_real(settings,"IndirectLightingIntensity",1)
+    warn(c,"%s: its IndirectLightingIntensity %.3g changes the indirect light as the camera goes into its box in Unreal; Mirai's light does not follow the camera, so it is not taken",label,scale)
 }

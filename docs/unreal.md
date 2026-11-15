@@ -704,10 +704,14 @@ entity, the imported meshes and the time.
     `radius`. Unreal lights toward the component's +X, Mirai's -Z, and the entity has scale one.
     False `bAffectsWorld` leaves the component off. `IndirectLightingIntensity` is `indirect` and
     `VolumetricScatteringIntensity` is `scattering`, on the sun too.
-  - The `IndirectLightingIntensity` an unbound `PostProcessVolume` overrides (the highest
-    priority) is the `scale` of the scene's `Bounce_Light`. A bound one that overrides it is a
-    warning: in Unreal the indirect light changes as the camera enters its box, and Mirai's light
-    does not follow the camera.
+  - The `IndirectLightingIntensity` the unbound `PostProcessVolume`s override, blended by priority
+    and weight, is what Unreal multiplied of the lights that do not move, read from each
+    component's `Mobility` (Stationary for the native light actors and the sky light where none is
+    kept): it multiplies the `indirect` of a Stationary light and the whole intensity of a Static
+    one. Movable lights and what glows keep their values, and the world gets no `Bounce_Light`. A
+    sky light that does not move warns: Mirai's sky has no multiplier of its bounce. A bound
+    volume that overrides it is a warning: in Unreal the indirect light changes as the camera
+    enters its box, and Mirai's light does not follow the camera.
   - Warned, with count: no inverse-square falloff (candelas that give the same at half the radius),
     `SourceLength`, IES, light functions, no shadows and cones outside 1° to 89°.
   - Mirai lights with one sun: with several directionals the brightest stays on.

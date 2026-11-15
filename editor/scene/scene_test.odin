@@ -60,9 +60,9 @@ red_package :: proc() -> []u8 {
 
 // A map with a rock (a StaticMeshActor whose root shows the quad with M_Red
 // over its slot and whose second mesh is hidden in game), a spot light of
-// 1000 lumens, a cine camera, an ExponentialHeightFog (a plugin's), a
-// sound and two lamps of a Blueprint, a base with a shade over it, the
-// second's shade hidden.
+// 1000 lumens, a Movable and a Static point light, a cine camera, an
+// ExponentialHeightFog (a plugin's), a sound and two lamps of a Blueprint, a
+// base with a shade over it, the second's shade hidden.
 @(private="file")
 map_package :: proc() -> []u8 {
     l:=fixture.level_begin("/Game/Maps/Map")
@@ -101,13 +101,26 @@ map_package :: proc() -> []u8 {
     light:=fixture.component_add(&l,spot,fixture.engine_class(w,"SpotLightComponent"),"LightComponent0",light_props)
     fixture.actor_set(&l,spot,light)
 
+    // Two point lights of 100 cd, one Movable and one Static; the spot is
+    // Stationary, as SpotLight's constructor makes it.
+    for mobility in ([2]string{"Movable","Static"}) {
+        torch:=fixture.actor_add(&l,fixture.engine_class(w,"PointLight"),fmt.tprintf("PointLight_%s",mobility),mobility)
+        torch_props:=fixture.bytes_make()
+        fixture.float_property(&torch_props,w,"Intensity",100)
+        fixture.enum_property(&torch_props,w,"IntensityUnits","ELightUnits","ELightUnits::Candelas")
+        fixture.enum_property(&torch_props,w,"Mobility","EComponentMobility",fmt.tprintf("EComponentMobility::%s",mobility))
+        bulb:=fixture.component_add(&l,torch,fixture.engine_class(w,"PointLightComponent"),"LightComponent0",torch_props)
+        fixture.actor_set(&l,torch,bulb)
+    }
+
     // Two post process volumes that scale the indirect light: the unbound one
-    // everywhere, the bound one inside its box.
+    // everywhere, at 7 as L_showcase_map of the Crystal Mine has it, the bound
+    // one inside its box.
     for unbound,i in ([2]bool{true,false}) {
         volume:=fixture.actor_add(&l,fixture.engine_class(w,"PostProcessVolume"),fmt.tprintf("PostProcessVolume_%d",i),unbound?"Bounce":"Cellar")
         settings:=fixture.bytes_make()
         fixture.bool_property(&settings,w,"bOverride_IndirectLightingIntensity",true)
-        fixture.float_property(&settings,w,"IndirectLightingIntensity",unbound?3:5)
+        fixture.float_property(&settings,w,"IndirectLightingIntensity",unbound?7:5)
         volume_props:=fixture.bytes_make()
         fixture.bool_property(&volume_props,w,"bUnbound",unbound)
         fixture.struct_property(&volume_props,w,"Settings","PostProcessSettings",&settings)
@@ -263,12 +276,18 @@ a_map_becomes_a_scene_of_entities_meshes_lights_and_cameras_in_the_units_of_mira
         testing.expectf(t,close(light.intensity,expected),"%v cd, expected %v",light.intensity,expected)
         testing.expect(t,close(light.range,20) && close(light.radius,0.05) && close(light.angle,30*math.RAD_PER_DEG))
         testing.expect(t,close3(light.color,{1,mm.srgb_to_linear(f32(128)/255),0}),"the color of the light, linear")
-        testing.expectf(t,light.indirect==4 && light.scattering==2,"what of its light bounces and what a fog scatters: %v and %v",light.indirect,light.scattering)
+        // Stationary: the unbound volume's 7 multiplies the bounce Unreal computed ahead for it.
+        testing.expectf(t,light.indirect==4*7 && light.scattering==2,"what of its light bounces and what a fog scatters: %v and %v",light.indirect,light.scattering)
     }
-    // The unbound post process volume scales all the indirect light; the bound one would change it with the camera.
-    bounce,_,has_bounce:=entity_named(&scene,"Bounce light")
-    scale,has_scale:=asset.scene_get(&scene,bounce,"Bounce_Light",render.Bounce_Light)
-    testing.expectf(t,has_bounce && has_scale && scale.scale==3,"the indirect light of the unbound volume: %v",scale)
+    // The unbound volume leaves a Movable light as it is and multiplies all of a Static one's light; it scales nothing else.
+    for mobility in ([2]string{"Movable","Static"}) {
+        torch,_,_:=entity_named(&scene,mobility)
+        bulb,has_bulb:=asset.scene_get(&scene,torch,"Point_Light",render.Point_Light)
+        expected:=f32(mobility=="Static"?700:100)
+        testing.expectf(t,has_bulb && close(bulb.intensity,expected) && bulb.indirect==1,"%s: %v cd, %v of its bounce",mobility,bulb.intensity,bulb.indirect)
+    }
+    _,_,has_bounce:=entity_named(&scene,"Bounce light")
+    testing.expect(t,!has_bounce,"the volume is no Bounce_Light of the world")
     testing.expect(t,has_warning(&report,"Cellar","IndirectLightingIntensity","camera"),"a bound volume that scales the indirect light is a warning")
     testing.expect(t,!has_warning(&report,"no equivalent","IndirectLightingIntensity"),"the indirect light is taken")
     light_t,_:=asset.scene_get(&scene,spot,"Transform",core.Transform)
@@ -336,7 +355,7 @@ a_map_becomes_a_scene_of_entities_meshes_lights_and_cameras_in_the_units_of_mira
     classes:=0
     for c in report.classes {if c.class=="/Script/Engine.StaticMeshActor" {classes+=1;testing.expect(t,c.actors==1 && c.translated==1)}}
     testing.expect_value(t,classes,1)
-    testing.expect_value(t,len(report.lights),1)
+    testing.expect_value(t,len(report.lights),3)
     testing.expect_value(t,len(report.cameras),1)
 
     // Importing again writes the same file with the same ids.
