@@ -2,6 +2,7 @@ package write
 
 import "base:runtime"
 import "core:fmt"
+import "core:hash"
 import "core:mem"
 import "core:os"
 import "core:path/filepath"
@@ -465,8 +466,10 @@ names_prefix :: proc(model:^importer.Imported_Model,prefix:string,allocator:mem.
 
 // Writes the sky of the Unreal cube texture at path as one .tex of the
 // import of outputs, named prefix and the texture: the image of a Sky
-// (texture.sky_of_cube). shared, lock and decoder as materials_write.
-sky_write :: proc(lib:^material.Library,path:string,outputs:^importer.Outputs,prefix:string,options:importer.Import_Options={},allocator:=context.allocator,shared:^Builder=nil,lock:^sync.Mutex=nil,decoder:^kraken.Decoder=nil) -> (id:base.Asset_Id,error:importer.Error) {
+// (texture.sky_of_cube), its lower half toward below. One whose lower half
+// is not Unreal's default, black, is named apart. shared, lock and decoder
+// as materials_write.
+sky_write :: proc(lib:^material.Library,path:string,below:[4]f32,outputs:^importer.Outputs,prefix:string,options:importer.Import_Options={},allocator:=context.allocator,shared:^Builder=nil,lock:^sync.Mutex=nil,decoder:^kraken.Decoder=nil) -> (id:base.Asset_Id,error:importer.Error) {
     arena:mem.Dynamic_Arena
     mem.dynamic_arena_init(&arena,allocator,allocator,block_size=1<<20,out_band_size=1<<20)
     defer mem.dynamic_arena_destroy(&arena)
@@ -491,9 +494,13 @@ sky_write :: proc(lib:^material.Library,path:string,outputs:^importer.Outputs,pr
         for w,i in b.warnings {notes[i]=strings.clone(w,scratch)}
         clear(&b.warnings)
         if !decoded {return {},importer.error_make(.Read,"texture %s could not be read: %s",path,strings.join(notes,"; ",context.temp_allocator))}
-        sky,sky_error:=texture.sky_of_cube(cube.input.source,cube.usage==.Color,scratch)
+        sky,sky_error:=texture.sky_of_cube(cube.input.source,cube.usage==.Color,below,scratch)
         if sky_error.code!=.None {return {},importer.error_make(.Unsupported,"texture %s is not a cube: the sky is drawn from a cube",path)}
         name:=strings.concatenate({unreal.asset_name(path[strings.last_index_any(path,"./")+1:]),"_Sky"},scratch)
+        if below!={0,0,0,1} {
+            lower:=below
+            name=fmt.aprintf("%s_%08x",name,hash.fnv32a(mem.ptr_to_bytes(&lower)),allocator=scratch)
+        }
         image={name=name,made=sky,srgb=cube.usage==.Color,keep_precision=cube.keep_precision}
         model.warnings=notes
     }

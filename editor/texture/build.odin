@@ -236,7 +236,9 @@ cube_long_lat :: proc(from:textures.Source,read,stored:^textures.Transfer,alloca
 // the turn from -X through -Z, +X and +Z across, as sky_image in scene.slang
 // reads it. Each texel is the bilinear of the face its direction lands on,
 // in linear values: srgb says the texels of 8 or 16 bits have the sRGB curve.
-sky_of_cube :: proc(cube:textures.Source,srgb:bool,allocator:=context.allocator) -> (sky:textures.Source,error:unreal.Error) {
+// Below the horizon each texel goes toward below.rgb by below.a, as Unreal's
+// sky light makes the lower half of its cube (none with below.a zero).
+sky_of_cube :: proc(cube:textures.Source,srgb:bool,below:[4]f32,allocator:=context.allocator) -> (sky:textures.Source,error:unreal.Error) {
     if !cube.cube || cube.width!=cube.height || cube.width<1 || cube.layers<FACES {return {},{.Unsupported_Value,0,"the faces of a cube"}}
     size:=cube.width
     sky={width=4*size,height=2*size,layers=1,format=cube.format,allocator=allocator}
@@ -257,7 +259,9 @@ sky_of_cube :: proc(cube:textures.Source,srgb:bool,allocator:=context.allocator)
             fx,fy:=clamp(sx-f32(x0),0,1),clamp(sy-f32(y0),0,1)
             top:=texel(cube,face,x0,y0,&transfer)*(1-fx)+texel(cube,face,x1,y0,&transfer)*fx
             bottom:=texel(cube,face,x0,y1,&transfer)*(1-fx)+texel(cube,face,x1,y1,&transfer)*fx
-            textures.texel_write(sky.texels,sky.format,row*sky.width+column,top*(1-fy)+bottom*fy,&transfer)
+            value:=top*(1-fy)+bottom*fy
+            if math.cos(theta)<0 {for i in 0..<3 {value[i]+=(below[i]-value[i])*below.a}}
+            textures.texel_write(sky.texels,sky.format,row*sky.width+column,value,&transfer)
         }
     }
     return

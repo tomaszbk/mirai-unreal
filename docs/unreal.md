@@ -171,8 +171,9 @@ and its sockets.
     none, the root. How many: the asset's `BoneInfluenceLimit`, else the project's
     `DefaultBoneInfluenceLimit`, never more than twelve, and eight unless
     `r.GPUSkin.UnlimitedBoneInfluences` is above its threshold. The project comes from the
-    `Config/DefaultEngine.ini` of the `/Game` mount (`skin_project_read`); without it, the engine
-    defaults. The limit's `PerPlatform` value is not read.
+    `Config/DefaultEngine.ini` of the project of the `/Game` mount, the folder next to it with a
+    `.uproject` (`project_folder`, `skin_project_read`); without it, the engine defaults. The
+    limit's `PerPlatform` value is not read.
   - Welding: in face order, a corner becomes the first vertex already made in its chunk (its
     section's material) whose corner overlaps and is equal within the `SkeletalMeshBuildSettings`
     thresholds (position, uv, tangent basis) with the same color and influences; a triangle with
@@ -722,17 +723,22 @@ entity, the imported meshes and the time.
   player. What its `PostProcessSettings` override of exposure, over the unbound post process
   volumes, is its `Exposure`.
 - **Sky and exposure.** The level gives a `Sky` entity. Without a `SkyLight` it does not light, as
-  in Unreal; with one, it lights by its `Intensity` and color with the sky-to-sun ratio of Mirai's
-  `Sky`, taken from the level's brightest sun, and a warning: what Unreal captures from the scene
-  has no equivalent. With `SLS_SpecifiedCubemap`, the `Sky`'s image is its `Cubemap` turned on
-  import into a long-lat image (`sky_of_cube`, a `.tex` next to the materials, import of the cube's
-  package), and its entity rotates by `SourceCubemapAngle` around up, as Unreal rotates the cube.
+  in Unreal. With `SLS_SpecifiedCubemap`, the `Sky`'s image is its `Cubemap` turned on import into
+  a long-lat image (`sky_of_cube`, a `.tex` next to the materials, import of the cube's package)
+  and its `luminance` its `Intensity` times its color, as Unreal lights from the cube; under the
+  horizon the image goes toward `LowerHemisphereColor` by its alpha when `bLowerHemisphereIsBlack`
+  (a lower half other than black is a `.tex` of its own), and its entity rotates by
+  `SourceCubemapAngle` around up, as Unreal rotates the cube. A sky light that captures the scene
+  lights by its `Intensity` and color with the sky-to-sun ratio of Mirai's `Sky`, taken from the
+  level's brightest sun, and a warning: what Unreal captures from the scene has no equivalent.
   Behind the scene the sky shows if the level draws it (`SkyAtmosphere`, `AtmosphericFog` or the
   engine's sky sphere), and otherwise black; with an atmosphere, the `Sky` is the air the sun lights
   (`atmosphere`), unless the `SkyLight` names a cube: Mirai's `Sky` draws the image or the air, and
   the cube wins, with a warning. `VolumetricCloud` is a warning: Mirai draws no clouds.
-  The post process is Unreal's: the defaults of the project (`DefaultEngine.ini`: its
-  `r.DefaultFeature` bloom and auto exposure, method and bias, and the extended range) are a
+  The post process is Unreal's: the defaults of the Unreal project of the level (Unreal's under
+  its `DefaultEngine.ini`: its `r.DefaultFeature` bloom and auto exposure, method and bias, and
+  the extended range, off unless it is set) or, for content copied without its project, those of
+  a new project of Unreal 5, which extends the range; a warning says which. They are a
   `View_Volume` of the whole world, `Post process`, under every volume, also in a level without
   volumes; each enabled `PostProcessVolume` is a `View_Volume` by its priority, in the box of its
   `CubeBuilder` grown by its blend radius or everywhere if unbound, holding what it overrides by its

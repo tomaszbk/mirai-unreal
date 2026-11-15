@@ -162,15 +162,21 @@ the first of a scene, and the others are a warning.
 
 - Its inscattering luminance, which Unreal shows where the fog is thick whatever lights it, is the
   `glow`; a package from before the luminance takes the color it saved, with its old default.
+- Under a `SkyAtmosphere` the `glow` also has the light Unreal adds from the sky of the atmosphere,
+  unshadowed: its distant sky light (the air lit by the brightest sun of the atmosphere, marched
+  with Unreal's transmittance and multiple-scattering tables and its directions over the sphere)
+  times `HeightFogContribution` and `SkyAtmosphereAmbientContributionColorScale`
+  (`unreal_scene.fog_sky`, worked out on import).
 - With `bEnableVolumetricFog` Unreal lights the fog with the lights of the scene, as Mirai does: the
   albedo is that of its volumetric fog and the density half of `FogDensity` in powers of e, times
-  its extinction scale. Without it no light of the scene reaches the fog: the albedo is black, or
-  white under a `SkyAtmosphere`, whose sky and sun light it, and the density is `FogDensity` in
-  powers of two.
+  its extinction scale. Without it no light of the scene reaches the fog: the albedo is black and
+  the density is `FogDensity` in powers of two.
 - What Mirai does not draw is a warning: the distance where Unreal's volumetric fog ends and its
-  glow starts, the directional and cubemap colors it adds without shadows, the emissive of its
-  volumetric fog, the scale of the sky light, and what depends on the eye (`StartDistance`,
-  `EndDistance`, `FogCutoffDistance`, `FogMaxOpacity`).
+  glow starts, the lobe it adds around the sun without shadows (`DirectionalInscatteringLuminance`
+  times the luminance of the sun, plus the sun through the atmosphere over 4π; Mirai's fog
+  scatters the sun by its color and anisotropy instead), its cubemap colors, the emissive of its
+  volumetric fog and what depends on the eye (`StartDistance`, `EndDistance`,
+  `FogCutoffDistance`, `FogMaxOpacity`).
 
 ## Lens (`unreal_lens`)
 
@@ -337,12 +343,15 @@ the area the Blueprint simulates; at 1, those of the mesh. `PressureDivergenceBu
   `a_spline_mesh_of_unreal_bends_its_mesh_where_unreal_does` (against Unreal's definition of the
   curve, for each forward axis) and `the_spline_meshes_of_an_unreal_level_bend_their_meshes`.
 - Tests of `plugins/unreal_fog/editor`:
-  `the_height_fog_of_an_unreal_level_fills_its_box_with_its_density_and_glow`.
+  `the_height_fog_of_an_unreal_level_fills_its_box_with_its_density_and_glow` and
+  `under_a_sky_atmosphere_the_height_fog_glows_with_the_light_of_its_sky`.
 - Tests of `plugins/unreal_lens/editor`:
   `the_bloom_and_vignette_of_an_unreal_post_process_volume_are_a_lens_volume`; the importer's
   part and the warning without the bridge,
   `a_post_process_volume_overrides_unreals_defaults_over_the_volumes_below_it` and
-  `a_level_without_post_process_volumes_has_unreals_default_look` of `editor/scene`.
+  `a_level_without_post_process_volumes_has_unreals_default_look` and
+  `the_post_process_of_a_level_without_its_project_takes_the_defaults_of_a_new_unreal_project` of
+  `editor/scene`.
 - Tests of `plugins/unreal_navigation/editor`:
   `the_navigation_actors_of_an_unreal_level_are_bounds_areas_and_links`.
 - Tests of `plugins/unreal_vfx/editor`: the names the Niagara translator writes and the VM bytecode

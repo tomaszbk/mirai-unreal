@@ -237,15 +237,35 @@ engine_plugins_walk :: proc(folder:string,depth:int,mounts:^[dynamic]Source_Moun
 // PROJECT_CONFIG_LIMIT: the largest config file of a project that is read.
 @(private) PROJECT_CONFIG_LIMIT :: 1<<20
 
-// The text of a file of the Config folder of the project whose content is
-// /Game, such as DefaultEngine.ini; "" without a /Game mount or the file.
-project_config_read :: proc(mounts:[]Source_Mount,name:string,allocator:=context.temp_allocator) -> string {
+// The folder of the Unreal project whose content /Game mounts: the one
+// that holds its Content folder and a .uproject; "" for content copied
+// without its project.
+project_folder :: proc(mounts:[]Source_Mount) -> string {
     for mount in mounts {
         if mount.package_prefix!="/Game" {continue}
-        path,_:=filepath.join({filepath.dir(mount.directory),"Config",name},context.temp_allocator)
-        text,error:=serial.file_read(path,allocator,limit=PROJECT_CONFIG_LIMIT)
-        if error!=.None {return ""}
-        return string(text)
+        folder:=filepath.dir(mount.directory)
+        return uproject_in(folder)?folder:""
     }
     return ""
+}
+
+// Whether a folder holds a .uproject: it is the folder of an Unreal project.
+uproject_in :: proc(folder:string) -> bool {
+    entries,error:=os.read_all_directory_by_path(folder,context.temp_allocator)
+    if error!=nil {return false}
+    for entry in entries {
+        if entry.type!=.Directory && strings.equal_fold(filepath.ext(entry.name),".uproject") {return true}
+    }
+    return false
+}
+
+// The text of a file of the Config folder of the project whose content is
+// /Game, such as DefaultEngine.ini; "" outside a project or without the file.
+project_config_read :: proc(mounts:[]Source_Mount,name:string,allocator:=context.temp_allocator) -> string {
+    folder:=project_folder(mounts)
+    if folder=="" {return ""}
+    path,_:=filepath.join({folder,"Config",name},context.temp_allocator)
+    text,error:=serial.file_read(path,allocator,limit=PROJECT_CONFIG_LIMIT)
+    if error!=.None {return ""}
+    return string(text)
 }

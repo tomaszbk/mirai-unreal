@@ -713,8 +713,9 @@ an_atmosphere_of_unreal_is_the_air_of_the_sky :: proc(t:^testing.T) {
     testing.expect(t,close(sky.air.mie_anisotropy,0.6) && close(sky.air.mie.x,0.003996),"what it does not set is Unreal's default")
 }
 
-// A map lit from the sky by a cube of Unreal's, turned a quarter about its up,
-// with an atmosphere when air.
+// A map lit from the sky by a cube of Unreal's at Intensity 2, turned a
+// quarter about its up, and by the warm sun of 25 lux of the crystal cave of
+// Fab, with an atmosphere when air.
 @(private="file")
 cubemap_map :: proc(air:=false) -> []u8 {
     l:=fixture.level_begin("/Game/Maps/Map")
@@ -725,8 +726,15 @@ cubemap_map :: proc(air:=false) -> []u8 {
     fixture.enum_property(&props,w,"SourceType","ESkyLightSourceType","ESkyLightSourceType::SLS_SpecifiedCubemap")
     fixture.object_property(&props,w,"Cubemap",cube)
     fixture.float_property(&props,w,"SourceCubemapAngle",90)
+    fixture.float_property(&props,w,"Intensity",2)
     light:=fixture.component_add(&l,sky,fixture.engine_class(w,"SkyLightComponent"),"SkyLightComponent0",props)
     fixture.actor_set(&l,sky,light)
+    sun:=fixture.actor_add(&l,fixture.engine_class(w,"DirectionalLight"),"DirectionalLight_0","Sun")
+    lit:=fixture.bytes_make()
+    fixture.float_property(&lit,w,"Intensity",25)
+    fixture.float_property(&lit,w,"Temperature",2877.143)
+    fixture.bool_property(&lit,w,"bUseTemperature",true)
+    fixture.actor_set(&l,sun,fixture.component_add(&l,sun,fixture.engine_class(w,"DirectionalLightComponent"),"LightComponent0",lit))
     if air {
         atmosphere:=fixture.actor_add(&l,fixture.engine_class(w,"SkyAtmosphere"),"SkyAtmosphere_0","Air")
         fixture.actor_set(&l,atmosphere,fixture.component_add(&l,atmosphere,fixture.engine_class(w,"SkyAtmosphereComponent"),"SkyAtmosphereComponent0",fixture.bytes_make()))
@@ -735,7 +743,7 @@ cubemap_map :: proc(air:=false) -> []u8 {
 }
 
 @(test)
-a_sky_light_of_a_cubemap_lights_from_its_image_turned_as_unreal_turns_it :: proc(t:^testing.T) {
+a_sky_light_of_a_cubemap_lights_from_its_image_by_its_intensity_turned_as_unreal_turns_it :: proc(t:^testing.T) {
     f:=folders_make("cubemap")
     defer folders_remove(f)
     os.make_directory_all(fmt.tprintf("%s/Content/Textures",f.unreal))
@@ -768,6 +776,8 @@ a_sky_light_of_a_cubemap_lights_from_its_image_turned_as_unreal_turns_it :: proc
         place,_:=asset.scene_get(&scene,e,"Transform",core.Transform)
         testing.expect(t,close3(mm.quat_rotate(mm.quat_inverse(place.rotation),{0,0,-1}),{1,0,0}),"the image turns with the entity of the sky")
         testing.expect(t,!sky.atmosphere,"the atmosphere does not replace the image")
+        // Unreal lights from the values of the cube times its Intensity, whatever its sun.
+        testing.expectf(t,sky.luminance==[3]f32{2,2,2},"the image times the intensity of the sky light: %v",sky.luminance)
     }
 }
 

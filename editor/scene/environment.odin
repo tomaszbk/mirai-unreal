@@ -4,6 +4,7 @@ import "core:math"
 import importer "mirai:cook/import"
 import material_write "project:plugins/unreal/editor/material/write"
 import "project:plugins/unreal/editor/level"
+import unreal "project:plugins/unreal/editor/package"
 import render "mirai:engine/render"
 import "mirai:std/base"
 import mm "mirai:std/math"
@@ -65,10 +66,13 @@ camera_add :: proc(c:^Context,a,k:int,cine:bool) -> bool {
     return true
 }
 
-// A sky light lights from Mirai's sky at its intensity: Unreal captures it
-// from what the scene shows far away, which has no equivalent. Its luminance
-// keeps to the sun of the level what Mirai's sky keeps to its sun
-// (environment_finish): a level lit in small numbers gets a sky in them too.
+// A sky light lights from Mirai's sky. With a cubemap it is that image times
+// its intensity and color, as Unreal lights from it, and black under the
+// horizon where Unreal makes it so (bLowerHemisphereIsBlack, toward
+// LowerHemisphereColor). What Unreal captures from what the scene shows far
+// away has no equivalent: Mirai's sky at its intensity, whose luminance keeps
+// to the sun of the level what Mirai's sky keeps to its sun
+// (environment_finish), so a level lit in small numbers gets a sky in them too.
 @(private)
 sky_light_add :: proc(c:^Context,a,k:int) -> bool {
     d:=c.d
@@ -95,7 +99,14 @@ sky_light_add :: proc(c:^Context,a,k:int) -> bool {
         warn(c,"%s: it lights from a cubemap it does not name; the sky is Mirai's gradient at %.3g times its luminance",label,intensity)
         return true
     }
-    if c.sky.image,_=sky_image_write(c,cubemap);c.sky.image=={} {
+    below:=[4]f32{0,0,0,1}
+    if f,error:=level.property(d,ref,"LowerHemisphereColor");error.code==.None && f.property!=nil {
+        if v,value_error:=unreal.property_value(f.pkg,f.property);value_error.code==.None && v.kind==.Real_Vector && v.vector_count==4 {
+            below={f32(v.vector[0]),f32(v.vector[1]),f32(v.vector[2]),f32(v.vector[3])}
+        }
+    }
+    if black,_:=level.bool_of(d,ref,"bLowerHemisphereIsBlack",true);!black {below.a=0}
+    if c.sky.image,_=sky_image_write(c,cubemap,below);c.sky.image=={} {
         warn(c,"%s: the sky is Mirai's gradient at %.3g times its luminance",label,intensity)
         return true
     }
@@ -107,10 +118,11 @@ sky_light_add :: proc(c:^Context,a,k:int) -> bool {
     return true
 }
 
-// The .tex of the sky of the Unreal cube texture at path, with the images
-// of the materials; zero, with a warning, when it cannot be written.
+// The .tex of the sky of the Unreal cube texture at path, its lower half
+// toward below, with the images of the materials; zero, with a warning,
+// when it cannot be written.
 @(private)
-sky_image_write :: proc(c:^Context,path:string) -> (id:base.Asset_Id,ok:bool) {
+sky_image_write :: proc(c:^Context,path:string,below:[4]f32) -> (id:base.Asset_Id,ok:bool) {
     package_name,_:=object_split(path)
     file:=package_file(c,package_name)
     if file=="" {
@@ -119,7 +131,7 @@ sky_image_write :: proc(c:^Context,path:string) -> (id:base.Asset_Id,ok:bool) {
     }
     textures,_:=decoder(c)
     error:importer.Error
-    id,error=material_write.sky_write(c.lib,path,&c.outputs,package_prefix(c,file),c.options,context.temp_allocator,&c.images,&c.library_lock,textures)
+    id,error=material_write.sky_write(c.lib,path,below,&c.outputs,package_prefix(c,file),c.options,context.temp_allocator,&c.images,&c.library_lock,textures)
     defer images_trim(c)
     if error.code!=.None {
         warn(c,"the sky of the cubemap %s could not be written: %s",path,error.message)
@@ -146,7 +158,7 @@ environment_finish :: proc(c:^Context) {
         section_use(c,previous)
         warn(c,"%d directional lights: Mirai lights with one sun, the brightest; the others are turned off",len(c.suns))
     }
-    if c.sky_lit {
+    if c.sky_lit && c.sky.image=={} {
         sun:=render.SUN_DEFAULT.illuminance
         if len(c.suns)>0 {
             sun=0

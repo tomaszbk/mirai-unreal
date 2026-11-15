@@ -18,15 +18,15 @@ import fog "plugins:fog/runtime"
 // without end and Mirai's holds.
 // Unreal's density and height falloff are FogDensity/1000 per centimetre in
 // powers of two. Where it is thick, Unreal's fog shows its
-// FogInscatteringLuminance whatever lights it: Mirai's glow. With its
-// volumetric fog, Unreal lights the fog by the lights of the scene, as Mirai
-// does, with the albedo of the volumetric fog and stopping half of
-// FogDensity in powers of e. Without it, no light of the scene reaches the
-// fog, so its albedo is black, but under a SkyAtmosphere, whose sky and sun
-// it scatters. What depends on the eye (where the fog starts and stops being
-// drawn and the opacity it stops at) and the directional and cubemap colors
-// it adds are left out with a warning. Unreal draws one height fog in a
-// scene, the first: so does the import.
+// FogInscatteringLuminance whatever lights it, and under a SkyAtmosphere the
+// light of the sky of the atmosphere too (unreal_scene.fog_sky): Mirai's
+// glow. With its volumetric fog, Unreal lights the fog by the lights of the
+// scene, as Mirai does, with the albedo of the volumetric fog and stopping
+// half of FogDensity in powers of e. Without it, no light of the scene
+// reaches the fog, so its albedo is black. What depends on the eye (where the
+// fog starts and stops being drawn and the opacity it stops at), the glow it
+// adds around the sun and its cubemap colors are left out with a warning.
+// Unreal draws one height fog in a scene, the first: so does the import.
 @(storage)
 Fog_Unreal :: struct {provider:unreal_scene.Translator_Provider}
 
@@ -60,15 +60,13 @@ fogs_translate :: proc(c:^unreal_scene.Context,actors:[]int) -> int {
     unreal_scene.zone(c,"fog.translate")
     d:=c.d
     translated:=0
-    // What the level shows, which the fog fills, and whether a SkyAtmosphere lights its height fog.
+    // What the level shows, which the fog fills, and the light its sky gives it.
     box:=mm.AABB_EMPTY
-    atmosphere:=false
+    sky:unreal_scene.Fog_Sky
     if len(actors)>0 {
         meshes:=make(map[string]level.Mesh_Box,context.temp_allocator)
-        for actor,a in d.actors {
-            box=mm.aabb_merge(box,level.actor_bounds(d,a,&meshes))
-            atmosphere||=actor.class.name=="SkyAtmosphere"
-        }
+        for _,a in d.actors {box=mm.aabb_merge(box,level.actor_bounds(d,a,&meshes))}
+        sky=unreal_scene.fog_sky(c)
     }
     size:=mm.aabb_size(box)
     for a in actors {
@@ -95,10 +93,13 @@ fogs_translate :: proc(c:^unreal_scene.Context,actors:[]int) -> int {
             glow,_=unreal_scene.color_of(d,ref,"FogInscatteringColor",INSCATTERING_COLOR_DEFAULT)
             directional,_=unreal_scene.color_of(d,ref,"DirectionalInscatteringColor",DIRECTIONAL_COLOR_DEFAULT)
         }
-        if cubemap,_:=level.reference_property(d,ref,"InscatteringColorCubemap");cubemap!=0 {
-            unreal_scene.warn(c,"%s: Unreal colors its fog from a cubemap; Mirai's fog takes the light around it instead and has no glow",label)
+        cubemap,_:=level.reference_property(d,ref,"InscatteringColorCubemap")
+        if cubemap!=0 {
+            unreal_scene.warn(c,"%s: Unreal colors its fog from a cubemap; Mirai's fog takes the light around it instead and glows only with the light of the atmosphere",label)
             glow,directional={},{}
         }
+        ambient,_:=unreal_scene.color_of(d,ref,"SkyAtmosphereAmbientContributionColorScale",{1,1,1})
+        glow+=sky.ambient*ambient
         // Unreal goes from its glow to the light of its sky light by this share.
         sky_share,_:=level.real_of(d,ref,"SkyLightCaptureAffectsHeightFogStrength",0)
         glow*=f32(1-clamp(sky_share,0,1))
@@ -109,7 +110,7 @@ fogs_translate :: proc(c:^unreal_scene.Context,actors:[]int) -> int {
         extinction,_:=level.real_of(d,ref,"VolumetricFogExtinctionScale",1)
         volume:=fog.FOG_VOLUME_DEFAULT
         volume.color={}
-        if volumetric {volume.color,_=unreal_scene.color_of(d,ref,"VolumetricFogAlbedo",{1,1,1})} else if atmosphere {volume.color={1,1,1}}
+        if volumetric {volume.color,_=unreal_scene.color_of(d,ref,"VolumetricFogAlbedo",{1,1,1})}
         volume.glow=glow
         volume.falloff=f32(fog_rate(falloff))
         volume.anisotropy=clamp(f32(scattering),-0.95,0.95)
@@ -144,12 +145,15 @@ fogs_translate :: proc(c:^unreal_scene.Context,actors:[]int) -> int {
             if override,_:=level.bool_of(d,ref,"bOverrideLightColorsWithFogInscatteringColors",false);override {unreal_scene.warn(c,"%s: Unreal lights its volumetric fog with its inscattering colors in place of the sun and the sky; Mirai's fog takes the light of the sun and the sky",label)}
             if start>0 {unreal_scene.warn(c,"%s: its volumetric fog starts %.3g m from the eye in Unreal; Mirai's medium is in the world and starts at the eye",label,start/100)}
         }
-        if directional!={} {unreal_scene.warn(c,"%s: Unreal adds to its fog a glow of %v times the light of its sun around the sun, without shadows; Mirai's fog scatters the sun itself, by its anisotropy and with its shadows",label,directional)}
+        // The lobe Unreal adds around the sun: its directional luminance times the luminance of the sun, and the sun through the atmosphere.
+        if lobe:=directional*sky.sun_luminance+(cubemap!=0?{}:sky.sun);lobe!={} {
+            exponent,_:=level.real_of(d,ref,"DirectionalInscatteringExponent",4)
+            unreal_scene.warn(c,"%s: Unreal adds to its fog a glow around its sun, %v nits looking at it and the power %.3g of the cosine away from it, without shadows; Mirai's fog scatters the sun itself, by its anisotropy and with its shadows",label,lobe,exponent)
+        }
         if opacity,_:=level.real_of(d,ref,"FogMaxOpacity",1);opacity<1 {unreal_scene.warn(c,"%s: its fog stops at an opacity of %.2g in Unreal; a medium in Mirai lets less through the more of it there is",label,opacity)}
         if start,_:=level.real_of(d,ref,"StartDistance",0);start>0 {unreal_scene.warn(c,"%s: its fog starts %.3g m from the eye in Unreal; Mirai's medium is in the world and starts at the eye",label,start/100)}
         if cutoff,_:=level.real_of(d,ref,"FogCutoffDistance",0);cutoff>0 {unreal_scene.warn(c,"%s: its fog stops %.3g m from the eye in Unreal; Mirai's medium is in the world and goes on to the sky",label,cutoff/100)}
         if end,_:=level.real_of(d,ref,"EndDistance",0);end>0 {unreal_scene.warn(c,"%s: its fog thickens only to %.3g m from the eye in Unreal; Mirai's medium thickens all the way",label,end/100)}
-        if scale,_:=unreal_scene.color_of(d,ref,"SkyAtmosphereAmbientContributionColorScale",{1,1,1});scale!={1,1,1} {unreal_scene.warn(c,"%s: Unreal scales the light of the sky in its fog by %v; Mirai's fog takes the light of the sky as it is",label,scale)}
         translated+=1
     }
     return translated
