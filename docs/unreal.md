@@ -703,7 +703,7 @@ entity, the imported meshes and the time.
     channel above one goes to the intensity. `AttenuationRadius` is `range` and `SourceRadius`,
     `radius`. Unreal lights toward the component's +X, Mirai's -Z, and the entity has scale one.
     False `bAffectsWorld` leaves the component off. `IndirectLightingIntensity` is `indirect` and
-    `VolumetricScatteringIntensity` is `scattering`, on the sun too.
+    `VolumetricScatteringIntensity` is `scattering` and `CastShadows` is `shadows`, on the sun too.
   - The `IndirectLightingIntensity` the unbound `PostProcessVolume`s override, blended by priority
     and weight, is what Unreal multiplied of the lights that do not move, read from each
     component's `Mobility` (Stationary for the native light actors and the sky light where none is
@@ -713,7 +713,7 @@ entity, the imported meshes and the time.
     volume that overrides it is a warning: in Unreal the indirect light changes as the camera
     enters its box, and Mirai's light does not follow the camera.
   - Warned, with count: no inverse-square falloff (candelas that give the same at half the radius),
-    `SourceLength`, IES, light functions, no shadows and cones outside 1° to 89°.
+    `SourceLength`, IES, light functions and cones outside 1° to 89°.
   - Mirai lights with one sun: with several directionals the brightest stays on.
 - **Cameras.** `CameraComponent` and `CineCameraComponent` are `Camera` on an entity with the
   actor's label (`Camera_Note.entity` is what `mirai capture --camera-entity` takes). Vertical fov:

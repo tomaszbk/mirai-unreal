@@ -157,7 +157,7 @@ level_report_destroy :: proc(report:^Level_Report) {
     report^={}
 }
 
-Note :: enum u8 {IES,Light_Function,No_Shadows,Falloff,Source_Length,Cone_Clamped}
+Note :: enum u8 {IES,Light_Function,Falloff,Source_Length,Cone_Clamped}
 
 Sun_Candidate :: struct {entity:base.Entity_Id,section:int,brightness:f32}
 
@@ -1007,7 +1007,6 @@ notes_warn :: proc(c:^Context) {
     if n:=c.notes[.Source_Length];n>0 {warn(c,"%d lights have a source length: Mirai draws a tube from the scale of its entity, which they keep at one",n)}
     if n:=c.notes[.IES];n>0 {warn(c,"%d lights have an IES profile, which Mirai does not read",n)}
     if n:=c.notes[.Light_Function];n>0 {warn(c,"%d lights have a light function, which Mirai does not read",n)}
-    if n:=c.notes[.No_Shadows];n>0 {warn(c,"%d lights cast no shadows in Unreal; Mirai's cast them",n)}
     if n:=c.notes[.Cone_Clamped];n>0 {warn(c,"%d spot lights have a cone outside 1° to 89°: they were given the nearest",n)}
 }
 
