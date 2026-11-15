@@ -33,6 +33,7 @@ Unreal_Light :: struct {
     broken_ev:bool, // a rectangle saved before RectLightFixedEVUnitConversion with EV units
     indirect:f32,   // IndirectLightingIntensity: what multiplies the light of it that bounces
     scattering:f32, // VolumetricScatteringIntensity: what multiplies the light of it a volumetric fog scatters
+    shadows:bool,   // CastShadows
 }
 
 // What Mirai takes of it.
@@ -44,6 +45,7 @@ Converted_Light :: struct {
     angle:f32,      // of a spot: its half angle, radians
     size:[2]f32,    // of a rectangle, m
     indirect,scattering:f32, // what of its light bounces and what a fog scatters, as Unreal gives them
+    shadows:bool,
 }
 
 Light_Approximation :: enum u8 {
@@ -70,6 +72,7 @@ light_convert :: proc(u:Unreal_Light) -> (m:Converted_Light,approximated:bit_set
     m.range=max(u.attenuation_radius,0)/100
     m.radius=max(u.source_radius,0)/100
     m.indirect,m.scattering=max(u.indirect,0),max(u.scattering,0)
+    m.shadows=u.shadows
     cos_cone:=f32(1)
     if u.kind==.Spot {
         // The outer half angle as Unreal clamps it: a hair wider than the inner one, up to 88.9°.
@@ -159,6 +162,7 @@ unreal_light :: proc(c:^Context,component:int,kind:Light_Kind) -> (u:Unreal_Ligh
     indirect,_:=level.real_of(d,ref,"IndirectLightingIntensity",1)
     scattering,_:=level.real_of(d,ref,"VolumetricScatteringIntensity",1)
     u.indirect,u.scattering=f32(indirect),f32(scattering)
+    u.shadows,_=level.bool_of(d,ref,"CastShadows",true)
     if kind==.Rect && u.units==.EV {
         broken,found:=level.bool_of(d,ref,"bLightRequiresBrokenEVMath",false)
         if found {u.broken_ev=broken} else {u.broken_ev=fortnite_version(c,ref)<RECT_LIGHT_FIXED_EV}
@@ -198,17 +202,17 @@ light_add :: proc(c:^Context,actor,component:int,kind:Light_Kind) -> bool {
     value:=m.value
     switch kind {
     case .Directional:
-        sun:=render.Sun{color=m.color,illuminance=m.value,disc=true,indirect=m.indirect,scattering=m.scattering}
+        sun:=render.Sun{color=m.color,illuminance=m.value,disc=true,shadows=m.shadows,indirect=m.indirect,scattering=m.scattering}
         if !component_set(c,e,"Sun",&sun) {return false}
         append(&c.suns,Sun_Candidate{e,c.section,m.value*max(m.color.r,m.color.g,m.color.b)})
     case .Point:
-        light:=render.Point_Light{color=m.color,intensity=m.value,range=m.range,radius=m.radius,indirect=m.indirect,scattering=m.scattering}
+        light:=render.Point_Light{color=m.color,intensity=m.value,range=m.range,radius=m.radius,shadows=m.shadows,indirect=m.indirect,scattering=m.scattering}
         if !component_set(c,e,"Point_Light",&light) {return false}
     case .Spot:
-        light:=render.Spot_Light{color=m.color,intensity=m.value,range=m.range,radius=m.radius,angle=m.angle,indirect=m.indirect,scattering=m.scattering}
+        light:=render.Spot_Light{color=m.color,intensity=m.value,range=m.range,radius=m.radius,angle=m.angle,shadows=m.shadows,indirect=m.indirect,scattering=m.scattering}
         if !component_set(c,e,"Spot_Light",&light) {return false}
     case .Rect:
-        light:=render.Rect_Light{color=m.color,luminance=m.value,range=m.range,indirect=m.indirect,scattering=m.scattering}
+        light:=render.Rect_Light{color=m.color,luminance=m.value,range=m.range,shadows=m.shadows,indirect=m.indirect,scattering=m.scattering}
         if !component_set(c,e,"Rect_Light",&light) {return false}
     }
     unit:="cd"
@@ -225,7 +229,6 @@ light_add :: proc(c:^Context,actor,component:int,kind:Light_Kind) -> bool {
     if affects,found:=level.bool_of(c.d,ref,"bAffectsWorld",true);found && !affects {component_off(c,e,names[kind])}
     if level.path_of(c.d,ref,"IESTexture")!="" {c.notes[.IES]+=1}
     if level.path_of(c.d,ref,"LightFunctionMaterial")!="" {c.notes[.Light_Function]+=1}
-    if shadows,_:=level.bool_of(c.d,ref,"CastShadows",true);!shadows {c.notes[.No_Shadows]+=1}
     if .Falloff in approximated {c.notes[.Falloff]+=1}
     if .Source_Length in approximated {c.notes[.Source_Length]+=1}
     if .Cone_Clamped in approximated {c.notes[.Cone_Clamped]+=1}

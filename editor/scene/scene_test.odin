@@ -112,6 +112,15 @@ map_package :: proc() -> []u8 {
         bulb:=fixture.component_add(&l,torch,fixture.engine_class(w,"PointLightComponent"),"LightComponent0",torch_props)
         fixture.actor_set(&l,torch,bulb)
     }
+    // A torch of L_showcase_map of the Crystal Mine: inside its mesh, it casts no shadows.
+    torch:=fixture.actor_add(&l,fixture.engine_class(w,"PointLight"),"PointLight_Torch","Torch")
+    torch_props:=fixture.bytes_make()
+    fixture.float_property(&torch_props,w,"Intensity",8)
+    fixture.enum_property(&torch_props,w,"IntensityUnits","ELightUnits","ELightUnits::Candelas")
+    fixture.float_property(&torch_props,w,"AttenuationRadius",500)
+    fixture.enum_property(&torch_props,w,"Mobility","EComponentMobility","EComponentMobility::Movable")
+    fixture.bool_property(&torch_props,w,"CastShadows",false)
+    fixture.actor_set(&l,torch,fixture.component_add(&l,torch,fixture.engine_class(w,"PointLightComponent"),"LightComponent0",torch_props))
 
     // Two post process volumes that scale the indirect light: the unbound one
     // everywhere, at 7 as L_showcase_map of the Crystal Mine has it, the bound
@@ -284,8 +293,13 @@ a_map_becomes_a_scene_of_entities_meshes_lights_and_cameras_in_the_units_of_mira
         torch,_,_:=entity_named(&scene,mobility)
         bulb,has_bulb:=asset.scene_get(&scene,torch,"Point_Light",render.Point_Light)
         expected:=f32(mobility=="Static"?700:100)
-        testing.expectf(t,has_bulb && close(bulb.intensity,expected) && bulb.indirect==1,"%s: %v cd, %v of its bounce",mobility,bulb.intensity,bulb.indirect)
+        testing.expectf(t,has_bulb && close(bulb.intensity,expected) && bulb.indirect==1 && bulb.shadows,"%s: %v cd, %v of its bounce",mobility,bulb.intensity,bulb.indirect)
     }
+    torch,_,_:=entity_named(&scene,"Torch")
+    flame,has_flame:=asset.scene_get(&scene,torch,"Point_Light",render.Point_Light)
+    testing.expectf(t,has_flame && close(flame.intensity,8) && close(flame.range,5) && !flame.shadows,"a torch without shadows: %v",flame)
+    testing.expect(t,light.shadows,"the spot casts them")
+    testing.expect(t,!has_warning(&report,"shadows"),"shadows are taken, not warned")
     _,_,has_bounce:=entity_named(&scene,"Bounce light")
     testing.expect(t,!has_bounce,"the volume is no Bounce_Light of the world")
     testing.expect(t,has_warning(&report,"Cellar","IndirectLightingIntensity","camera"),"a bound volume that scales the indirect light is a warning")
@@ -355,7 +369,7 @@ a_map_becomes_a_scene_of_entities_meshes_lights_and_cameras_in_the_units_of_mira
     classes:=0
     for c in report.classes {if c.class=="/Script/Engine.StaticMeshActor" {classes+=1;testing.expect(t,c.actors==1 && c.translated==1)}}
     testing.expect_value(t,classes,1)
-    testing.expect_value(t,len(report.lights),3)
+    testing.expect_value(t,len(report.lights),4)
     testing.expect_value(t,len(report.cameras),1)
 
     // Importing again writes the same file with the same ids.
