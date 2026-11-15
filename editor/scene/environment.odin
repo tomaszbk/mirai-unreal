@@ -82,6 +82,9 @@ sky_light_add :: proc(c:^Context,a,k:int) -> bool {
     color,_:=color_of(d,ref,"LightColor",{1,1,1})
     c.sky.luminance=color*f32(intensity)
     c.sky_lit=true
+    if scale:=post_indirect(c);scale!=1 && light_mobility(c,k)!=.Movable {
+        warn(c,"%s: in Unreal the IndirectLightingIntensity %.3g of the post process multiplies the bounce of this sky, which does not move; Mirai's sky has no such multiplier, so it is not taken",label,scale)
+    }
     source,_:=level.enum_of(d,ref,"SourceType","SLS_CapturedScene")
     if source!="SLS_SpecifiedCubemap" {
         warn(c,"%s: Unreal captures the light of the sky from the scene; Mirai's sky gives it at %.3g times its luminance",label,intensity)
