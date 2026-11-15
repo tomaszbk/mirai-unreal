@@ -429,6 +429,12 @@ a_translator_of_a_plugin_takes_the_actors_of_its_class_and_places_its_assets :: 
     fog,_,found:=entity_named(&scene,"Fog")
     marker,marked:=asset.scene_get(&scene,fog,"Material_Values",render.Material_Values)
     testing.expect(t,found && marked && close(marker.color.r,0.05))
+    // Without the plugin of a class, among those of others, its actors are a warning that names it.
+    others:=[]Translator{{classes={0="Emitter"},translate=fog_translate}}
+    without,without_error:=level_import(f.map_path,{root=f.mirai},others,"-")
+    if !testing.expectf(t,without_error.code==.None,"%s",without_error.message) {return}
+    defer level_report_destroy(&without)
+    testing.expectf(t,has_warning(&without,"ExponentialHeightFog","the fog plugin translates it and is not in the project"),"%v",without.imports.warnings)
 }
 
 // A component hook of a plugin: what it adds to the entity of each mesh

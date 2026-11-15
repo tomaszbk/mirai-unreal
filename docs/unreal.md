@@ -854,8 +854,10 @@ All with `mirai test` on the package folder inside a project with the plugin ins
   layers, landscape grass, a program, screen, depth, bounds, the world with its origin, `Custom`,
   noise, untranslated classes and damaged bytes; writing reads back `.mat` and `.tex` and reimports
   over a changed parameter.
-- `editor/level`, `landscape` and `foliage`: Unreal space against rotation matrices, archetypes
-  from another package and by SCS, inherited templates
+- `editor/level`, `landscape` and `foliage`: Unreal space against rotation matrices, the
+  properties of an object staying where they were read
+  (`the_properties_of_an_object_stay_put_as_others_are_read`), archetypes from another package and
+  by SCS, inherited templates
   (`an_inherited_component_a_blueprint_changes_takes_its_override_template`), native constructor
   defaults, sockets (`sockets_test.odin`: of a static mesh, of a skeletal mesh and its skeleton or
   a bone, a spring arm's end), cells of a loose grid

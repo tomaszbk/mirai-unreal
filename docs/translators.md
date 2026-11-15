@@ -215,10 +215,18 @@ which uses `shaders/unreal_noise.slang`.
 - Each emitter of a system is a `.particle` in the folder of the map's import, written once per
   system; an actor (or component) is an entity with a `Particle_Emitter` (`bAutoActivate` is
   `active`), or a group with one per emitter.
-- **Cascade** (`unreal_cascade.odin`). The modules of the first LOD and their distributions:
-  constant, uniform or curve (its keys), or the values the package baked from it. Centimeters and
-  Z up become meters and Y up; a color above one gives its peak to `intensity`; `EmitterLoops`
-  other than zero is an effect that does not repeat.
+- **Cascade** (`unreal_cascade.odin`). The modules of the first LOD. A distribution is the table
+  the package baked from it, which is what Unreal samples as particles run (a value, a range, or
+  entries over the time it is sampled at), else its object (constant, uniform or curve).
+  Centimeters and Z up become meters and Y up; a color above one gives its peak to `intensity`;
+  `EmitterLoops` other than zero is an effect that does not repeat; a burst fires at its `Time` in
+  seconds. Each step Unreal starts a particle again from the size and color it was born with and
+  runs its modules in order: a color over life replaces the start color, and the color and size
+  scales multiply, at the keys of all. A light module lights `SpawnFraction` of the particles, as
+  far as `RadiusScale` times their size, with their color times its brightness in the units of
+  Unreal's particle lights (`UNREAL_PARTICLE_LIGHT_CANDELA`). What an effect cannot hold (a delay
+  or origin, a duration range, a rate that changes along the cycle, sub-images at random or held
+  on the first, a cone along another axis, an orbit) is a warning that names the module.
 - **Niagara** (`unreal_niagara.odin`). What the editor stores of the modules' inputs
   (`RapidIterationParameters` of their scripts, by `Module.Input`), the baked curves of their data
   interfaces and their renderers (sprite, ribbon, mesh and lights). The modes (`Lifetime Mode`,
@@ -248,21 +256,25 @@ which uses `shaders/unreal_noise.slang`.
   `Animation`.
 - Particle lights cast shadows if Unreal's do: in Cascade, the high-quality ones with
   `bShadowCastingLights`; in Niagara, those MegaLights takes with `bMegaLightsCastShadows`.
+- A Niagara light renderer lights with the color of the particle, in the units of Cascade's lights,
+  as far as `RadiusScale` times the light radius no module of the stack sets.
 - **Compiled Niagara.** An emitter whose scripts store the HLSL Niagara generated is a Vfx program
   written in the project's `shaders/`, which the import publishes: `niagara_program.odin` builds the
   frame and `niagara.slang` is its prelude (Unreal space, random numbers, ids). The system scripts
   give each emitter's state and its births (`//! births`); each data interface is a body over the
   Vfx resources (`niagara_interfaces.odin`, `niagara_grids.odin`, `niagara_particles.odin`,
-  `niagara_channels.odin`). What a function does not translate gives zero and a warning that names
-  it. A 2D grid or render target is flat along y, like a world texture: its cell (x, y) is the
-  grid's (x, 0, y), and the bodies and thread of its stages give the script Niagara's order. A
-  `Texture`'s texture is baked into a `.grid` flat along y, one cell per texel as Unreal reads it
-  (up to `NIAGARA_TEXTURE_CELLS` per axis, resampled), from which an effect grid starts:
-  `SampleTexture2D` samples it between texels, repeating (`niagara_textures.odin`). Each part writes
-  only what its frame reaches from the functions it calls (functions, structs, statics, data
-  interfaces and engine parameters its code reads, `hlsl_reached`); a data interface nobody calls is
-  still translated for what it says about the program (the channel of its births). The translated
-  channels keep the asset's variables in its order, with Unreal's values.
+  `niagara_channels.odin`). A data interface is the symbol the HLSL calls it by: its name with the
+  dots as `_`, or without them in a save before UE5. What a function does not translate gives zero
+  and a warning that names it; an interface the scripts never call warns of nothing. A 2D grid or
+  render target is flat along y, like a world texture: its cell (x, y) is the grid's (x, 0, y), and
+  the bodies and thread of its stages give the script Niagara's order. A `Texture`'s texture is
+  baked into a `.grid` flat along y, one cell per texel as Unreal reads it (up to
+  `NIAGARA_TEXTURE_CELLS` per axis, resampled), from which an effect grid starts: `SampleTexture2D`
+  samples it between texels, repeating (`niagara_textures.odin`). Each part writes only what its
+  frame reaches from the functions it calls (functions, structs, statics, data interfaces and engine
+  parameters its code reads, `hlsl_reached`); a data interface nobody calls is still translated for
+  what it says about the program (the channel of its births). The translated channels keep the
+  asset's variables in its order, with Unreal's values.
 - **Births from a data channel.** Each `SpawnConditional` of the system scripts that names the
   emitter (its `Emitter ID` is the index of its handle) leaves in `prepare` words whether it ran,
   its mode, its operator, its counts and the values of its conditions. `births` gives each channel
@@ -337,8 +349,12 @@ the area the Blueprint simulates; at 1, those of the mesh. `PressureDivergenceBu
   decompilation over bytecode written in the test (`niagara_vm_test.odin`: the parameter map, the
   constant table, the data interface calls, the rejection of what it cannot read, the program of a
   CPU emitter and that of one born from a data channel with a system `SpawnConditional`, which stay
-  in `.mirai/tmp/vfx-vm-test` for `mirai shaders check <program> --project demo`) and the Cascade
-  and Niagara translation (`unreal_particles_test.odin`, `niagara_test.odin`).
+  in `.mirai/tmp/vfx-vm-test` for `mirai shaders check <program> --project demo`), the Niagara
+  translation (`niagara_test.odin`: `niagara_data_interfaces_are_named_as_their_hlsl_calls_them`)
+  and a Cascade system of a level against what Unreal evaluates
+  (`a_cascade_system_gives_its_effect_what_unreal_evaluates`, `unreal_particles_test.odin`). The
+  warning that names the plugin of a class without it:
+  `a_translator_of_a_plugin_takes_the_actors_of_its_class_and_places_its_assets` of `editor/scene`.
 - Tests of `plugins/unreal_fluids/editor`: a FluidNinja output material reads the fluid by UV.
 - The translators run in full in an editor session: import a corpus map with the bridge plugins it
   uses, and check the per-class actor report.

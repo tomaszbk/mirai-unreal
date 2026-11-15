@@ -132,3 +132,28 @@ niagara_traces_of_the_cpu_are_rays_through_the_scene :: proc(t:^testing.T) {
         testing.expectf(t,strings.contains(body,line),"the trace has %q:\n%s",line,body)
     }
 }
+
+// A data interface is the symbol the HLSL of its script calls it by: dotted
+// as Niagara writes it now, or without the dots in a save before UE5. One the
+// scripts never call (a copy the compilation replaced) reads nothing and is
+// no warning; one they call and that reads nothing is.
+@(test)
+niagara_data_interfaces_are_named_as_their_hlsl_calls_them :: proc(t:^testing.T) {
+    old:="SampleCurve_EmitterScaleAlphaFloatCurve(Age, Alpha);\nSampleField_EmitterVectorField32(P, V);"
+    testing.expect_value(t,niagara_interface_symbol(old,"Emitter.Scale Alpha.FloatCurve"),"EmitterScaleAlphaFloatCurve")
+    testing.expect_value(t,niagara_interface_symbol("SampleCurve_Emitter_ScaleAlpha_FloatCurve(Age, Alpha);","Emitter.Scale Alpha.FloatCurve"),"Emitter_ScaleAlpha_FloatCurve")
+    e:Unreal_Emitter
+    w:Niagara_Writer
+    w.emitter=&e
+    w.interfaces.allocator,w.problems.allocator,w.resources.allocator=context.temp_allocator,context.temp_allocator,context.temp_allocator
+    names:=[2]string{"Local.CurlNoiseForce.VectorField","Emitter.VectorField32"}
+    interfaces:[2]Niagara_Interface
+    for name,i in names {interfaces[i]={name=name,class="NiagaraDataInterfaceVectorField",symbol=niagara_interface_symbol(old,name)}}
+    niagara_interfaces_add(&w,interfaces[:])
+    src:Niagara_Source
+    src.update=Niagara_Compiled{hlsl=old}
+    e.source=&src
+    niagara_interfaces_resolve(&w)
+    if !testing.expectf(t,len(w.problems)==1,"%v",w.problems) {return}
+    testing.expectf(t,strings.has_prefix(w.problems[0],"Emitter.VectorField32 "),"%s",w.problems[0])
+}
