@@ -11,6 +11,9 @@ import "mirai:std/base"
 // works in centimetres with Z up; positions and normals of the context are
 // taken to that space where the graph reads them. The program is named by
 // what it computes: instances that only change parameter values share it.
+// A program that can carries the derivatives of its coordinates, the chain
+// rule down to the uv and the place of the point (gradients_plan), and
+// takes none across the pixels of a quad.
 
 @(private) MAX_PROGRAM_BYTES :: 256
 @(private) MAX_PROGRAM_FIELDS :: 32
@@ -25,6 +28,8 @@ Emitter :: struct {
     folded:map[u32]bool,   // parameters left as constants, over the budget
     scopes:[]u32,          // of each node: SCOPE_OUTER, the weight of its branch, or NONE when unread
     landscape:bool,        // a landscape whole: it reads what the pieces of its terrain give (Unreal_Landscape)
+    duals:[]bool,          // of each node: a value with its derivatives (mirai_dual.slang)
+    exact:bool,            // the samples take the derivatives the program carries, not those of the quad
     failed:string,
 }
 
@@ -72,7 +77,7 @@ operand :: proc(m:^Emitter,n:u32,width:u8=0) -> string {
     case node.op==.Constant || node.op==.Fresnel:text=literal(node.value,node.width)
     case node.op==.Parameter && m.folded[n]:text=literal(m.g.parameters[node.index].value,node.width)
     case node.op==.Parameter || node.op==.Texture:text=fmt.tprintf("p.%s",m.fields[n])
-    case:text=fmt.tprintf("v%d",n)
+    case:text=fmt.tprintf(m.duals[n]?"v%d.value":"v%d",n)
     }
     // A negative constant after an operator is not a decrement.
     if strings.has_prefix(text,"-") {text=fmt.tprintf("(%s)",text)}
@@ -83,6 +88,219 @@ operand :: proc(m:^Emitter,n:u32,width:u8=0) -> string {
         return fmt.tprintf("(%s).%s",text,letters[:width])
     }
     return text
+}
+
+// The text of a node as a value of width with its derivatives: what carries
+// none has zero.
+@(private)
+dual_operand :: proc(m:^Emitter,n:u32,width:u8) -> string {
+    if !m.duals[n] {return fmt.tprintf("mirai_dual(%s)",operand(m,n,width))}
+    if width==m.g.nodes[n].width {return fmt.tprintf("v%d",n)}
+    return fmt.tprintf("mirai_dual(%s,%s,%s)",part(m,n,"value",width),part(m,n,"dx",width),part(m,n,"dy",width))
+}
+
+// The value of a node (field "value") or a derivative of it ("dx", "dy") as
+// width components.
+@(private)
+part :: proc(m:^Emitter,n:u32,field:string,width:u8) -> string {
+    node:=m.g.nodes[n]
+    if !m.duals[n] {return field=="value"?operand(m,n,width):literal({},width)}
+    text:=fmt.tprintf("v%d.%s",n,field)
+    if width>1 && node.width==1 {return fmt.tprintf("%s(%s)",type_name(width),text)}
+    letters:="xyzw"
+    if width<node.width {return fmt.tprintf("%s.%s",text,letters[:width])}
+    return text
+}
+
+// An operand of an operation that takes values with derivatives or without.
+@(private)
+mixed :: proc(m:^Emitter,n:u32,width:u8) -> string {return m.duals[n]?dual_operand(m,n,width):operand(m,n,width)}
+
+@(private)
+dual_type :: proc(width:u8) -> string {return width==1?"Mirai_Dual":fmt.tprintf("Mirai_Dual%d",width)}
+
+// How the derivatives of a node follow from those of its arguments.
+@(private)
+Carry :: enum u8 {
+    Chain,  // by the chain rule, from all its arguments (of a Select and a Gate, from its values)
+    Source, // the point gives them
+    Zero,   // the same at every pixel of a surface, or a step of what it reads: none
+    Opaque, // not known to the program
+}
+
+@(private)
+carry_of :: proc(op:Op,landscape:bool) -> Carry {
+    #partial switch op {
+    case .UV,.World_Position,.Screen_Position:return .Source
+    // The normal of a landscape whole is that of the maps of its terrain.
+    case .Vertex_Normal:return landscape?.Opaque:.Source
+    case .Constant,.Parameter,.Texture,.Fresnel,.Texture_Size,.Time,.Origin,.Object_Position,.Object_Radius,.Actor_Position,
+         .Object_Axis,.Object_Bounds,.Screen_Size,.Per_Instance_Random,.Two_Sided_Sign,.Particle_Data,.Particle_Random,
+         .Particle_Radius,.Arguments,.Floor,.Ceil,.Round,.Trunc,.Sign,.Step,.Less,.Less_Equal:
+        return .Zero
+    case .Sample,.Sample_Grad,.Texture_Read,.Noise,.Vector_Noise,.Custom,.Custom_Output,.Vertex_Color,.Vertex_Tangent,
+         .Vertex_Bitangent,.Pixel_Normal,.Layer_Weight,.Pixel_Depth,.Scene_Depth,.Camera_Vector,.Camera_Position,.Ddx,.Ddy:
+        return .Opaque
+    }
+    return .Chain
+}
+
+// What the node n is, as a coordinate whose derivatives are not known.
+@(private)
+opaque_name :: proc(g:^Graph,n:u32) -> string {
+    node:=g.nodes[n]
+    #partial switch node.op {
+    case .Sample,.Sample_Grad,.Texture_Read:
+        row:=node.op==.Texture_Read?node.index:g.nodes[node.args[0]].index
+        ref:=g.textures[row]
+        return fmt.tprintf("the texture %s",ref.parameter!=""?ref.parameter:ref.name)
+    case .Noise,.Vector_Noise:return fmt.tprintf("the %s expression %s",node.op==.Noise?"Noise":"VectorNoise",g.noises[node.index].name)
+    case .Custom:return fmt.tprintf("the Custom expression %s",g.customs[node.index].name)
+    case .Custom_Output:return fmt.tprintf("the Custom expression %s",g.customs[g.nodes[node.args[0]].index].name)
+    case .Ddx,.Ddy:return "a DDX or DDY"
+    case .Vertex_Color:return "the vertex color"
+    case .Vertex_Tangent,.Vertex_Bitangent:return "the tangent frame"
+    case .Vertex_Normal,.Pixel_Normal:return "the normal"
+    case .Layer_Weight:return "the weight of a landscape layer"
+    case .Pixel_Depth,.Scene_Depth:return "the depth"
+    }
+    return fmt.tprintf("%v",node.op)
+}
+
+// Which nodes carry their derivatives: the coordinates of a sample and what
+// a DDX or DDY reads take them, down the chain rule to the uv, the place,
+// the normal and the point in the image, which give them. What the chain
+// cannot follow exactly (another texture, noise, custom HLSL, what the point
+// gives without them) leaves the whole program on the derivatives of the
+// quad: reasons say why, each naming its node, and no node is a dual.
+@(private)
+gradients_plan :: proc(m:^Emitter) -> (reasons:[]string) {
+    g:=m.g
+    count:=len(g.nodes)
+    need:=make([]bool,count,context.temp_allocator)
+    varies:=make([]bool,count,context.temp_allocator)
+    m.duals=make([]bool,count,context.temp_allocator)
+    found:=make([dynamic]string,context.temp_allocator)
+    add :: proc(found:^[dynamic]string,text:string) {
+        for r in found {if r==text {return}}
+        append(found,text)
+    }
+    for node,n in g.nodes {
+        if m.scopes[n]==NONE {continue}
+        #partial switch node.op {
+        case .Sample:need[node.args[1]]=true
+        case .Ddx,.Ddy:need[node.args[0]]=true
+        case .Custom:
+            // Its HLSL samples by the derivatives of the quad.
+            code:=g.customs[node.index]
+            if code.unported=="" && (strings.contains(code.code,"Texture2DSample(") || strings.contains(code.code,"Texture2DSampleBias(")) {
+                add(&found,fmt.tprintf("the HLSL of the Custom expression %s samples by them",code.name))
+            }
+        }
+    }
+    for n:=count-1;n>=0;n-=1 {
+        if !need[n] {continue}
+        node:=g.nodes[n]
+        switch carry_of(node.op,m.landscape) {
+        case .Zero,.Source:continue
+        case .Opaque:
+            add(&found,fmt.tprintf("its coordinates read %s, whose derivatives it cannot carry",opaque_name(g,u32(n))))
+            continue
+        case .Chain:
+        }
+        first:=node.op==.Select || node.op==.Gate?1:0
+        for arg in node.args[first:] {if arg!=NONE {need[arg]=true}}
+    }
+    if len(found)>0 {return found[:]}
+    for &node,n in g.nodes {
+        switch carry_of(node.op,m.landscape) {
+        case .Source:varies[n]=true
+        case .Chain:
+            first:=node.op==.Select || node.op==.Gate?1:0
+            for arg in node.args[first:] {if arg!=NONE && varies[arg] {varies[n]=true}}
+        case .Zero,.Opaque:
+        }
+        m.duals[n]=need[n] && varies[n]
+    }
+    return nil
+}
+
+// A node that carries its derivatives, from its arguments.
+@(private)
+dual_line_emit :: proc(m:^Emitter,n:u32,indent:string) {
+    g:=m.g
+    node:=g.nodes[n]
+    w:=node.width
+    a,b,c:=node.args[0],node.args[1],node.args[2]
+    code:string
+    #partial switch node.op {
+    case .UV:code=node.index==1?"mirai_uv1(ctx)":"mirai_uv0(ctx)"
+    case .World_Position:code="unreal_point(mirai_world_position(ctx))"
+    case .Vertex_Normal:code="unreal_vector(mirai_vertex_normal(ctx))"
+    case .Screen_Position:code="unreal_screen(ctx)"
+    case .Abs,.Frac,.Sin,.Cos,.Tan,.Asin,.Acos,.Atan,.Exp,.Exp2,.Log,.Log2,.Saturate,.Normalize:
+        names:=#partial [Op]string{.Abs="abs",.Frac="frac",.Sin="sin",.Cos="cos",.Tan="tan",.Asin="asin",.Acos="acos",.Atan="atan",
+            .Exp="exp",.Exp2="exp2",.Log="log",.Log2="log2",.Saturate="saturate",.Normalize="normalize"}
+        code=fmt.tprintf("%s(%s)",names[node.op],dual_operand(m,a,w))
+    case .Length:
+        source:=g.nodes[a].width
+        code=fmt.tprintf(source==1?"abs(%s)":"length(%s)",dual_operand(m,a,source))
+    case .Sqrt:code=fmt.tprintf("sqrt(max(%s,%s))",dual_operand(m,a,w),literal({},w))
+    case .Add,.Sub,.Mul,.Div:
+        symbol:=#partial [Op]string{.Add="+",.Sub="-",.Mul="*",.Div="/"}
+        code=fmt.tprintf("%s%s%s",mixed(m,a,w),symbol[node.op],mixed(m,b,w))
+    case .Min,.Max,.Atan2:
+        names:=#partial [Op]string{.Min="min",.Max="max",.Atan2="atan2"}
+        code=fmt.tprintf("%s(%s,%s)",names[node.op],dual_operand(m,a,w),dual_operand(m,b,w))
+    // As HLSL's, a-b*trunc(a/b).
+    case .Fmod:
+        if m.duals[b] {
+            code=fmt.tprintf("%s-%s*mirai_dual(trunc(%s/%s))",dual_operand(m,a,w),dual_operand(m,b,w),part(m,a,"value",w),part(m,b,"value",w))
+        } else {
+            code=fmt.tprintf("fmod(%s,%s)",dual_operand(m,a,w),operand(m,b,w))
+        }
+    case .Pow:
+        edge:=fmt.tprintf("%s(2.980233e-8)",type_name(w))
+        code=fmt.tprintf("pow(max(%s,%s),%s)*step(%s,%s)",dual_operand(m,a,w),edge,mixed(m,b,w),edge,part(m,a,"value",w))
+    case .Dot:
+        width:=max(g.nodes[a].width,g.nodes[b].width)
+        if width==1 {
+            code=fmt.tprintf("%s*%s",mixed(m,a,1),mixed(m,b,1))
+        } else {
+            code=fmt.tprintf("dot(%s,%s)",dual_operand(m,a,width),dual_operand(m,b,width))
+        }
+    case .Cross:code=fmt.tprintf("cross(%s,%s)",dual_operand(m,a,3),dual_operand(m,b,3))
+    case .Lerp:code=fmt.tprintf("lerp(%s,%s,%s)",dual_operand(m,a,w),dual_operand(m,b,w),dual_operand(m,c,w))
+    case .Clamp:code=fmt.tprintf("min(max(%s,%s),%s)",dual_operand(m,a,w),dual_operand(m,b,w),dual_operand(m,c,w))
+    case .Smoothstep:
+        if !m.duals[a] && !m.duals[b] {
+            code=fmt.tprintf("smoothstep(%s,%s,%s)",operand(m,a,w),operand(m,b,w),dual_operand(m,c,w))
+        } else {
+            low:=dual_operand(m,a,w)
+            fmt.sbprintf(&m.body,"%s%s v%d_t=saturate((%s-%s)/(%s-%s));\n",indent,dual_type(w),n,dual_operand(m,c,w),low,dual_operand(m,b,w),low)
+            code=fmt.tprintf("v%d_t*v%d_t*(%s(3.0)-%s(2.0)*v%d_t)",n,n,type_name(w),type_name(w),n)
+        }
+    case .Select:code=fmt.tprintf("select(%s!=0.0,%s,%s)",operand(m,a),dual_operand(m,b,w),dual_operand(m,c,w))
+    case .Swizzle:
+        if g.nodes[a].width==1 {
+            code=dual_operand(m,a,w)
+        } else {
+            letters:="xyzw"
+            mask:=strings.builder_make(context.temp_allocator)
+            for i in 0..<int(w) {strings.write_byte(&mask,letters[node.swizzle[i]])}
+            code=fmt.tprintf("mirai_dual(v%d.value.%s,v%d.dx.%s,v%d.dy.%s)",a,strings.to_string(mask),a,strings.to_string(mask),a,strings.to_string(mask))
+        }
+    case .Append:
+        wa,wb:=g.nodes[a].width,g.nodes[b].width
+        code=fmt.tprintf("mirai_dual(%s(%s,%s),%s(%s,%s),%s(%s,%s))",type_name(w),part(m,a,"value",wa),part(m,b,"value",wb),
+            type_name(w),part(m,a,"dx",wa),part(m,b,"dx",wb),type_name(w),part(m,a,"dy",wa),part(m,b,"dy",wb))
+    // A gate inside the branch of another weight is its value.
+    case .Gate:code=dual_operand(m,b,w)
+    case:
+        m.failed=fmt.tprintf("%v: Mirai programs carry no derivatives through it",node.op)
+        return
+    }
+    fmt.sbprintf(&m.body,"%s%s v%d=%s;\n",indent,dual_type(w),n,code)
 }
 
 // A node of the outer scope, after its arguments. A gate opens the branch
@@ -118,14 +336,21 @@ branch_emit :: proc(m:^Emitter,weight:u32) {
     for n in gates {
         m.emitted[n]=true
         w:=g.nodes[n].width
-        fmt.sbprintf(&m.body,"    %s v%d=%s;\n",type_name(w),n,operand(m,g.nodes[n].args[2],w))
+        if m.duals[n] {
+            fmt.sbprintf(&m.body,"    %s v%d=%s;\n",dual_type(w),n,dual_operand(m,g.nodes[n].args[2],w))
+        } else {
+            fmt.sbprintf(&m.body,"    %s v%d=%s;\n",type_name(w),n,operand(m,g.nodes[n].args[2],w))
+        }
     }
     fmt.sbprintf(&m.body,"    if (%s>0.0) {{\n",operand(m,weight))
     for n in inner {
         m.emitted[n]=true
         line_emit(m,n,"        ")
     }
-    for n in gates {fmt.sbprintf(&m.body,"        v%d=%s;\n",n,operand(m,g.nodes[n].args[1],g.nodes[n].width))}
+    for n in gates {
+        value,w:=g.nodes[n].args[1],g.nodes[n].width
+        fmt.sbprintf(&m.body,"        v%d=%s;\n",n,m.duals[n]?dual_operand(m,value,w):operand(m,value,w))
+    }
     strings.write_string(&m.body,"    }\n")
 }
 
@@ -156,6 +381,10 @@ line_emit :: proc(m:^Emitter,n:u32,indent:string) {
     if m.failed!="" {return}
     node:=m.g.nodes[n]
     if node.op==.Constant || node.op==.Parameter || node.op==.Texture || node.op==.Arguments {return}
+    if m.duals[n] {
+        dual_line_emit(m,n,indent)
+        return
+    }
     w:=node.width
     a,b,c:=node.args[0],node.args[1],node.args[2]
     code:string
@@ -183,12 +412,26 @@ line_emit :: proc(m:^Emitter,n:u32,indent:string) {
         strings.write_string(&call,")")
         code=strings.to_string(call)
     case .Custom_Output:code=fmt.tprintf("v%d_%d",a,node.index)
-    case .Sample:
-        uv_set:=uv_set_of(m.g,b)
-        lod:=uv_set==1?"ctx.lod1":"ctx.lod"
-        sampled:=fmt.tprintf("mirai_sample_texture(ctx,%s,%s,%s)",operand(m,a),operand(m,b),lod)
+    case .Sample,.Sample_Grad:
+        sampled:string
+        switch {
+        case node.op==.Sample_Grad:
+            sampled=fmt.tprintf("mirai_sample_texture_grad(%s,%s,%s.xy,%s.zw)",operand(m,a),operand(m,b),operand(m,c),operand(m,c))
+        case m.exact:
+            sampled=fmt.tprintf("mirai_sample_texture(ctx,%s,%s)",operand(m,a),dual_operand(m,b,2))
+        case:
+            lod:=uv_set_of(m.g,b)==1?"ctx.lod1":"ctx.lod"
+            sampled=fmt.tprintf("mirai_sample_texture(ctx,%s,%s,%s)",operand(m,a),operand(m,b),lod)
+        }
         if m.g.textures[m.g.nodes[a].index].sampler==.Normal {sampled=fmt.tprintf("unreal_normal(%s)",sampled)}
         code=sampled
+    // The derivatives a value carries; without them, those of the quad.
+    case .Ddx,.Ddy:
+        switch {
+        case !m.exact:code=fmt.tprintf("%s(%s)",node.op==.Ddx?"ddx":"ddy",operand(m,a))
+        case m.duals[a]:code=fmt.tprintf("v%d.%s",a,node.op==.Ddx?"dx":"dy")
+        case:code=literal({},w)
+        }
     case .UV:code=node.index==1?"ctx.uv1":"ctx.uv0"
     case .Time:code="ctx.time"
     case .World_Position:code="unreal_point(ctx.world_position)"
@@ -387,6 +630,8 @@ program_build :: proc(t:^Translated_Material,e:^Evaluator,base_color,alpha,metal
     m.fields=make([]string,len(g.nodes),context.temp_allocator)
     m.parameters.allocator=out
     m.folded.allocator=context.temp_allocator
+    reasons:=gradients_plan(&m)
+    m.exact=len(reasons)==0
     strings.builder_init(&m.body,context.temp_allocator)
     if landscape {strings.write_string(&m.body,"    Unreal_Landscape landscape=unreal_landscape(ctx,p.control,p.normal,p.paint,p.piece,p.palette);\n")}
     seen:=make([]bool,len(g.nodes),context.temp_allocator)
@@ -405,6 +650,7 @@ program_build :: proc(t:^Translated_Material,e:^Evaluator,base_color,alpha,metal
         t.info.maps=asset.MATERIAL_DEFAULTS.maps
         return
     }
+    if !m.exact {note(e,"the program keeps the derivatives of the quad: %s",strings.join(reasons,"; ",context.temp_allocator))}
     b:=&m.body
     set :: proc(b:^strings.Builder,m:^Emitter,field:string,n:u32,width:u8) {
         if n==NONE {return}
@@ -608,6 +854,14 @@ float3 unreal_tangent_to_world(Mirai_Surface_Context ctx, float3 n) {
 float3 unreal_point(float3 p) {return float3(-p.z,p.x,p.y)*100.0;}
 float3 unreal_vector(float3 v) {return float3(-v.z,v.x,v.y);}
 float3 unreal_to_mirai(float3 v) {return float3(v.y,v.z,-v.x);}
+Mirai_Dual3 unreal_vector(Mirai_Dual3 v) {return mirai_dual(unreal_vector(v.value),unreal_vector(v.dx),unreal_vector(v.dy));}
+Mirai_Dual3 unreal_point(Mirai_Dual3 p) {return unreal_vector(p)*100.0;}
+// The point in the image, with how much it moves to the next pixel: in a
+// ray, which has no pixels next to it, none.
+Mirai_Dual2 unreal_screen(Mirai_Surface_Context ctx) {
+    if (ctx.ray) return mirai_dual(ctx.screen);
+    return mirai_dual(ctx.screen,float2(1.0/ctx.screen_size.x,0.0),float2(0.0,1.0/ctx.screen_size.y));
+}
 // What the origin of the render adds to a place of the world.
 float3 unreal_origin(Mirai_Surface_Context ctx) {return unreal_point(float3(ctx.origin)*ORIGIN_STEP);}
 // Axis i of the object in Unreal's axes: its local X, Y and Z.

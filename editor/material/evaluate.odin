@@ -708,6 +708,12 @@ expression_build :: proc(e:^Evaluator,o:Object,output:i32,scope:i32) -> Value {
     case "ParticleSubUV","ParticlePositionWS","ParticleRelativeTime":
         return untranslated(e,o,"particle values belong to .particle programs")
     case "Custom":return custom_expression(e,o,output,scope)
+    // How much the value changes to the next pixel of the image along x or y.
+    case "DDX","DDY":
+        value,_:=pin(e,o,"Value",scope)
+        // What failed upstream was counted there.
+        if value==NONE {return NO_VALUE}
+        return nodes(derivative(g,kind=="DDX"?.Ddx:.Ddy,value))
     case "Noise","VectorNoise":
         vector:=kind=="VectorNoise"
         position,connected:=pin(e,o,"Position",scope)
@@ -715,7 +721,7 @@ expression_build :: proc(e:^Evaluator,o:Object,output:i32,scope:i32) -> Value {
         position=convert(g,position,3)
         // What failed upstream was counted there.
         if position==NONE {return NO_VALUE}
-        s:=Noise_Settings{quality=i32(prop_int(o,"Quality",1)),tiling=prop_bool(o,"bTiling",false)}
+        s:=Noise_Settings{quality=i32(prop_int(o,"Quality",1)),tiling=prop_bool(o,"bTiling",false),name=strings.clone(object_name(o),g.noises.allocator)}
         filter:=NONE
         if vector {
             s.function=i32(prop_enum(o,"NoiseFunction",VECTOR_NOISE_FUNCTIONS,0))
@@ -771,6 +777,7 @@ custom_expression :: proc(e:^Evaluator,o:Object,output,scope:i32) -> Value {
     out:=g.customs.allocator
     code:Custom_Code
     code.width=u8(type+1)
+    code.name=strings.clone(object_name(o),out)
     code.description=prop_string(o,"Description",out)
     text,_:=strings.replace_all(prop_string(o,"Code"),"\r\n","\n",context.temp_allocator)
     if !strings.contains(text,"return") {text=strings.concatenate({"return ",text,";"},context.temp_allocator)}
@@ -1088,7 +1095,8 @@ texture_sample :: proc(e:^Evaluator,o:Object,scope:i32) -> Value {
     tex,connected:=pin(e,o,"TextureObject",scope)
     if !connected {tex=texture_object(e,o,scope)}
     if tex==NONE {return untranslated(e,o,"it names no texture")}
-    if mode:=prop_name(o,"MipValueMode","TMVM_None");mode!="TMVM_None" {
+    mode:=prop_name(o,"MipValueMode","TMVM_None")
+    if mode!="TMVM_None" && mode!="TMVM_Derivative" {
         note(e,"%s %s: its mip selection (%s) is left to Mirai's",object_class(o),object_name(o),mode)
     }
     uv,uv_connected:=pin(e,o,"Coordinates",scope)
@@ -1104,7 +1112,17 @@ texture_sample :: proc(e:^Evaluator,o:Object,scope:i32) -> Value {
         ref.sampler=Sampler(prop_enum(o,"SamplerType",SAMPLER_NAMES,int(ref.sampler)))
         tex=texture(g,ref)
     }
-    result:=sample(g,tex,uv)
+    result:=NONE
+    if mode=="TMVM_Derivative" {
+        // Filtered by the derivatives of its coordinates it is given.
+        dx,dx_connected:=pin(e,o,"CoordinatesDX",scope)
+        dy,dy_connected:=pin(e,o,"CoordinatesDY",scope)
+        if !dx_connected || !dy_connected {return untranslated(e,o,"it samples by derivatives it is not given")}
+        if dx==NONE || dy==NONE {return NO_VALUE}
+        result=sample_grad(g,tex,uv,convert(g,dx,2),convert(g,dy,2))
+    } else {
+        result=sample(g,tex,uv)
+    }
     if result==NONE {return untranslated(e,o,"its coordinates are not two values")}
     return nodes(result)
 }

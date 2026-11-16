@@ -59,13 +59,16 @@ Op :: enum u8 {
     // the rest of it (args[1]), with no components. Texture_Read: the
     // texture of row index of Graph.textures, which a system of the project
     // writes as it runs (its read), at the uv args[0]; four components.
-    Texture_Size,Noise,Vector_Noise,Custom,Custom_Output,Arguments,Texture_Read,
+    // Ddx and Ddy: how much args[0] changes to the next pixel of the image
+    // along x and along y. Sample_Grad: a Sample filtered by the
+    // derivatives of its uv given in args[2] (along x, then along y).
+    Texture_Size,Noise,Vector_Noise,Custom,Custom_Output,Arguments,Texture_Read,Ddx,Ddy,Sample_Grad,
 }
 
 UNARY :: bit_set[Op]{.Abs,.Floor,.Ceil,.Frac,.Round,.Trunc,.Sqrt,.Sin,.Cos,.Tan,.Asin,.Acos,.Atan,.Exp,.Exp2,.Log,.Log2,.Saturate,.Sign,.Length,.Normalize}
 CONTEXT :: bit_set[Op]{.UV,.Vertex_Color,.Time,.World_Position,.Origin,.Object_Position,.Object_Radius,.Actor_Position,.Object_Axis,.Object_Bounds,.Layer_Weight,.Vertex_Normal,.Vertex_Tangent,.Vertex_Bitangent,.Pixel_Normal,.Camera_Vector,.Camera_Position,.Screen_Position,.Screen_Size,.Per_Instance_Random,.Two_Sided_Sign,.Pixel_Depth,.Scene_Depth,.Particle_Data,.Particle_Random,.Particle_Radius}
 // What the CPU does not evaluate: the context and what only a program computes.
-PROGRAM :: CONTEXT+{.Texture_Size,.Noise,.Vector_Noise,.Custom,.Custom_Output,.Arguments,.Texture_Read}
+PROGRAM :: CONTEXT+{.Texture_Size,.Noise,.Vector_Noise,.Custom,.Custom_Output,.Arguments,.Texture_Read,.Ddx,.Ddy,.Sample_Grad}
 // What makes a node vary over the surface: its context and the textures it reads.
 VARYING :: PROGRAM+{.Sample,.Texture}
 
@@ -115,11 +118,13 @@ Noise_Settings :: struct {
     scale,output_min,output_max,level_scale,repeat_size:f32,
     turbulence,tiling:bool,
     world:bool, // the position is of the world: Unreal mirrors and repeats it every NOISE_WORLD_TILE
+    name:string, // of the first expression with these settings
 }
 
 // The HLSL of a Custom expression: its code, the names of its inputs in the
 // order of the list of its node, and its outputs after the first.
 Custom_Code :: struct {
+    name:string, // of the expression
     code:string,
     description:string,
     inputs:[]string,
@@ -201,6 +206,22 @@ sample :: proc(g:^Graph,texture,uv:u32) -> u32 {
     return node_add(g,{op=.Sample,width=4,args={texture,uv,NONE}})
 }
 
+// A sample by the derivatives of uv along x and y (two values each).
+sample_grad :: proc(g:^Graph,texture,uv,dx,dy:u32) -> u32 {
+    if texture==NONE || uv==NONE || dx==NONE || dy==NONE || g.nodes[texture].op!=.Texture {return NONE}
+    if g.nodes[uv].width!=2 || g.nodes[dx].width!=2 || g.nodes[dy].width!=2 {return NONE}
+    if g.textures[g.nodes[texture].index].read.function!="" {return sample(g,texture,uv)}
+    return node_add(g,{op=.Sample_Grad,width=4,args={texture,uv,append_values(g,dx,dy)}})
+}
+
+// The derivative of a along x (op .Ddx) or y (.Ddy) of the image: zero for
+// what is the same at every point of a surface.
+derivative :: proc(g:^Graph,op:Op,a:u32) -> u32 {
+    if a==NONE || g.nodes[a].width==0 {return NONE}
+    if !depends_on(g,a,VARYING) {return constant(g,{},g.nodes[a].width)}
+    return node_add(g,{op=op,width=g.nodes[a].width,args={a,NONE,NONE}})
+}
+
 texture_size :: proc(g:^Graph,texture:u32) -> u32 {
     if texture==NONE || g.nodes[texture].op!=.Texture {return NONE}
     return node_add(g,{op=.Texture_Size,width=2,args={texture,NONE,NONE}})
@@ -211,7 +232,11 @@ texture_size :: proc(g:^Graph,texture:u32) -> u32 {
 noise :: proc(g:^Graph,settings:Noise_Settings,position,filter:u32,vector:bool) -> u32 {
     if position==NONE || g.nodes[position].width!=3 || !vector && (filter==NONE || g.nodes[filter].width!=1) {return NONE}
     row:=-1
-    for &s,i in g.noises {if s==settings {row=i;break}}
+    for s,i in g.noises {
+        same:=s
+        same.name=settings.name
+        if same==settings {row=i;break}
+    }
     if row<0 {
         append(&g.noises,settings)
         row=len(g.noises)-1

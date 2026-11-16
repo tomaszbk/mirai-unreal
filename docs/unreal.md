@@ -358,8 +358,9 @@ it names). Everything lives in the library's arena.
   and translucent passes.
 - **What only a program computes** (the graph's `PROGRAM`): `Noise` and `VectorNoise`, which call
   `shaders/include/unreal_noise.slang` (the noise functions once, the table-based ones over
-  hashed gradients); `TextureProperty`, the texture size on the GPU; and `Custom`, its HLSL as a
-  program function with its inputs and extra outputs. HLSL that reads what a program does not have
+  hashed gradients); `TextureProperty`, the texture size on the GPU; `DDX` and `DDY`, and a
+  sample by the derivatives it is given (`MipValueMode` `TMVM_Derivative`); and `Custom`, its HLSL
+  as a program function with its inputs and extra outputs. HLSL that reads what a program does not have
   (`View.`, `Primitive.`, `Parameters.`, derivatives, `discard`, includes, an Unreal shader
   function that is neither defined there nor HLSL nor its noise) stays in the program as a comment
   with what it reads, for the agent to port to Slang; its function gives zero and the expression
@@ -380,7 +381,7 @@ it names). Everything lives in the library's arena.
   along the inverse normal, since Mirai reflects by the view and what imitates it sees the surface
   head-on;
   `EyeAdaptationInverse` is 1 and leaves emission relative to exposure (`Relative`); a sample's mip
-  modes are left to Mirai; additive blend is a layer that does not cover.
+  level and bias are left to Mirai; additive blend is a layer that does not cover.
 - **Legacy is adapted.** View-dependent relief (`BumpOffset` and the `/Engine`
   `ParallaxOcclusionMapping` function) is the surface without relief: its UVs are the ones it
   receives, without depth displacement or self-shadow. `FuzzyShading`, which lightens a cloth's
@@ -426,6 +427,14 @@ it names). Everything lives in the library's arena.
   stay constant), position and normals go to centimeters and Z up, normal maps are unpacked and
   the tangent normal goes to the world with the MikkTSpace frame. Its name is the base material
   and a hash of what it computes: instances that only change values share a program.
+- **Derivatives of a program.** What the coordinates of a sample and a `DDX` or `DDY` read is
+  computed as duals (`mirai_dual.slang`), from the uv, the place, the normal and the point in the
+  image down the chain rule, and sampled by them: the program takes no derivative across a quad
+  and the engine resolves it once per pixel; what never reaches a coordinate stays a plain value
+  (`gradients_plan`). Coordinates whose derivatives the chain cannot follow (another texture's
+  sample, noise, a `Custom`, vertex colors, the tangent frame, layer weights) or custom HLSL that
+  samples by implicit derivatives leave the whole program on the derivatives of the quad, never
+  mixing both, with a note that names the node.
 - **Mask of a masked program.** The importer cuts masked cards to the outlines of a mask it can
   read, which a program hides: when the opacity mask is a per-texel function of textures at one
   uv set of the mesh times and plus constants, times a constant, the translation gives it
