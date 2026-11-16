@@ -426,6 +426,12 @@ it names). Everything lives in the library's arena.
   stay constant), position and normals go to centimeters and Z up, normal maps are unpacked and
   the tangent normal goes to the world with the MikkTSpace frame. Its name is the base material
   and a hash of what it computes: instances that only change values share a program.
+- **Mask of a masked program.** The importer cuts masked cards to the outlines of a mask it can
+  read, which a program hides: when the opacity mask is a per-texel function of textures at one
+  uv set of the mesh times and plus constants, times a constant, the translation gives it
+  (`Translated_Mask`) and the import names it (`Imported_Material.mask`), the texture itself when
+  the mask is its alpha and that function baked otherwise. Any other mask (moving or world-space
+  coordinates, vertex colors, noise) keeps the alpha test of its cards, and the import says why.
 - **Runtime virtual textures.** Mirai has none: a `RuntimeVirtualTextureSample` (or its parameter)
   is what the material that writes that texture gives at the point of the sample, its graph
   evaluated there (`Options.writers`, the landscapes of a level that list it in
@@ -869,7 +875,8 @@ All with `mirai test` on the package folder inside a project with the plugin ins
   standard graph, tagged inputs, instances with static switches, functions, Landscape and material
   layers, landscape grass, a program, screen, depth, bounds, the world with its origin, `Custom`,
   noise, untranslated classes and damaged bytes; writing reads back `.mat` and `.tex` and reimports
-  over a changed parameter.
+  over a changed parameter; the mask of a masked program
+  (`the_mask_of_a_masked_program_is_given_when_it_is_a_texture_at_a_uv_set`).
 - `editor/level`, `landscape` and `foliage`: Unreal space against rotation matrices, the
   properties of an object staying where they were read
   (`the_properties_of_an_object_stay_put_as_others_are_read`), archetypes from another package and

@@ -48,6 +48,14 @@ Built_Material :: struct {
     image_names:[asset.Material_Map_Kind]string, // of each image as this material names it: a baked one after the material, though another material baked the same pixels first
     parameters:[]asset.Material_Parameter,
     parameter_images:[]string, // by parameter; "" for one that is not a texture
+    mask:Maybe(Built_Mask),    // of a masked material with a program whose mask is an image
+}
+
+// The mask of a material as importer.Imported_Mask holds it, its image by key.
+Built_Mask :: struct {
+    image,name:string,
+    mapping:asset.Material_Map,
+    cutoff:f32,
 }
 
 // An image baked for a map of a material, and the scale its emission takes.
@@ -295,7 +303,7 @@ material_build :: proc(b:^Builder,t:^material.Translated_Material,decoder:^krake
     m.info=t.info
     g:=&t.graph
     names:=MAP_NAMES
-    for &image,kind in t.images {
+    for image,kind in t.images {
         if image==material.MAP_NONE {continue}
         relevant:[4]bool
         encodings:[4]material.Channel_Encoding
@@ -316,53 +324,19 @@ material_build :: proc(b:^Builder,t:^material.Translated_Material,decoder:^krake
         case .Specular:relevant={false,false,false,true}
         case:for c in 0..<4 {relevant[c]=image.channels[c]!=material.NONE}
         }
-        key:string
-        // A texture read as it is keeps its pixels.
-        if row,direct:=material.image_direct(g,image,relevant);direct {
-            ref:=g.textures[row]
-            source:=source_texture(b,ref.path)
-            wanted:=texture.Usage.Data
-            if color {wanted=.Color}
-            if kind==.Normal {wanted=.Normal}
-            if source.ok && source.usage==wanted {key=texture_image(b,ref.path,ref.name)}
-        }
-        if key=="" {
-            // What the bake reads: the graph, the values of its parameters
-            // (instances of one material share the graph), the map's
-            // channels and the textures.
-            what:=base.hash64(mem.slice_to_bytes(g.nodes[:]))
-            for &p in g.parameters {what=base.hash_combine(what,base.hash64(mem.ptr_to_bytes(&p.value)))}
-            what=base.hash_combine(what,base.hash64(mem.ptr_to_bytes(&image)))
-            for ref in g.textures {what=base.hash_combine(what,base.name_hash(ref.path))}
-            baked:=fmt.tprintf("%v:%016x",kind,what)
-
-            done,again:=b.bakes[baked]
-            if !again {
-                name:=fmt.aprintf("%s_%s",unreal.asset_name(t.name),names[kind],allocator=b.allocator)
-                if kind==.Emission {
-                    // Its scale is the factor of the material: it is baked now.
-                    pixels:=make([]^material.Pixels,len(g.textures),context.temp_allocator)
-                    for &ref,i in g.textures {pixels[i]=source_pixels(b,ref.path,decoder)}
-                    data,width,height,scale:=material.image_bake(g,image,encodings,pixels,true,b.allocator)
-                    done.scale=scale
-                    done.key=fmt.aprintf("baked:%016x:%dx%d:%v",base.hash64(data),width,height,kind,allocator=b.allocator)
-                    done.key=image_add(b,{key=done.key,name=name,made=textures.rgba8(data,width,height),srgb=color})
-                } else {
-                    // Baked when its texture is built, and only when the texture cache does not keep it.
-                    recipe:=bake_pack(b,g,image,encodings,b.allocator)
-                    done.scale={1,1,1,1}
-                    done.key=fmt.aprintf("baked:%016x:%v",base.hash64(recipe),kind,allocator=b.allocator)
-                    done.key=image_add(b,{key=done.key,name=name,data=recipe,make=bake_made,srgb=color,normal_map=kind==.Normal})
-                }
-                b.bakes[strings.clone(baked,b.allocator)]=done
-            }
-            if kind==.Emission {m.info.emission*=done.scale.xyz}
-            key=done.key
-            m.image_names[kind]=fmt.aprintf("%s_%s",unreal.asset_name(t.name),names[kind],allocator=b.allocator)
-        } else {
-            m.image_names[kind]=b.images[b.keys[key]].name
-        }
-        m.images[kind]=key
+        wanted:=texture.Usage.Data
+        if color {wanted=.Color}
+        if kind==.Normal {wanted=.Normal}
+        scale:[4]f32
+        m.images[kind],m.image_names[kind],scale=image_build(b,t,image,names[kind],relevant,encodings,{wanted},color,kind==.Normal,kind==.Emission,decoder)
+        // The scale of an emission is the factor of the material.
+        if kind==.Emission {m.info.emission*=scale.xyz}
+    }
+    // Its alpha, the mask: any texture as it is but a normal map.
+    if mask,given:=t.mask.?;given {
+        image:=material.Map_Image{{material.NONE,material.NONE,material.NONE,mask.alpha}}
+        key,name,_:=image_build(b,t,image,"Mask",{false,false,false,true},{},{.Color,.Data},false,false,false,decoder)
+        m.mask=Built_Mask{image=key,name=name,mapping=mask.mapping,cutoff=mask.cutoff}
     }
     // What a terrain gives each piece the material holds no value of.
     held:=0
@@ -386,6 +360,53 @@ material_build :: proc(b:^Builder,t:^material.Translated_Material,decoder:^krake
     return
 }
 
+// The key in b of an image of a translation, and its name as the material
+// names it: a texture read as it is, of one of usages, keeps its pixels;
+// anything else is baked from the graph, named after the material and label.
+// With fit it is baked now and its scale is what it was divided by (image_bake).
+@(private)
+image_build :: proc(b:^Builder,t:^material.Translated_Material,image:material.Map_Image,label:string,relevant:[4]bool,encodings:[4]material.Channel_Encoding,usages:bit_set[texture.Usage],color,normal_map,fit:bool,decoder:^kraken.Decoder) -> (key,name:string,scale:[4]f32) {
+    g:=&t.graph
+    scale={1,1,1,1}
+    if row,direct:=material.image_direct(g,image,relevant);direct {
+        ref:=g.textures[row]
+        source:=source_texture(b,ref.path)
+        if source.ok && source.usage in usages {
+            key=texture_image(b,ref.path,ref.name)
+            return key,b.images[b.keys[key]].name,scale
+        }
+    }
+    // What the bake reads: the graph, the values of its parameters
+    // (instances of one material share the graph), the image's channels and
+    // the textures.
+    what:=base.hash64(mem.slice_to_bytes(g.nodes[:]))
+    for &p in g.parameters {what=base.hash_combine(what,base.hash64(mem.ptr_to_bytes(&p.value)))}
+    image:=image
+    what=base.hash_combine(what,base.hash64(mem.ptr_to_bytes(&image)))
+    for ref in g.textures {what=base.hash_combine(what,base.name_hash(ref.path))}
+    baked:=fmt.tprintf("%s:%016x",label,what)
+    name=fmt.aprintf("%s_%s",unreal.asset_name(t.name),label,allocator=b.allocator)
+    done,again:=b.bakes[baked]
+    if !again {
+        if fit {
+            pixels:=make([]^material.Pixels,len(g.textures),context.temp_allocator)
+            for &ref,i in g.textures {pixels[i]=source_pixels(b,ref.path,decoder)}
+            data,width,height,fitted:=material.image_bake(g,image,encodings,pixels,true,b.allocator)
+            done.scale=fitted
+            done.key=fmt.aprintf("baked:%016x:%dx%d:%s",base.hash64(data),width,height,label,allocator=b.allocator)
+            done.key=image_add(b,{key=done.key,name=name,made=textures.rgba8(data,width,height),srgb=color})
+        } else {
+            // Baked when its texture is built, and only when the texture cache does not keep it.
+            recipe:=bake_pack(b,g,image,encodings,b.allocator)
+            done.scale={1,1,1,1}
+            done.key=fmt.aprintf("baked:%016x:%s",base.hash64(recipe),label,allocator=b.allocator)
+            done.key=image_add(b,{key=done.key,name=name,data=recipe,make=bake_made,srgb=color,normal_map=normal_map})
+        }
+        b.bakes[strings.clone(baked,b.allocator)]=done
+    }
+    return done.key,name,done.scale
+}
+
 // Adds a translated material and its images to the model a format reads,
 // and returns its row: what the slots of the meshes name.
 reader_material :: proc(r:^importer.Reader,b:^Builder,t:^material.Translated_Material,index:int,decoder:^kraken.Decoder=nil) -> int {
@@ -400,6 +421,11 @@ reader_material :: proc(r:^importer.Reader,b:^Builder,t:^material.Translated_Mat
     images:=make([]int,len(m.parameter_images),r.out)
     for key,i in m.parameter_images {images[i]=reader_image(r,b,key,"",-1)}
     imported.parameter_images=images
+    if mask,given:=m.mask.?;given {
+        if image:=reader_image(r,b,mask.image,mask.name,-1);image>=0 {
+            imported.mask=importer.Imported_Mask{image=image,mapping=mask.mapping,cutoff=mask.cutoff}
+        }
+    }
     for w in b.warnings {importer.warn(r,"%s",w)}
     clear(&b.warnings)
     for n in t.notes {importer.warn(r,"material %s: %s",t.name,n)}

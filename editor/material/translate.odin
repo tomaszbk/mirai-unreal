@@ -79,6 +79,7 @@ Translated_Material :: struct {
     images:[asset.Material_Map_Kind]Map_Image,
     graph:Graph,
     program:Program,
+    mask:Maybe(Translated_Mask), // of a masked material with a program: what its cards are cut to
     vertex_colors:Vertex_Colors,
     // The Unreal uv sets it reads, which the mesh holds in its own uv sets
     // lowest first (uv_set_sources): the graph reads them there.
@@ -91,6 +92,14 @@ Translated_Material :: struct {
     reads_custom_data:bool,      // PerInstanceCustomData reaches an output: each instance can show another value
     arena:^mem.Dynamic_Arena,
     allocator:mem.Allocator,
+}
+
+// The opacity mask of a material whose program decides its alpha, as an
+// image: the texels of the node alpha, read through mapping, that reach cutoff.
+Translated_Mask :: struct {
+    alpha:u32,
+    mapping:asset.Material_Map,
+    cutoff:f32,
 }
 
 translated_destroy :: proc(t:^Translated_Material) {
@@ -668,6 +677,40 @@ translate_values :: proc(t:^Translated_Material,e:^Evaluator,roots:[Attribute]u3
     }
     if with_colors==NONE {with_colors=base_color_lit(e,roots[.Base_Color],scattered,roots,shading,thin)}
     program_build(t,e,with_colors,alpha_root,metallic,roughness,specular,occlusion,emissive,normal,roots,shading)
+    if info.alpha_mode==.Mask && alpha_root!=NONE && t.program.name!="" && e.landscape==nil {mask_find(t,e,alpha_root)}
+}
+
+// The opacity mask of a masked material with a program, when it is a
+// per-texel function of textures read at one uv set of the mesh times and
+// plus constants, times a constant: its cards can be cut to it. A constant
+// one has nothing to cut; any other keeps its alpha test, and a note says why.
+@(private)
+mask_find :: proc(t:^Translated_Material,e:^Evaluator,alpha:u32) {
+    g:=&t.graph
+    form,ok:=map_form(g,alpha)
+    why:string
+    mapping:asset.Material_Map
+    switch {
+    case !ok:
+        why="it samples textures at more than one set of coordinates"
+        for n in nodes_under(g,{alpha},{.Sample}) {
+            if op:=g.nodes[n].op;op in PROGRAM {why=fmt.tprintf("it reads %v",op);break}
+        }
+    case form.image==NONE:return
+    case:
+        mapping,ok=uv_transform(g,form.uv)
+        if ok {break}
+        why="its texture coordinates are not a uv set of the mesh times and plus constants"
+        for n in nodes_under(g,{form.uv}) {
+            if op:=g.nodes[n].op;op in PROGRAM && op!=.UV {why=fmt.tprintf("its texture coordinates read %v",op);break}
+        }
+    }
+    if !ok {
+        note(e,"its masked cards keep their alpha test: its opacity mask is not a texture the import can cut them to (%s)",why)
+        return
+    }
+    if !(form.factor.x>0) {return}
+    t.mask=Translated_Mask{alpha=convert(g,form.image,1),mapping=mapping,cutoff=t.info.alpha_cutoff/form.factor.x}
 }
 
 // The base color as Mirai lights it: lit as opaque, the light Unreal

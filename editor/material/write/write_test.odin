@@ -4,6 +4,7 @@ import "core:fmt"
 import "core:os"
 import "core:path/filepath"
 import "core:mem"
+import "core:slice"
 import "core:strings"
 import "core:sync"
 import "core:testing"
@@ -194,6 +195,101 @@ translated_materials_are_written_with_their_images_and_programs :: proc(t:^testi
     testing.expect_value(t,len(reread.parameters),2)
     testing.expect_value(t,reread.parameters[1].value[0],0.9)
     testing.expect_value(t,reread.imported_parameters[1].value[0],f64(f32(0.2)))
+}
+
+// Masked leaves whose albedo moves, a program, with the opacity mask in the
+// alpha of the albedo (M_Alpha), in the red of a mask texture at doubled
+// coordinates times two (M_Red), or in that alpha moving too (M_Moving).
+@(private="file")
+leaves_package :: proc() -> []u8 {
+    p:=fx.package_make()
+    names:=[3]string{"M_Alpha","M_Red","M_Moving"}
+    for name,i in names {
+        leaf:=fx.export(&p,fx.class(&p,"/Script/Engine","Material"),0,name,nil)
+        pan:=fx.writer(&p)
+        fx.float_put(&pan,"SpeedX",0.1)
+        panner:=expression(&p,leaf,"Panner","Pan",&pan)
+        moving:=sample(&p,leaf,"T_Albedo","",panner)
+        m:=fx.writer(&p)
+        fx.enum_put(&m,"BlendMode","EBlendMode","BLEND_Masked")
+        fx.float_put(&m,"OpacityMaskClipValue",0.5)
+        fx.input_put(&m,"BaseColor","ColorMaterialInput",{expression=moving,mask=RGB})
+        switch i {
+        case 0:
+            still:=sample(&p,leaf,"T_Albedo","")
+            fx.input_put(&m,"OpacityMask","ScalarMaterialInput",{expression=still,mask={false,false,false,true}})
+        case 1:
+            uv:=fx.writer(&p)
+            fx.float_put(&uv,"UTiling",2)
+            fx.float_put(&uv,"VTiling",2)
+            coordinates:=expression(&p,leaf,"TextureCoordinate","UV",&uv)
+            red:=sample(&p,leaf,"T_Mask","SAMPLERTYPE_Masks",coordinates)
+            twice:=fx.writer(&p)
+            fx.input_put(&twice,"A","ExpressionInput",{expression=red,mask={true,false,false,false}})
+            fx.float_put(&twice,"ConstB",2)
+            fx.input_put(&m,"OpacityMask","ScalarMaterialInput",{expression=expression(&p,leaf,"Multiply","Twice",&twice)})
+        case 2:
+            fx.input_put(&m,"OpacityMask","ScalarMaterialInput",{expression=moving,mask={false,false,false,true}})
+        }
+        p.exports[leaf-1].data=fx.finish(&m)
+    }
+    return fx.package_bytes(&p,"/Game/M/M_Leaves")
+}
+
+// A masked material with a program gives the importer the mask its cards
+// are cut to when its opacity mask is a texture at a uv set of the mesh: the
+// texture itself when it is its alpha, else that alpha baked, with the map
+// and the cutoff over the constant that multiplies it. Any other keeps its
+// alpha test, and the import says why.
+@(test)
+the_mask_of_a_masked_program_is_given_when_it_is_a_texture_at_a_uv_set :: proc(t:^testing.T) {
+    lib:material.Library
+    material.library_init(&lib,nil)
+    defer material.library_destroy(&lib)
+    material.library_add(&lib,"/Game/M/M_Leaves",leaves_package())
+    material.library_add(&lib,"/Game/T/T_Albedo",texture_bytes("T_Albedo","TC_Default",true))
+    material.library_add(&lib,"/Game/T/T_Mask",texture_bytes("T_Mask","TC_Masks",false))
+    b:Builder
+    builder_init(&b,&lib)
+    defer builder_destroy(&b)
+    r:importer.Reader
+    r.out=context.temp_allocator
+    r.materials.allocator,r.images.allocator,r.warnings.allocator=context.temp_allocator,context.temp_allocator,context.temp_allocator
+    r.image_rows.allocator,r.material_names.allocator=context.temp_allocator,context.temp_allocator
+    Case :: struct {name:string,given:bool,scale:[2]f32,cutoff:f32}
+    cases:=[]Case{{"M_Alpha",true,{1,1},0.5},{"M_Red",true,{2,2},0.25},{"M_Moving",false,{},0}}
+    for c,i in cases {
+        object,found:=material.object_find(&lib,strings.concatenate({"/Game/M/M_Leaves.",c.name},context.temp_allocator))
+        if !testing.expect(t,found) {return}
+        translated,error:=material.translate(&lib,object)
+        if !testing.expect_value(t,error.code,material.Error_Code.None) {return}
+        defer material.translated_destroy(&translated)
+        if !testing.expectf(t,!material.translated_is_standard(&translated) && translated.info.alpha_mode==.Mask,"%s is a masked program",c.name) {continue}
+        warned:=len(r.warnings)
+        row:=reader_material(&r,&b,&translated,i)
+        imported:=r.materials[row]
+        mask,given:=imported.mask.?
+        if !testing.expectf(t,given==c.given,"%s gives a mask: %v",c.name,given) {continue}
+        if !given {
+            keeps:=false
+            for w in r.warnings[warned:] {keeps||=strings.contains(w,"keep their alpha test") && strings.contains(w,"Time")}
+            testing.expectf(t,keeps,"%s says its cards keep their alpha test because it moves: %v",c.name,r.warnings[warned:])
+            continue
+        }
+        testing.expectf(t,mask.mapping.scale==c.scale && mask.mapping.uv_set==0 && abs(mask.cutoff-c.cutoff)<1e-6,"%s: %v",c.name,mask)
+        image:=r.images[mask.image]
+        if c.name=="M_Alpha" {
+            testing.expectf(t,slice.contains(imported.parameter_images,mask.image),"%s: its mask is the albedo the program reads",c.name)
+            continue
+        }
+        // The red of the mask, as Unreal's sampler reads it, in the alpha of the bake.
+        made,ok:=image.make(image.data,context.temp_allocator)
+        red:=source_pixels(&b,"/Game/T/T_Mask",nil)
+        if !testing.expect(t,ok && red!=nil && made.width==red.width && made.height==red.height) {continue}
+        for texel,k in red.texels {
+            testing.expectf(t,made.texels[k*4+3]==u8(texel.r*255+0.5),"%s: texel %d of the mask",c.name,k)
+        }
+    }
 }
 
 // A map baked from the graph is made when its texture is built, from its
