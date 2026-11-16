@@ -68,8 +68,6 @@ Cascade_Life :: struct {
     color_set:bool,
     scales:[dynamic][2]Dist,  // ColorScaleOverLife: color and alpha
     sizes:[dynamic]Dist,      // SizeMultiplyLife and SizeScale: their x
-    light:level.Ref,          // ParticleModuleLight
-    lit:bool,
     sub_uv:Dist,              // SubImageIndex of ParticleModuleSubUV
     sub_uv_set:bool,
     sub_uv_movie:bool,
@@ -241,7 +239,7 @@ cascade_module :: proc(c:^unreal_scene.Context,e:^Unreal_Emitter,module:level.Re
             unreal_scene.warn(c,"%s: %s: it starts at frame %d (0: one at random) in Unreal; in Mirai, at the first",life.who,class,int(start))
         }
     case "ParticleModuleLight":
-        life.light,life.lit=module,true
+        unreal_scene.warn(c,"%s: ParticleModuleLight: its particles light the scene in Unreal; a particle of Mirai glows by its emission and is not a light",life.who)
     case "ParticleModuleCollision":
         info.collision=.World
         damping:=cascade_dist(d,module,"DampingFactor")
@@ -307,7 +305,6 @@ cascade_life_set :: proc(c:^unreal_scene.Context,e:^Unreal_Emitter,life:^Cascade
         }
         info.flipbook_speed=0
     }
-    if life.lit {cascade_light(c,e,life.light,life)}
 }
 
 // Whether the sub-image of a particle goes from the first to the last over its life, evenly.
@@ -317,43 +314,6 @@ cascade_sub_uv_whole :: proc(index:Dist,frames:u32) -> bool {
     first,last:=index.values[0].x,index.values[1].x
     return index.times[0]<=0.01 && index.times[1]>=0.99 && abs(first)<0.5 && last>=f32(frames)-1.5 && last<=f32(frames)+0.5
 }
-
-// The lights of a ParticleModuleLight: a share SpawnFraction of the particles
-// lights as far as RadiusScale times its size. Its color is that of the
-// particle times BrightnessOverLife and ColorScaleOverLife, in the units
-// of Unreal's lights of particles, UNREAL_PARTICLE_LIGHT_CANDELA each.
-@(private)
-cascade_light :: proc(c:^unreal_scene.Context,e:^Unreal_Emitter,module:level.Ref,life:^Cascade_Life) {
-    d:=c.d
-    info:=&e.info
-    fraction:=clamp(real(d,module,"SpawnFraction",1),0,1)
-    count:=info.rate*info.lifetime[1]
-    for burst in info.bursts {count+=f32(burst.count)}
-    info.lights=u32(max(math.ceil(count*fraction),1))
-    brightness:=dist_mean(cascade_dist(d,module,"BrightnessOverLife")).x
-    tint:=[3]f32{1,1,1}
-    if scale:=cascade_dist(d,module,"ColorScaleOverLife");scale.found {tint=dist_mean(scale)}
-    peak:=max(tint.r,tint.g,tint.b,0)
-    if peak>0 && (tint.r!=tint.g || tint.g!=tint.b) {
-        unreal_scene.warn(c,"%s: ParticleModuleLight: its lights are tinted %v in Unreal; in Mirai, of the color of the particle",life.who,tint/peak)
-    }
-    info.light_intensity=max(brightness*peak,0)*UNREAL_PARTICLE_LIGHT_CANDELA
-    radius:=cascade_dist(d,module,"RadiusScale")
-    info.light_range=max(dist_mean(radius).x,0)*(info.size[0]+info.size[1])*0.5
-    if squared,_:=level.bool_of(d,module,"bUseInverseSquaredFalloff",true);!squared {
-        unreal_scene.warn(c,"%s: ParticleModuleLight: its lights fade by an exponent in Unreal; Mirai's by the square of the distance",life.who)
-    }
-    // Cascade casts shadows of the lights it makes high quality alone.
-    high,_:=level.bool_of(d,module,"bHighQualityLights",false)
-    shadows,_:=level.bool_of(d,module,"bShadowCastingLights",false)
-    info.light_shadows=high && shadows
-}
-
-// Candelas of a value of 1 of the color of a light of Unreal's particles:
-// such lights give their color to the lighting as it is, whose units are
-// those of a point light without units times 16, of which 10000 are a
-// candela at a metre (lights.odin of the importer).
-UNREAL_PARTICLE_LIGHT_CANDELA :: f32(1.0/10000)
 
 // The times a curve of the life of a particle keeps: those of the keys of
 // all the distributions when they fit, else spread evenly.

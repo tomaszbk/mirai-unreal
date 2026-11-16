@@ -16,9 +16,9 @@ import "plugins:vfx/runtime/effect"
 // A Cascade system of a level, its distributions as the tables the package
 // bakes, placed by an Emitter: the modules give what Unreal evaluates (bursts
 // at their seconds, a color over life that replaces the start color times the
-// scales, sizes that multiply, the speed a sphere gives by distance, lights in
-// Unreal's units, the cone of its integer angles) and a module Mirai has no
-// field for is a warning that names it.
+// scales, sizes that multiply, the speed a sphere gives by distance, the cone
+// of its integer angles) and a module Mirai has no field for, or the lights of
+// its particles, is a warning that names it.
 @(test)
 a_cascade_system_gives_its_effect_what_unreal_evaluates :: proc(t:^testing.T) {
     directory,_:=os.temp_directory(context.temp_allocator)
@@ -68,8 +68,6 @@ a_cascade_system_gives_its_effect_what_unreal_evaluates :: proc(t:^testing.T) {
     testing.expectf(t,s.times[0]==0 && s.times[1]==1 && near(s.values[0],2) && near(s.values[1],6),"%v",s)
     // A surface of 50 cm that sends its particles off at twice their distance from the center.
     testing.expectf(t,info.shape==.Sphere && near(info.shape_size.x,0.5) && info.shell==1 && near(info.speed[0],1) && near(info.speed[1],1),"%v %v %v %v",info.shape,info.shape_size,info.shell,info.speed)
-    // Half of the 65 alive at most light, 2000 of Unreal's units each, three times their size away.
-    testing.expectf(t,info.lights==33 && near(info.light_intensity,0.2) && near(info.light_range,0.6),"%v %v %v",info.lights,info.light_intensity,info.light_range)
     // Four sub-images from the first to the last over the life.
     testing.expectf(t,info.flipbook=={2,2} && info.flipbook_speed==0,"%v %v",info.flipbook,info.flipbook_speed)
     warned :: proc(report:^unreal_scene.Level_Report,parts:..string) -> bool {
@@ -80,6 +78,7 @@ a_cascade_system_gives_its_effect_what_unreal_evaluates :: proc(t:^testing.T) {
         return false
     }
     testing.expectf(t,warned(&report,"Torch, Flame","nothing for ParticleModuleKillBox"),"a module without a field is named: %v",report.imports.warnings)
+    testing.expectf(t,warned(&report,"Torch, Flame","ParticleModuleLight","is not a light"),"the lights of its particles are named: %v",report.imports.warnings)
     testing.expectf(t,!warned(&report,"ParticleModuleSubUV"),"%v",report.imports.warnings)
     scene:asset.Scene
     if !testing.expect_value(t,asset.scene_load(&scene,&types,report.scene_path),asset.Error.None) {return}

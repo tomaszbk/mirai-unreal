@@ -252,11 +252,6 @@ niagara_stateless_module :: proc(c:^unreal_scene.Context,e:^Unreal_Emitter,modul
             info.flipbook_speed=max(real(d,module,"LoopsPerSecond",1)*frames,0)
         case:unreal_scene.warn(c,"%s, %s: its flipbook frames are chosen %s; the effect plays them over the life",label,e.name,"directly" if mode=="DirectSet" else "at random")
         }
-    case "LightAttributes":
-        if apply,_:=level.bool_of(d,module,"bApplyRadius",false);apply {
-            radius:=module_dist(u,d,module,"Radius",{100,100,100,100},1)
-            info.light_range=max(niagara_mean(radius).x,0)*CENTIMETRE
-        }
     case "MeshIndex":
         index:=module_dist(u,d,module,"MeshIndex",{},1)
         if index.max.x>0 {unreal_scene.warn(c,"%s, %s: its particles pick other meshes than the first; Mirai's draw one",label,e.name)}

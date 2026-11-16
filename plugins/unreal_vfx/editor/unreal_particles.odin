@@ -271,7 +271,7 @@ niagara_component_textures :: proc(d:^level.Document,ref:level.Ref) -> map[strin
 UNREAL_PARTICLE_DEFAULTS :: effect.Particle_Info{
     duration=1,shape=.Point,
     lifetime={1,1},size={0.01,0.01},colors={{1,1,1,1},{1,1,1,1}},intensity=1,emission_mode=.Relative,
-    blend=.Alpha,lit=true,flipbook={1,1},light_range=1,
+    blend=.Alpha,lit=true,flipbook={1,1},
     size_over_life=effect.PARTICLE_CURVE_ONE,
     color_over_life={colors={0..<effect.PARTICLE_CURVE_KEYS={1,1,1,1}},times={0,1,1,1,1,1,1,1}},
 }

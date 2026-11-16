@@ -556,9 +556,6 @@ niagara_gradient_of :: proc(curve:Niagara_Curve,info:^effect.Particle_Info) -> (
     return
 }
 
-// Centimetres of the light radius of a particle of Niagara no module sets.
-NIAGARA_LIGHT_RADIUS :: 100
-
 // What a renderer of an emitter draws; drawn: an earlier one already gave
 // how the particles are drawn. True for one that draws them.
 @(private)
@@ -609,24 +606,7 @@ niagara_renderer :: proc(c:^unreal_scene.Context,info:^effect.Particle_Info,rend
             }
         }
     case "NiagaraLightRendererProperties":
-        // A light on each particle, of its color in the units of Unreal's
-        // lights of particles, as far as RadiusScale times the light radius
-        // of a particle, which no module of the stack sets: its default.
-        count:=info.rate*info.lifetime[1]
-        for burst in info.bursts {count+=f32(burst.count)}
-        info.lights=u32(max(math.ceil(count),1))
-        info.light_range=max(real(d,renderer,"RadiusScale",1),0)*NIAGARA_LIGHT_RADIUS*CENTIMETRE
-        info.light_intensity=UNREAL_PARTICLE_LIGHT_CANDELA
-        // Niagara casts shadows of the lights MegaLights takes alone.
-        mega,_:=level.bool_of(d,renderer,"bAllowMegaLights",false)
-        shadows,_:=level.bool_of(d,renderer,"bMegaLightsCastShadows",false)
-        info.light_shadows=mega && shadows
-        if squared,_:=level.bool_of(d,renderer,"bUseInverseSquaredFalloff",true);!squared {
-            unreal_scene.warn(c,"its particle lights fade by an exponent in Unreal; Mirai's by the square of the distance")
-        }
-        if alpha,_:=level.bool_of(d,renderer,"bAlphaScalesBrightness",false);!alpha {
-            unreal_scene.warn(c,"the opacity of its particles does not dim their lights in Unreal; in Mirai it does")
-        }
+        unreal_scene.warn(c,"its particles light the scene in Unreal (NiagaraLightRendererProperties); a particle of Mirai glows by its emission and is not a light")
         return false
     case:
         unreal_scene.warn(c,"Mirai's effects have nothing for the renderer %s",class)

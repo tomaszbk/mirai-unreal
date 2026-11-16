@@ -234,14 +234,12 @@ which uses `shaders/unreal_noise.slang`.
   `EmitterLoops` other than zero is an effect that does not repeat; a burst fires at its `Time` in
   seconds. Each step Unreal starts a particle again from the size and color it was born with and
   runs its modules in order: a color over life replaces the start color, and the color and size
-  scales multiply, at the keys of all. A light module lights `SpawnFraction` of the particles, as
-  far as `RadiusScale` times their size, with their color times its brightness in the units of
-  Unreal's particle lights (`UNREAL_PARTICLE_LIGHT_CANDELA`). What an effect cannot hold (a delay
-  or origin, a duration range, a rate that changes along the cycle, sub-images at random or held
-  on the first, a cone along another axis, an orbit) is a warning that names the module.
+  scales multiply, at the keys of all. What an effect cannot hold (a delay or origin, a duration
+  range, a rate that changes along the cycle, sub-images at random or held on the first, a cone
+  along another axis, an orbit) is a warning that names the module.
 - **Niagara** (`unreal_niagara.odin`). What the editor stores of the modules' inputs
   (`RapidIterationParameters` of their scripts, by `Module.Input`), the baked curves of their data
-  interfaces and their renderers (sprite, ribbon, mesh and lights). The modes (`Lifetime Mode`,
+  interfaces and their renderers (sprite, ribbon and mesh). The modes (`Lifetime Mode`,
   `Sprite Size Mode`, `Shape Primitive`, `Velocity Mode`, `Loop Behavior`...) are static switches:
   the value of each is in the input pins of its function node in the emitter graph
   (`unreal.graph_node_pins`), and a `/Niagara` enum gives the name the editor shows
@@ -266,10 +264,8 @@ which uses `shaders/unreal_noise.slang`.
   (`SoftSourceActor`, also that of a `User.` parameter) is the surface of that actor's entity, by
   the name of its object with its number (`Statue_2`): the posed skin of a skeleton moved by its
   `Animation`.
-- Particle lights cast shadows if Unreal's do: in Cascade, the high-quality ones with
-  `bShadowCastingLights`; in Niagara, those MegaLights takes with `bMegaLightsCastShadows`.
-- A Niagara light renderer lights with the color of the particle, in the units of Cascade's lights,
-  as far as `RadiusScale` times the light radius no module of the stack sets.
+- A particle of Mirai glows by its emission and is not a light: a Cascade light module, a Niagara
+  light renderer and a lightweight `LightAttributes` are warnings of the emitter.
 - **Compiled Niagara.** An emitter whose scripts store the HLSL Niagara generated is a Vfx program
   written in the project's `shaders/`, which the import publishes: `niagara_program.odin` builds the
   frame and `niagara.slang` is its prelude (Unreal space, random numbers, ids). The system scripts
