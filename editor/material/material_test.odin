@@ -912,6 +912,47 @@ an_offset_that_collapses_the_surface_hides_it :: proc(t:^testing.T) {
     for text in translated.notes {testing.expectf(t,!strings.contains(text,"is not translated"),"note: %s",text)}
 }
 
+// A masked material whose mask keeps every point, unconnected or a constant
+// that reaches the cutoff, is opaque; a mask of a texture or one below the
+// cutoff stays a mask.
+@(test)
+a_mask_that_keeps_every_point_is_opaque :: proc(t:^testing.T) {
+    Case :: struct {name:string,mask:enum {None,Constant,Texture},value:f32,mode:asset.Alpha_Mode}
+    cases:=[]Case{
+        {"M_Unconnected",.None,0,.Opaque},
+        {"M_Whole",.Constant,1,.Opaque},
+        {"M_Below",.Constant,0.2,.Mask},
+        {"M_Texture",.Texture,0,.Mask},
+    }
+    for c in cases {
+        b:=material_begin(c.name)
+        albedo:=sample_expression(&b,"Albedo","T_Albedo","")
+        m:=fx.writer(&b.p)
+        fx.enum_put(&m,"BlendMode","EBlendMode","BLEND_Masked")
+        fx.float_put(&m,"OpacityMaskClipValue",0.5)
+        fx.input_put(&m,"BaseColor","ColorMaterialInput",{expression=albedo,mask=RGB})
+        switch c.mask {
+        case .None:
+        case .Constant:
+            w:=fx.writer(&b.p)
+            fx.float_put(&w,"R",c.value)
+            fx.input_put(&m,"OpacityMask","ScalarMaterialInput",{expression=expression(&b,"Constant","Mask",&w)})
+        case .Texture:
+            fx.input_put(&m,"OpacityMask","ScalarMaterialInput",{expression=albedo,mask={false,false,false,true}})
+        }
+        b.p.exports[0].data=fx.finish(&m)
+        path:=strings.concatenate({"/Game/M/",c.name},context.temp_allocator)
+        lib:Library
+        library_with(&lib,{path,fx.package_bytes(&b.p,path)},{"/Game/T/T_Albedo",texture_bytes("T_Albedo")})
+        defer library_destroy(&lib)
+        material,_:=object_find(&lib,path)
+        translated,error:=translate(&lib,material)
+        if !testing.expectf(t,error.code==.None,"%s: %v",c.name,error) {continue}
+        testing.expectf(t,translated.info.alpha_mode==c.mode,"%s is %v",c.name,translated.info.alpha_mode)
+        translated_destroy(&translated)
+    }
+}
+
 @(private="file")
 attribute_guids_put :: proc(w:^fx.Writer,property:string,attributes:[]Attribute) {
     bodies:=make([][]u8,len(attributes),context.temp_allocator)

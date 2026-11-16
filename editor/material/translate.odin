@@ -664,6 +664,12 @@ translate_values :: proc(t:^Translated_Material,e:^Evaluator,roots:[Attribute]u3
     if info.alpha_mode==.Mask {alpha_root=roots[.Opacity_Mask]}
     if info.alpha_mode==.Blend {alpha_root=roots[.Opacity]}
     if blend==.Additive || collapsed {alpha_root=scalar(g,0)}
+    // A mask that keeps every point (unconnected, it is one) tests nothing: the surface is opaque.
+    if info.alpha_mode==.Mask && !collapsed {
+        kept,constant:=[4]f32{1,1,1,1},alpha_root==NONE
+        if !constant {kept,constant=evaluate_constant(g,alpha_root)}
+        if constant && kept.x>=info.alpha_cutoff {info.alpha_mode,alpha_root=.Opaque,NONE}
+    }
 
     emissive:=roots[.Emissive]
     metallic,roughness,specular,occlusion,normal:=roots[.Metallic],roots[.Roughness],roots[.Specular],roots[.Ambient_Occlusion],roots[.Normal]

@@ -441,6 +441,8 @@ it names). Everything lives in the library's arena.
   (`Translated_Mask`) and the import names it (`Imported_Material.mask`), the texture itself when
   the mask is its alpha and that function baked otherwise. Any other mask (moving or world-space
   coordinates, vertex colors, noise) keeps the alpha test of its cards, and the import says why.
+  A mask that keeps every point (unconnected, or a constant that reaches the cutoff) tests nothing:
+  the material is opaque.
 - **Runtime virtual textures.** Mirai has none: a `RuntimeVirtualTextureSample` (or its parameter)
   is what the material that writes that texture gives at the point of the sample, its graph
   evaluated there (`Options.writers`, the landscapes of a level that list it in
@@ -885,7 +887,8 @@ All with `mirai test` on the package folder inside a project with the plugin ins
   layers, landscape grass, a program, screen, depth, bounds, the world with its origin, `Custom`,
   noise, untranslated classes and damaged bytes; writing reads back `.mat` and `.tex` and reimports
   over a changed parameter; the mask of a masked program
-  (`the_mask_of_a_masked_program_is_given_when_it_is_a_texture_at_a_uv_set`).
+  (`the_mask_of_a_masked_program_is_given_when_it_is_a_texture_at_a_uv_set`) and a mask that
+  keeps every point (`a_mask_that_keeps_every_point_is_opaque`).
 - `editor/level`, `landscape` and `foliage`: Unreal space against rotation matrices, the
   properties of an object staying where they were read
   (`the_properties_of_an_object_stay_put_as_others_are_read`), archetypes from another package and
