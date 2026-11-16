@@ -1,12 +1,16 @@
 package material
 
 import "core:fmt"
+import "core:log"
 import "core:math"
 import "core:os"
 import "core:slice"
+import "core:strconv"
 import "core:strings"
 import "core:testing"
 import "mirai:asset"
+import shaders "mirai:cook/shaders"
+import mirai_project "mirai:project"
 import fx "project:plugins/unreal/editor/material/fixture"
 import unreal "project:plugins/unreal/editor/package"
 import "mirai:std/base"
@@ -341,21 +345,39 @@ the_layers_of_a_landscape_material_are_materials_of_their_own :: proc(t:^testing
 }
 
 // Coordinates that move with time are a program; an instance that only
-// changes values shares the program of its parent.
+// changes values shares the program of its parent. The program carries the
+// derivatives of its coordinates, those finite differences of the graph
+// give, takes none across a quad and compiles.
 @(test)
 moving_coordinates_are_a_program_with_the_parameters_of_the_material :: proc(t:^testing.T) {
     b:=material_begin("M_Flow")
+    w:=fx.writer(&b.p)
+    coordinates:=expression(&b,"TextureCoordinate","UV",&w)
+    w=fx.writer(&b.p)
+    fx.name_property_put(&w,"ParameterName","Tiling")
+    fx.float_put(&w,"DefaultValue",3)
+    tiling:=expression(&b,"ScalarParameter","Tiling",&w)
+    w=fx.writer(&b.p)
+    fx.input_put(&w,"A","ExpressionInput",{expression=coordinates})
+    fx.input_put(&w,"B","ExpressionInput",{expression=tiling})
+    tiled:=expression(&b,"Multiply","Tiled",&w)
     pan:=fx.writer(&b.p)
     fx.float_put(&pan,"SpeedX",0.1)
+    fx.float_put(&pan,"SpeedY",-0.05)
+    fx.input_put(&pan,"Coordinate","ExpressionInput",{expression=tiled})
     panner:=expression(&b,"Panner","Pan",&pan)
     water:=sample_expression(&b,"Water","T_Water","",panner)
     gloss:=fx.writer(&b.p)
     fx.name_property_put(&gloss,"ParameterName","Gloss")
     fx.float_put(&gloss,"DefaultValue",0.2)
     gloss_value:=expression(&b,"ScalarParameter","Gloss",&gloss)
+    w=fx.writer(&b.p)
+    fx.input_put(&w,"Value","ExpressionInput",{expression=panner})
+    across:=expression(&b,"DDX","Across",&w)
     m:=fx.writer(&b.p)
     fx.input_put(&m,"BaseColor","ColorMaterialInput",{expression=water,mask=RGB})
     fx.input_put(&m,"Roughness","ScalarMaterialInput",{expression=gloss_value})
+    fx.input_put(&m,"Metallic","ScalarMaterialInput",{expression=across,mask={true,false,false,false}})
     b.p.exports[0].data=fx.finish(&m)
     lib:Library
     library_with(&lib,{"/Game/M/M_Flow",fx.package_bytes(&b.p,"/Game/M/M_Flow")})
@@ -369,11 +391,214 @@ moving_coordinates_are_a_program_with_the_parameters_of_the_material :: proc(t:^
     testing.expect(t,strings.has_prefix(program.name,"Unreal_M_Flow_"))
     testing.expect_value(t,base.text_get(translated.info.program[:]),program.name)
     testing.expect(t,strings.contains(program.source,"ctx.time") && strings.contains(program.source,"mirai_sample_texture"))
-    testing.expect(t,strings.contains(program.source,"//! parameter p0_Gloss {\"default\":0.2}"))
-    if testing.expect_value(t,len(program.parameters),2) {
-        testing.expect(t,program.parameters[0].kind==.Texture && program.parameters[1].value.x==0.2)
+    testing.expect(t,strings.contains(program.source,"\"default\":0.2}"))
+    if testing.expect_value(t,len(program.parameters),3) {
+        testing.expect(t,program.parameters[0].kind==.Texture && program.parameters[1].kind==.Float && program.parameters[2].kind==.Float)
     }
     for image in translated.images {testing.expect_value(t,image,MAP_NONE)}
+    for implicit in ([]string{"ddx(","ddy(","fwidth(","ctx.lod"}) {
+        testing.expectf(t,!strings.contains(program.source,implicit),"no derivative across a quad: %s",implicit)
+    }
+    testing.expect(t,strings.contains(program.source,".dx;"),"DDX reads the derivative the coordinates carry")
+    // The derivatives the program gives the sample, against those of the
+    // graph by finite differences of a uv that moves across the image.
+    uv_of :: proc(at:[2]f32) -> [2]f32 {return {0.25+0.01*at.x-0.004*at.y,0.5+0.003*at.x+0.02*at.y}}
+    jacobian:=[2][2]f32{{0.01,0.003},{-0.004,0.02}} // along x, along y
+    TIME :: 1.5
+    g:=&translated.graph
+    uv:=NONE
+    for node in g.nodes {if node.op==.Sample {uv=node.args[1]}}
+    if !testing.expect(t,uv!=NONE) {return}
+    plain :: proc(g:^Graph,root:u32,uv:[2]f32) -> [4]f32 {
+        values:=make([][4]f32,len(g.nodes),context.temp_allocator)
+        texel:Texel_Context
+        for n in nodes_under(g,{root}) {
+            node:=&g.nodes[n]
+            #partial switch node.op {
+            case .UV:values[n]={uv.x,uv.y,0,0}
+            case .Time:values[n]={TIME,0,0,0}
+            case:
+                args:[3][4]f32
+                for arg,i in node.args {if arg!=NONE {args[i]=values[arg]}}
+                values[n]=node_compute(g,node,args,&texel)
+            }
+        }
+        return values[root]
+    }
+    for at in ([][2]f32{{0,0},{120,40},{-30,75}}) {
+        it:Dual_Interpreter
+        it.time=TIME
+        it.uv0={width=2,dual=true,value={uv_of(at).x,uv_of(at).y,0,0},dx={jacobian[0].x,jacobian[0].y,0,0},dy={jacobian[1].x,jacobian[1].y,0,0}}
+        sampled,problem:=dual_interpret(&it,program^)
+        if !testing.expectf(t,problem=="" && len(sampled)==1,"the program reads as duals: %s\n%s",problem,program.source) {return}
+        H :: 0.5
+        along:=[2][2]f32{{H,0},{0,H}}
+        for axis in 0..<2 {
+            forward,back:=plain(g,uv,uv_of(at+along[axis])),plain(g,uv,uv_of(at-along[axis]))
+            given:=axis==0?sampled[0].dx:sampled[0].dy
+            for c in 0..<2 {
+                difference:=(forward[c]-back[c])/(2*H)
+                testing.expectf(t,abs(given[c]-difference)<1e-4,"at %v the derivative %d of component %d is %v, not %v",at,axis,c,given[c],difference)
+            }
+        }
+        testing.expectf(t,abs(sampled[0].value.x-plain(g,uv,uv_of(at)).x)<1e-5,"the value at %v",at)
+    }
+    program_compiles(t,program^)
+}
+
+// A value of a program read as the Slang of mirai_dual.slang computes it:
+// with its derivatives along x and y of the image, or without (dual false).
+@(private="file")
+Dual_Value :: struct {width:int,dual:bool,value,dx,dy:[4]f32}
+
+@(private="file")
+Dual_Interpreter :: struct {
+    src:shaders.Surface_Source,
+    locals:map[string]Dual_Value,
+    time:f32,
+    uv0:Dual_Value,
+    parameters:map[string]Dual_Value,
+    sampled:[dynamic]Dual_Value, // the uv of each sample by derivatives
+    failed:string,
+}
+
+// Runs the declarations of the evaluate of a program, the subset a program
+// with moving coordinates is written in: the uv of its samples by derivatives.
+@(private="file")
+dual_interpret :: proc(it:^Dual_Interpreter,program:Program) -> (sampled:[]Dual_Value,problem:string) {
+    it.src=shaders.surface_parse(program.source,context.temp_allocator)
+    it.locals=make(map[string]Dual_Value,context.temp_allocator)
+    it.parameters=make(map[string]Dual_Value,context.temp_allocator)
+    it.sampled=make([dynamic]Dual_Value,context.temp_allocator)
+    for p in program.parameters {it.parameters[p.name]={width=int(p.components),value=p.value}}
+    for f in it.src.functions {
+        if f.name!="evaluate" {continue}
+        for s in f.body {
+            stmt:=it.src.stmts[s]
+            if stmt.kind==.Declare && stmt.value>=0 && stmt.type!="Mirai_Surface" {it.locals[stmt.name]=dual_eval(it,stmt.value)}
+        }
+        return it.sampled[:],it.failed
+    }
+    return nil,"the program has no evaluate"
+}
+
+@(private="file")
+dual_eval :: proc(it:^Dual_Interpreter,e:int) -> (out:Dual_Value) {
+    if it.failed!="" {return}
+    expr:=it.src.exprs[e]
+    fail :: proc(it:^Dual_Interpreter,expr:shaders.Expr) -> Dual_Value {
+        it.failed=fmt.aprintf("%v %s at token %d",expr.kind,expr.text,expr.first,allocator=context.temp_allocator)
+        return {}
+    }
+    wide :: proc(v:Dual_Value,width:int) -> Dual_Value {
+        if v.width!=1 || width==1 {return v}
+        return {width=width,dual=v.dual,value=v.value.x,dx=v.dx.x,dy=v.dy.x}
+    }
+    switch expr.kind {
+    case .Number:
+        value,_:=strconv.parse_f32(strings.trim_right(expr.text,"fF"))
+        return {width=1,value={value,0,0,0}}
+    case .Name:
+        if local,found:=it.locals[expr.text];found {return local}
+        return fail(it,expr)
+    case .Member:
+        base:=it.src.exprs[expr.kids[0]]
+        if base.kind==.Name && base.text=="p" {
+            if field,found:=it.parameters[expr.text];found {return field}
+            return fail(it,expr)
+        }
+        if base.kind==.Name && base.text=="ctx" {
+            if expr.text=="time" {return {width=1,value={it.time,0,0,0}}}
+            return fail(it,expr)
+        }
+        v:=dual_eval(it,expr.kids[0])
+        switch expr.text {
+        case "value":return {width=v.width,value=v.value}
+        case "dx":return {width=v.width,value=v.dx}
+        case "dy":return {width=v.width,value=v.dy}
+        }
+        out={width=len(expr.text),dual=v.dual}
+        for letter,i in expr.text {
+            c:=strings.index_rune("xyzw",letter)
+            if c<0 || c>=v.width || i>=4 {return fail(it,expr)}
+            out.value[i],out.dx[i],out.dy[i]=v.value[c],v.dx[c],v.dy[c]
+        }
+        return
+    case .Unary:
+        v:=dual_eval(it,expr.kids[0])
+        if expr.text!="-" {return fail(it,expr)}
+        return {width=v.width,dual=v.dual,value=-v.value,dx=-v.dx,dy=-v.dy}
+    case .Binary:
+        a,b:=dual_eval(it,expr.kids[0]),dual_eval(it,expr.kids[1])
+        width:=max(a.width,b.width)
+        a,b=wide(a,width),wide(b,width)
+        out={width=width,dual=a.dual || b.dual}
+        switch expr.text {
+        case "+":out.value,out.dx,out.dy=a.value+b.value,a.dx+b.dx,a.dy+b.dy
+        case "-":out.value,out.dx,out.dy=a.value-b.value,a.dx-b.dx,a.dy-b.dy
+        case "*":out.value,out.dx,out.dy=a.value*b.value,a.dx*b.value+a.value*b.dx,a.dy*b.value+a.value*b.dy
+        case:return fail(it,expr)
+        }
+        return
+    case .Call:
+        callee:=it.src.exprs[expr.kids[0]]
+        args:=expr.kids[1:]
+        switch callee.text {
+        case "float","float2","float3","float4":
+            width:=callee.text=="float"?1:int(callee.text[5]-'0')
+            if len(args)==1 {
+                v:=dual_eval(it,args[0])
+                if v.dual {return fail(it,expr)}
+                return wide({width=1,value=v.value},width)
+            }
+            out.width=width
+            at:=0
+            for arg in args {
+                v:=dual_eval(it,arg)
+                if v.dual || at+v.width>4 {return fail(it,expr)}
+                for i in 0..<v.width {out.value[at+i]=v.value[i]}
+                at+=v.width
+            }
+            return
+        case "mirai_dual":
+            v:=dual_eval(it,args[0])
+            out={width=v.width,dual=true,value=v.value}
+            if len(args)==3 {out.dx,out.dy=dual_eval(it,args[1]).value,dual_eval(it,args[2]).value}
+            return
+        case "mirai_uv0":return it.uv0
+        case "frac":
+            v:=dual_eval(it,args[0])
+            for i in 0..<4 {v.value[i]-=math.floor(v.value[i])}
+            return v
+        case "mirai_sample_texture":
+            if len(args)!=3 {return fail(it,expr)}
+            v:=dual_eval(it,args[2])
+            if !v.dual {return fail(it,expr)}
+            append(&it.sampled,v)
+            return {width=4}
+        }
+        return fail(it,expr)
+    case .Index,.Ternary,.List:
+    }
+    return fail(it,expr)
+}
+
+// Slang compiles a program where it runs, as `mirai shaders check` does,
+// where it has the engine and its Slang.
+@(private="file")
+program_compiles :: proc(t:^testing.T,program:Program,loc:=#caller_location) {
+    root:=mirai_project.engine_root_find("",context.temp_allocator)
+    if root=="" {log.warn("no engine: the program is not compiled");return}
+    made,made_error:=os.make_directory_temp("","mirai-unreal-program-*",context.temp_allocator)
+    if !testing.expect(t,made_error==nil,loc=loc) {return}
+    defer os.remove_all(made)
+    folder,_:=strings.replace_all(made,"\\","/",context.temp_allocator)
+    os.make_directory_all(fmt.tprintf("%s/shaders",folder))
+    path:=fmt.tprintf("%s/shaders/%s.slang",folder,program.name)
+    if !testing.expect(t,os.write_entire_file(path,transmute([]u8)program.source)==nil,loc=loc) {return}
+    result:=shaders.program_check({root=root,project=folder,path=path},context.temp_allocator)
+    if strings.contains(result.error,"slangc") {log.warnf("the program is not compiled: %s",result.error);return}
+    testing.expectf(t,result.error=="" && result.errors==0 && result.compiled,"the program compiles: %s %v",result.error,result.diagnostics,loc=loc)
 }
 
 // A value of the context Mirai programs do not have is counted by its class.
@@ -1180,7 +1405,7 @@ a_landscape_material_whole_reads_the_weights_of_its_terrain :: proc(t:^testing.T
     testing.expect(t,strings.contains(source,"unreal_layer_weight(landscape,4u)") && strings.contains(source,"unreal_layer_weight(landscape,5u)"),"each layer by the weight of its layer of the terrain")
     for p in translated.program.parameters {testing.expect(t,p.piece==(p.name=="control" || p.name=="normal" || p.name=="paint" || p.name=="piece" || p.name=="palette"),p.name)}
     testing.expect(t,!strings.contains(source,"ctx.uv0;"),"no uv set is the coordinates of the landscape")
-    testing.expect(t,strings.contains(source,"ctx.world_position"),"its coordinates from the world")
+    testing.expect(t,strings.contains(source,"unreal_point(mirai_world_position(ctx))") && !strings.contains(source,"ctx.lod"),"its coordinates from the world, with their derivatives")
     body:=source[max(strings.index(source,"Mirai_Surface evaluate("),0):]
     branch:=strings.index(body,"if (")
     sampled:=strings.index(body,"mirai_sample_texture(ctx,")
@@ -1379,10 +1604,16 @@ custom_hlsl_is_a_function_of_the_program_or_a_note_to_port :: proc(t:^testing.T)
     fx.string_put(&w,"Code","return View.ViewSizeAndInvSize.x;")
     fx.enum_put(&w,"OutputType","ECustomMaterialOutputType","CMOT_Float1")
     viewed:=expression(&b,"Custom","Viewed",&w)
+    // A sample at what custom HLSL computes: the program cannot carry its derivatives.
+    w=fx.writer(&b.p)
+    fx.object_put(&w,"Texture",texture_ref(&b,"T_Glow"))
+    fx.input_put(&w,"Coordinates","ExpressionInput",{expression=ported,mask={true,true,false,false}})
+    glow:=expression(&b,"TextureSample","Glow",&w)
     m:=fx.writer(&b.p)
     fx.input_put(&m,"BaseColor","ColorMaterialInput",{expression=ported})
     fx.input_put(&m,"Roughness","ScalarMaterialInput",{expression=ported,output=1})
     fx.input_put(&m,"Metallic","ScalarMaterialInput",{expression=viewed})
+    fx.input_put(&m,"EmissiveColor","ColorMaterialInput",{expression=glow,mask=RGB})
     b.p.exports[0].data=fx.finish(&m)
     lib:Library
     library_with(&lib,{"/Game/M/M_Custom",fx.package_bytes(&b.p,"/Game/M/M_Custom")})
@@ -1401,6 +1632,11 @@ custom_hlsl_is_a_function_of_the_program_or_a_note_to_port :: proc(t:^testing.T)
     testing.expect(t,strings.contains(source,"To port to Slang") && strings.contains(source,"//     return View.ViewSizeAndInvSize.x;"),"the code to port is a note")
     testing.expect(t,strings.contains(source,"(Mirai_Surface_Context ctx) {return 0.0;}"),"which gives zero")
     testing.expect(t,strings.contains(source,"_1=0.0;\n") && strings.contains(source,"_1);\n"),"the additional output is a local the call fills")
+    // The whole program takes the derivatives of the quad, and the import says why.
+    testing.expect(t,strings.contains(source,",ctx.lod)") && !strings.contains(source,"mirai_uv0(ctx)"),"the sample takes the derivatives of the quad")
+    warned:=false
+    for n in translated.notes {warned||=strings.contains(n,"keeps the derivatives of the quad") && strings.contains(n,"Custom expression Ported")}
+    testing.expectf(t,warned,"a note names the custom expression: %v",translated.notes)
 }
 
 // Custom HLSL that calls a function of Unreal's shaders, which it does not
