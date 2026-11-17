@@ -263,6 +263,10 @@ niagara_component_textures :: proc(d:^level.Document,ref:level.Ref) -> map[strin
     return out
 }
 
+// Seconds an effect gives what never ends in Unreal: a particle that only its
+// program or the end of its emitter takes away, a cycle the system repeats.
+UNENDING_SECONDS :: f32(3600)
+
 // What an effect starts from before the modules or parameters of Unreal say
 // otherwise: what an emitter of Unreal does with none of them. The color of
 // an unlit particle is what the exposed image shows, as the emissive of the

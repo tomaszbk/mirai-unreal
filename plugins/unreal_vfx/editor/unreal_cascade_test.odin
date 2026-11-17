@@ -21,39 +21,12 @@ import "plugins:vfx/runtime/effect"
 // its particles, is a warning that names it.
 @(test)
 a_cascade_system_gives_its_effect_what_unreal_evaluates :: proc(t:^testing.T) {
-    directory,_:=os.temp_directory(context.temp_allocator)
-    top:=fmt.tprintf("%s/mirai-cascade-%d",directory,os.get_pid())
-    os.remove_all(top)
+    top:=cascade_top("evaluates")
     defer os.remove_all(top)
-    root:=fmt.tprintf("%s/project",top)
-    os.make_directory_all(fmt.tprintf("%s/assets/Unreal/Content/Maps",root))
-    os.make_directory_all(fmt.tprintf("%s/assets/Unreal/Content/FX",root))
-    m:=project.manifest_default("Levels")
-    project.manifest_write(project.path(root,project.PROJECT_FILE,allocator=context.temp_allocator),&m)
-    _=os.write_entire_file(fmt.tprintf("%s/assets/Unreal/Levels.uproject",root),"{}")
-    _=os.write_entire_file(fmt.tprintf("%s/assets/Unreal/Content/FX/P_Torch.uasset",root),cascade_fixture())
-    l:=fixture.level_begin("/Game/Maps/Cave")
-    system:=fixture.package_object(&l.w,"/Game/FX/P_Torch","/Script/Engine","ParticleSystem","P_Torch")
-    actor:=fixture.actor_add(&l,fixture.engine_class(&l.w,"Emitter"),"Emitter_0","Torch")
-    props:=fixture.bytes_make()
-    fixture.object_property(&props,&l.w,"Template",system)
-    fixture.actor_set(&l,actor,fixture.component_add(&l,actor,fixture.engine_class(&l.w,"ParticleSystemComponent"),"ParticleSystemComponent0",props))
-    map_path:=fmt.tprintf("%s/assets/Unreal/Content/Maps/Cave.umap",root)
-    _=os.write_entire_file(map_path,fixture.level_bytes(&l))
-    provider:=vfx_unreal_default().provider
-    report,error:=unreal_scene.level_import(map_path,{root=root},provider.translators[:provider.count],"-")
-    if !testing.expectf(t,error.code==.None,"%s",error.message) {return}
+    report,written,info,ok:=cascade_import(t,top,{1,3})
+    if !ok {return}
     defer unreal_scene.level_report_destroy(&report)
-    written:importer.Written
-    for a in report.imports.assets {if a.kind==effect.PARTICLE_KIND {written=a}}
-    if !testing.expectf(t,written.id!={},"the system is an effect: %v",report.imports.warnings) {return}
     types:asset.Types;asset.types_init(&types);defer asset.types_destroy(&types)
-    a:asset.Asset
-    if !testing.expect_value(t,asset.asset_load(&a,written.path),asset.Error.None) {return}
-    defer asset.asset_close(&a)
-    desc,view_error:=effect.particle_view(&a,&types)
-    if !testing.expect_value(t,view_error,asset.Error.None) {return}
-    info:=desc.info
     near :: proc(a,b:f32) -> bool {return abs(a-b)<=1e-4*max(abs(b),1)}
     testing.expectf(t,near(info.rate,20) && info.duration==2,"rate times its scale, the cycle: %v %v",info.rate,info.duration)
     testing.expectf(t,info.bursts[0]=={time=0.5,count=5,cycles=1},"a burst at its seconds, the middle of its counts times its scale, up: %v",info.bursts[0])
@@ -93,10 +66,74 @@ a_cascade_system_gives_its_effect_what_unreal_evaluates :: proc(t:^testing.T) {
     testing.expect(t,abs(math.trunc(0.25*math.RAD_PER_DEG*CASCADE_ROTATOR_UNITS)-45)<1e-6)
 }
 
-// The package of a Cascade system: one emitter whose modules keep the
-// tables their distributions bake.
+// A Cascade particle whose lifetime is 0, or that no lifetime module gives
+// one, never dies in Unreal: its effect gives it a life that does not end.
+@(test)
+a_cascade_particle_without_an_end_lives_on :: proc(t:^testing.T) {
+    cases:=[?]struct{name:string,lifetime:[]f32}{{"zero",{0}},{"none",nil}}
+    for c in cases {
+        top:=cascade_top(c.name)
+        defer os.remove_all(top)
+        report,_,info,ok:=cascade_import(t,top,c.lifetime)
+        if !ok {continue}
+        defer unreal_scene.level_report_destroy(&report)
+        testing.expectf(t,info.lifetime=={UNENDING_SECONDS,UNENDING_SECONDS},"%s: %v",c.name,info.lifetime)
+        testing.expectf(t,info.max_particles>0,"%s: room for the births that stay",c.name)
+        testing.expectf(t,effect.particle_validate({info=info}).message=="","%s: the engine takes it",c.name)
+    }
+}
+
+// A folder of its own for the project of a test.
 @(private="file")
-cascade_fixture :: proc() -> []u8 {
+cascade_top :: proc(name:string) -> string {
+    directory,_:=os.temp_directory(context.temp_allocator)
+    top:=fmt.tprintf("%s/mirai-cascade-%s-%d",directory,name,os.get_pid())
+    os.remove_all(top)
+    return top
+}
+
+// A level whose Emitter places the system of cascade_fixture, imported in a
+// project under top, and the effect it wrote.
+@(private="file")
+cascade_import :: proc(t:^testing.T,top:string,lifetime:[]f32) -> (report:unreal_scene.Level_Report,written:importer.Written,info:effect.Particle_Info,ok:bool) {
+    root:=fmt.tprintf("%s/project",top)
+    os.make_directory_all(fmt.tprintf("%s/assets/Unreal/Content/Maps",root))
+    os.make_directory_all(fmt.tprintf("%s/assets/Unreal/Content/FX",root))
+    m:=project.manifest_default("Levels")
+    project.manifest_write(project.path(root,project.PROJECT_FILE,allocator=context.temp_allocator),&m)
+    _=os.write_entire_file(fmt.tprintf("%s/assets/Unreal/Levels.uproject",root),"{}")
+    _=os.write_entire_file(fmt.tprintf("%s/assets/Unreal/Content/FX/P_Torch.uasset",root),cascade_fixture(lifetime))
+    l:=fixture.level_begin("/Game/Maps/Cave")
+    system:=fixture.package_object(&l.w,"/Game/FX/P_Torch","/Script/Engine","ParticleSystem","P_Torch")
+    actor:=fixture.actor_add(&l,fixture.engine_class(&l.w,"Emitter"),"Emitter_0","Torch")
+    props:=fixture.bytes_make()
+    fixture.object_property(&props,&l.w,"Template",system)
+    fixture.actor_set(&l,actor,fixture.component_add(&l,actor,fixture.engine_class(&l.w,"ParticleSystemComponent"),"ParticleSystemComponent0",props))
+    map_path:=fmt.tprintf("%s/assets/Unreal/Content/Maps/Cave.umap",root)
+    _=os.write_entire_file(map_path,fixture.level_bytes(&l))
+    provider:=vfx_unreal_default().provider
+    imported,error:=unreal_scene.level_import(map_path,{root=root},provider.translators[:provider.count],"-")
+    if !testing.expectf(t,error.code==.None,"%s",error.message) {return}
+    for a in imported.imports.assets {if a.kind==effect.PARTICLE_KIND {written=a}}
+    types:asset.Types;asset.types_init(&types);defer asset.types_destroy(&types)
+    a:asset.Asset
+    loaded:=testing.expectf(t,written.id!={},"the system is an effect: %v",imported.imports.warnings) && testing.expect_value(t,asset.asset_load(&a,written.path),asset.Error.None)
+    defer if loaded {asset.asset_close(&a)}
+    desc:effect.Particle_Desc
+    view_error:=asset.Error.Corrupt
+    if loaded {desc,view_error=effect.particle_view(&a,&types)}
+    if !loaded || !testing.expect_value(t,view_error,asset.Error.None) {
+        unreal_scene.level_report_destroy(&imported)
+        return
+    }
+    return imported,written,desc.info,true
+}
+
+// The package of a Cascade system: one emitter whose modules keep the
+// tables their distributions bake. lifetime: of its lifetime module, the
+// least and the most or one value; nil: it has none.
+@(private="file")
+cascade_fixture :: proc(lifetime:[]f32) -> []u8 {
     w:=fixture.writer_make({package_name="/Game/FX/P_Torch"})
     end :: proc(w:^fixture.Writer,class,outer:i32,name:string,props:^fixture.Bytes) -> i32 {
         fixture.none(props,w)
@@ -149,9 +186,11 @@ cascade_fixture :: proc() -> []u8 {
     module :: proc(w:^fixture.Writer,modules:^[dynamic]i32,system:i32,class:string,props:^fixture.Bytes) {
         append(modules,end(w,fixture.engine_class(w,class),system,fmt.tprintf("%s_0",class),props))
     }
-    lifetime:=fixture.bytes_make()
-    table(&w,&lifetime,"Lifetime","RawDistributionFloat",2,1,2,{1,3})
-    module(&w,&modules,system,"ParticleModuleLifetime",&lifetime)
+    if len(lifetime)>0 {
+        lives:=fixture.bytes_make()
+        table(&w,&lives,"Lifetime","RawDistributionFloat",len(lifetime)==2?2:1,1,len(lifetime),lifetime)
+        module(&w,&modules,system,"ParticleModuleLifetime",&lives)
+    }
     size:=fixture.bytes_make()
     vector(&w,&size,"StartSize",20,20,20)
     module(&w,&modules,system,"ParticleModuleSize",&size)

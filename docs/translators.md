@@ -232,11 +232,13 @@ which uses `shaders/unreal_noise.slang`.
   entries over the time it is sampled at), else its object (constant, uniform or curve).
   Centimeters and Z up become meters and Y up; a color above one gives its peak to `intensity`;
   `EmitterLoops` other than zero is an effect that does not repeat; a burst fires at its `Time` in
-  seconds. Each step Unreal starts a particle again from the size and color it was born with and
-  runs its modules in order: a color over life replaces the start color, and the color and size
-  scales multiply, at the keys of all. What an effect cannot hold (a delay or origin, a duration
-  range, a rate that changes along the cycle, sub-images at random or held on the first, a cone
-  along another axis, an orbit) is a warning that names the module.
+  seconds. A particle without a lifetime module, or whose lifetime is 0, never dies in Unreal: it
+  takes `UNENDING_SECONDS` and the effect keeps room for every birth of its cycle (a cycle that
+  repeats is a warning). Each step Unreal starts a particle again from the size and color it was
+  born with and runs its modules in order: a color over life replaces the start color, and the
+  color and size scales multiply, at the keys of all. What an effect cannot hold (a delay or
+  origin, a duration range, a rate that changes along the cycle, sub-images at random or held on
+  the first, a cone along another axis, an orbit) is a warning that names the module.
 - **Niagara** (`unreal_niagara.odin`). What the editor stores of the modules' inputs
   (`RapidIterationParameters` of their scripts, by `Module.Input`), the baked curves of their data
   interfaces and their renderers (sprite, ribbon and mesh). The modes (`Lifetime Mode`,
@@ -364,7 +366,8 @@ the area the Blueprint simulates; at 1, those of the mesh. `PressureDivergenceBu
   in `.mirai/tmp/vfx-vm-test` for `mirai shaders check <program> --project demo`), the Niagara
   translation (`niagara_test.odin`: `niagara_data_interfaces_are_named_as_their_hlsl_calls_them`)
   and a Cascade system of a level against what Unreal evaluates
-  (`a_cascade_system_gives_its_effect_what_unreal_evaluates`, `unreal_particles_test.odin`). The
+  (`a_cascade_system_gives_its_effect_what_unreal_evaluates` and
+  `a_cascade_particle_without_an_end_lives_on`, `unreal_cascade_test.odin`). The
   warning that names the plugin of a class without it:
   `a_translator_of_a_plugin_takes_the_actors_of_its_class_and_places_its_assets` of `editor/scene`.
 - Tests of `plugins/unreal_fluids/editor`: a FluidNinja output material reads the fluid by UV.

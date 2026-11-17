@@ -26,6 +26,8 @@ cascade_system :: proc(c:^unreal_scene.Context,system:level.Ref,label:string) ->
         name,_:=level.enum_of(d,emitter,"EmitterName","Particle Emitter")
         e:=Unreal_Emitter{name=strings.clone(name,context.temp_allocator),info=UNREAL_PARTICLE_DEFAULTS,loop=true}
         info:=&e.info
+        // A Cascade particle lives until a lifetime module gives it an end.
+        info.lifetime={UNENDING_SECONDS,UNENDING_SECONDS}
         info.prewarm=warmup>0
         left:=make([dynamic]string,context.temp_allocator)
         life:=Cascade_Life{who=fmt.tprintf("%s, %s",label,e.name)}
@@ -50,6 +52,7 @@ cascade_system :: proc(c:^unreal_scene.Context,system:level.Ref,label:string) ->
             if !cascade_module(c,&e,module,class,&life) {append(&left,class)}
         }
         cascade_life_set(c,&e,&life)
+        if info.lifetime[1]==UNENDING_SECONDS {cascade_unending_room(c,&e,&life)}
         if len(left)>0 {unreal_scene.warn(c,"%s: Mirai's effects have nothing for %s",life.who,strings.join(left[:],", ",context.temp_allocator))}
         append(&out,e)
     }
@@ -104,6 +107,21 @@ cascade_required :: proc(c:^unreal_scene.Context,e:^Unreal_Emitter,required:leve
     info.sort=sort!="PSORTMODE_None"
 }
 
+// The room of an emitter whose particles never die: every birth of its cycle
+// stays. One whose cycle repeats keeps them all in Unreal, and as many as a
+// translated emitter holds in Mirai.
+@(private)
+cascade_unending_room :: proc(c:^unreal_scene.Context,e:^Unreal_Emitter,life:^Cascade_Life) {
+    info:=&e.info
+    births:=info.rate*info.duration
+    for burst in info.bursts {births+=f32(burst.count)*f32(max(burst.cycles,1))}
+    if e.loop && births>0 {
+        unreal_scene.warn(c,"%s: its particles never die and its cycle repeats: Unreal keeps every one; Mirai's effect keeps the first %d",life.who,NIAGARA_CAPACITY_MAX)
+        births=NIAGARA_CAPACITY_MAX
+    }
+    info.max_particles=u32(clamp(math.ceil(births),1,NIAGARA_CAPACITY_MAX))
+}
+
 // The rate of the SpawnModule times its RateScale, and its bursts: at Time
 // seconds of the cycle, between CountLow and Count particles (Count alone
 // without CountLow) times BurstScale, rounded up.
@@ -142,8 +160,9 @@ cascade_module :: proc(c:^unreal_scene.Context,e:^Unreal_Emitter,module:level.Re
     info:=&e.info
     switch class {
     case "ParticleModuleLifetime":
+        // A lifetime of 0 is none: the particle never dies.
         lifetime:=cascade_dist(d,module,"Lifetime")
-        info.lifetime={max(lifetime.min.x,0),max(lifetime.max.x,0)}
+        if lifetime.max.x>0 {info.lifetime={max(lifetime.min.x,0),lifetime.max.x}}
     case "ParticleModuleSize":
         size:=cascade_dist(d,module,"StartSize")
         info.size={max(size.min.x,0)*CENTIMETRE,max(size.max.x,0)*CENTIMETRE}

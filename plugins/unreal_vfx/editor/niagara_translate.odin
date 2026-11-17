@@ -30,7 +30,6 @@ Unreal_Grid :: struct {
 
 NIAGARA_CAPACITY_MAX :: 65536 // particles of a translated emitter
 NIAGARA_BIRTHS_ROOM :: f32(1024) // particles of an emitter whose program gives births its modules say nothing of
-NIAGARA_LIFETIME :: f32(3600) // seconds the clock of a translated effect gives its particles: its program kills them
 
 // Another emitter of the system whose particles a resource of the program reads.
 // Or, level: the actor the mesh data interfaces of the component of the actor name.
@@ -266,10 +265,10 @@ niagara_emitter_program :: proc(c:^unreal_scene.Context,sys:^Niagara_System,e:^U
     // The births a program gives are known only as it runs: room for those of its modules, or NIAGARA_BIRTHS_ROOM.
     if (len(w.spawns)>0 || w.channel_spawn!="") && births<1 {births=NIAGARA_BIRTHS_ROOM}
     e.info.max_particles=u32(clamp(births+16,16,NIAGARA_CAPACITY_MAX))
-    e.info.lifetime={NIAGARA_LIFETIME,NIAGARA_LIFETIME}
+    e.info.lifetime={UNENDING_SECONDS,UNENDING_SECONDS}
     // The scripts of the system loop the emitter: the clock of the effect only counts its seconds,
     // and a cycle of its own that ended would start its particles again.
-    if len(w.spawns)>0 || w.channel_spawn!="" {e.info.duration=NIAGARA_LIFETIME}
+    if len(w.spawns)>0 || w.channel_spawn!="" {e.info.duration=UNENDING_SECONDS}
     for problem in e.source.problems {unreal_scene.warn(c,"%s, %s: %s",label,e.name,problem)}
     for problem in w.problems {unreal_scene.warn(c,"%s, %s: %s",label,e.name,problem)}
     grids:=make([dynamic]Unreal_Grid,context.temp_allocator)
