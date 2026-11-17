@@ -441,8 +441,9 @@ it names). Everything lives in the library's arena.
   mask map (`images[.Mask]`, `maps.mask`), the texture itself when the mask is its alpha and that
   function baked otherwise, the constant in its opacity or its cutoff; its cards are cut to it.
   The vertex color alpha that multiplies it is left out with a warning, as a mask map holds no
-  vertex colors. Any other mask (moving or world-space coordinates, noise) is no mask map: the
-  material is opaque, and the import says why. A mask that keeps every point (unconnected, or a
+  vertex colors. Any other mask (moving or world-space coordinates, noise: a fire card, a
+  dissolve) is no mask map: the material is blended, its program covering whole where the mask
+  reaches the cutoff and nothing elsewhere, and the import says why. A mask that keeps every point (unconnected, or a
   constant that reaches the cutoff) tests nothing: the material is opaque.
 - **Runtime virtual textures.** Mirai has none: a `RuntimeVirtualTextureSample` (or its parameter)
   is what the material that writes that texture gives at the point of the sample, its graph

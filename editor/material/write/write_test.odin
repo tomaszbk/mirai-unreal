@@ -248,8 +248,9 @@ leaves_package :: proc() -> []u8 {
 // program, when its opacity mask is a texture at a uv set of the mesh: the
 // texture itself when it is its alpha, else that alpha baked, with the map
 // and the cutoff over the constant that multiplies it. The vertex color
-// alpha that multiplies it is left out with a warning; any other mask is
-// drawn opaque, and the import says why.
+// alpha that multiplies it is left out with a warning; any other mask (one
+// that moves, as a fire) is drawn blended, its program covering whole where
+// the mask reaches the cutoff, and the import says why.
 @(test)
 the_mask_of_a_masked_program_is_its_mask_map_when_it_is_a_texture_at_a_uv_set :: proc(t:^testing.T) {
     lib:material.Library
@@ -273,20 +274,17 @@ the_mask_of_a_masked_program_is_its_mask_map_when_it_is_a_texture_at_a_uv_set ::
         translated,error:=material.translate(&lib,object)
         if !testing.expect_value(t,error.code,material.Error_Code.None) {return}
         defer material.translated_destroy(&translated)
-        if !testing.expectf(t,!material.translated_is_standard(&translated) && (translated.info.alpha_mode==.Mask)==c.given,"%s is a program, masked or opaque: %v",c.name,translated.info.alpha_mode) {continue}
+        if !testing.expectf(t,!material.translated_is_standard(&translated) && translated.info.alpha_mode==(asset.Alpha_Mode.Mask if c.given else .Blend),"%s is a program, masked or blended: %v",c.name,translated.info.alpha_mode) {continue}
         warned:=len(r.warnings)
         row:=reader_material(&r,&b,&translated,i)
         imported:=r.materials[row]
         said:=c.warned==""
         for w in r.warnings[warned:] {said||=strings.contains(w,c.warned)}
         testing.expectf(t,said,"%s says what it leaves out (%s): %v",c.name,c.warned,r.warnings[warned:])
-        testing.expectf(t,!strings.contains(translated.program.source,"s.alpha="),"%s: its program leaves alpha alone",c.name)
+        testing.expectf(t,strings.contains(translated.program.source,"s.alpha=")!=c.given && (c.given || strings.contains(translated.program.source,"step(")),"%s: its program sets alpha only to cover a blended cut: %s",c.name,translated.program.source)
         image_row:=imported.images[.Mask]
         if !testing.expectf(t,(image_row>=0)==c.given,"%s has a mask map: %v",c.name,image_row>=0) {continue}
-        if !c.given {
-            testing.expectf(t,imported.info.alpha_mode==.Opaque,"%s is drawn opaque",c.name)
-            continue
-        }
+        if !c.given {continue}
         mapping:=imported.info.maps.mask
         testing.expectf(t,imported.info.alpha_mode==.Mask && mapping.scale==c.scale && mapping.uv_set==0 && abs(imported.info.alpha_cutoff/imported.info.opacity-c.cutoff)<1e-6,"%s: %v cut at %v",c.name,mapping,imported.info.alpha_cutoff)
         image:=r.images[image_row]

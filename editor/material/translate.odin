@@ -673,19 +673,40 @@ translate_values :: proc(t:^Translated_Material,e:^Evaluator,roots:[Attribute]u3
         return
     }
     if with_colors==NONE {with_colors=base_color_lit(e,roots[.Base_Color],scattered,roots,shading,thin)}
-    // A mask map cuts a masked material, never its program.
-    program_build(t,e,with_colors,info.alpha_mode==.Mask?NONE:alpha_root,metallic,roughness,specular,occlusion,emissive,normal,roots,shading)
-    if info.alpha_mode==.Mask && alpha_root!=NONE && t.program.name!="" && e.landscape==nil {mask_find(t,e,alpha_root)}
+    // A mask map cuts a masked material, never its program. A mask no map
+    // holds (it moves, it reads the place or noise) is drawn blended by the
+    // program, covering whole where the mask reaches the cutoff and nothing
+    // elsewhere: the same cut, as a fire card or a dissolve has it.
+    program_alpha:=info.alpha_mode==.Mask?NONE:alpha_root
+    mask:Mask_Map
+    if info.alpha_mode==.Mask && alpha_root!=NONE && e.landscape==nil {
+        mask=mask_find(t,e,alpha_root)
+        if !mask.ok {
+            info.alpha_mode=.Blend
+            program_alpha=binary(g,.Step,scalar(g,info.alpha_cutoff),convert(g,alpha_root,1))
+        }
+    }
+    program_build(t,e,with_colors,program_alpha,metallic,roughness,specular,occlusion,emissive,normal,roots,shading)
+    if mask.ok && t.program.name!="" {mask_map_apply(t,mask)}
+}
+
+// The mask map of a masked material (mask_find): its alpha in an image, laid
+// by mapping, and the constant that multiplies it. ok: the mask is one.
+@(private)
+Mask_Map :: struct {
+    image:u32,
+    mapping:asset.Material_Map,
+    factor:f32,
+    ok:bool,
 }
 
 // The mask map of a masked material with a program: its opacity mask when it
 // is a per-texel function of textures read at one uv set of the mesh, times
-// and plus constants, times a constant, which goes to its opacity (or divides
-// its cutoff past 1). A mask map holds no vertex colors: the vertex color
-// alpha that multiplies the mask is left out. Any other mask is no mask map,
-// and the material is drawn opaque. A note says what was left out.
+// and plus constants, times a constant. A mask map holds no vertex colors:
+// the vertex color alpha that multiplies the mask is left out. Any other mask
+// is no mask map. A note says what was left out, or why it is none.
 @(private)
-mask_find :: proc(t:^Translated_Material,e:^Evaluator,alpha:u32) {
+mask_find :: proc(t:^Translated_Material,e:^Evaluator,alpha:u32) -> (mask:Mask_Map) {
     g:=&t.graph
     alpha:=alpha
     if rest:=strip_vertex_alpha(g,alpha);rest!=NONE {
@@ -701,7 +722,9 @@ mask_find :: proc(t:^Translated_Material,e:^Evaluator,alpha:u32) {
         for n in nodes_under(g,{alpha},{.Sample}) {
             if op:=g.nodes[n].op;op in PROGRAM {why=fmt.tprintf("it reads %v",op);break}
         }
-    case form.image==NONE:return
+    case form.image==NONE:
+        mask.factor,mask.image,mask.ok=form.factor.x,NONE,true
+        return
     case:
         mapping,ok=uv_transform(g,form.uv)
         if ok {break}
@@ -711,14 +734,22 @@ mask_find :: proc(t:^Translated_Material,e:^Evaluator,alpha:u32) {
         }
     }
     if !ok {
-        note(e,"its opacity mask is not a texture at a uv set, which a mask map holds (%s): the material is drawn opaque",why)
-        t.info.alpha_mode=.Opaque
+        note(e,"its opacity mask is not a texture at a uv set, which a mask map holds (%s): it is drawn blended, whole where the mask reaches the cutoff",why)
         return
     }
-    factor:=max(form.factor.x,0)
+    return {convert(g,form.image,1),mapping,form.factor.x,true}
+}
+
+// Gives a masked material its mask map after its program is built (which
+// leaves no map of the standard model): the constant goes to its opacity, or
+// divides its cutoff past 1.
+@(private)
+mask_map_apply :: proc(t:^Translated_Material,mask:Mask_Map) {
+    factor:=max(mask.factor,0)
     if factor<=1 {t.info.opacity=factor} else {t.info.alpha_cutoff/=factor}
-    t.images[.Mask]=Map_Image{{NONE,NONE,NONE,convert(g,form.image,1)}}
-    t.info.maps.mask=mapping
+    if mask.image==NONE {return}
+    t.images[.Mask]=Map_Image{{NONE,NONE,NONE,mask.image}}
+    t.info.maps.mask=mask.mapping
 }
 
 // What multiplies the alpha of the vertex colors in n; NONE when n is no such product.
