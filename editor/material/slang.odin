@@ -900,11 +900,12 @@ Unreal_Landscape unreal_landscape(Mirai_Surface_Context ctx, uint control, uint 
         for (int i=0;i<4;i++) {l.mix.layers[i]=uint(palette[i]+0.5);l.mix.weights[i]=w[i];}
         return l;
     }
+    // uv0 runs over the maps of the piece from 0 to 1: at, in texels.
     float2 size=max(piece.xy,float2(1.0));
-    bool hole;
-    l.mix=terrain_weights_at(control,size,ctx.uv0,hole);
+    float2 at=ctx.uv0*size;
+    l.mix=terrain_weights_at(control,size,at);
     // The maps along the footprint of the point, in texels of piece.w metres.
-    float2 uv=(ctx.uv0+0.5)/size;
+    float2 uv=(at+0.5)/size;
     float2 dx=mirai_object_vector(ctx,ctx.position_dx).xz/(max(piece.w,1e-6)*size);
     float2 dy=mirai_object_vector(ctx,ctx.position_dy).xz/(max(piece.w,1e-6)*size);
     float3 n=mirai_sample_texture_grad(normal,uv,dx,dy).rgb*2.0-1.0;
