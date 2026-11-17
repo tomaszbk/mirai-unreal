@@ -79,7 +79,6 @@ Translated_Material :: struct {
     images:[asset.Material_Map_Kind]Map_Image,
     graph:Graph,
     program:Program,
-    mask:Maybe(Translated_Mask), // of a masked material with a program: what its cards are cut to
     vertex_colors:Vertex_Colors,
     // The Unreal uv sets it reads, which the mesh holds in its own uv sets
     // lowest first (uv_set_sources): the graph reads them there.
@@ -92,14 +91,6 @@ Translated_Material :: struct {
     reads_custom_data:bool,      // PerInstanceCustomData reaches an output: each instance can show another value
     arena:^mem.Dynamic_Arena,
     allocator:mem.Allocator,
-}
-
-// The opacity mask of a material whose program decides its alpha, as an
-// image: the texels of the node alpha, read through mapping, that reach cutoff.
-Translated_Mask :: struct {
-    alpha:u32,
-    mapping:asset.Material_Map,
-    cutoff:f32,
 }
 
 translated_destroy :: proc(t:^Translated_Material) {
@@ -682,17 +673,25 @@ translate_values :: proc(t:^Translated_Material,e:^Evaluator,roots:[Attribute]u3
         return
     }
     if with_colors==NONE {with_colors=base_color_lit(e,roots[.Base_Color],scattered,roots,shading,thin)}
-    program_build(t,e,with_colors,alpha_root,metallic,roughness,specular,occlusion,emissive,normal,roots,shading)
+    // A mask map cuts a masked material, never its program.
+    program_build(t,e,with_colors,info.alpha_mode==.Mask?NONE:alpha_root,metallic,roughness,specular,occlusion,emissive,normal,roots,shading)
     if info.alpha_mode==.Mask && alpha_root!=NONE && t.program.name!="" && e.landscape==nil {mask_find(t,e,alpha_root)}
 }
 
-// The opacity mask of a masked material with a program, when it is a
-// per-texel function of textures read at one uv set of the mesh times and
-// plus constants, times a constant: its cards can be cut to it. A constant
-// one has nothing to cut; any other keeps its alpha test, and a note says why.
+// The mask map of a masked material with a program: its opacity mask when it
+// is a per-texel function of textures read at one uv set of the mesh, times
+// and plus constants, times a constant, which goes to its opacity (or divides
+// its cutoff past 1). A mask map holds no vertex colors: the vertex color
+// alpha that multiplies the mask is left out. Any other mask is no mask map,
+// and the material is drawn opaque. A note says what was left out.
 @(private)
 mask_find :: proc(t:^Translated_Material,e:^Evaluator,alpha:u32) {
     g:=&t.graph
+    alpha:=alpha
+    if rest:=strip_vertex_alpha(g,alpha);rest!=NONE {
+        note(e,"its opacity mask multiplies the vertex color alpha, which a mask map does not hold: its mask is the rest of it")
+        alpha=rest
+    }
     form,ok:=map_form(g,alpha)
     why:string
     mapping:asset.Material_Map
@@ -712,11 +711,28 @@ mask_find :: proc(t:^Translated_Material,e:^Evaluator,alpha:u32) {
         }
     }
     if !ok {
-        note(e,"its masked cards keep their alpha test: its opacity mask is not a texture the import can cut them to (%s)",why)
+        note(e,"its opacity mask is not a texture at a uv set, which a mask map holds (%s): the material is drawn opaque",why)
+        t.info.alpha_mode=.Opaque
         return
     }
-    if !(form.factor.x>0) {return}
-    t.mask=Translated_Mask{alpha=convert(g,form.image,1),mapping=mapping,cutoff=t.info.alpha_cutoff/form.factor.x}
+    factor:=max(form.factor.x,0)
+    if factor<=1 {t.info.opacity=factor} else {t.info.alpha_cutoff/=factor}
+    t.images[.Mask]=Map_Image{{NONE,NONE,NONE,convert(g,form.image,1)}}
+    t.info.maps.mask=mapping
+}
+
+// What multiplies the alpha of the vertex colors in n; NONE when n is no such product.
+@(private)
+strip_vertex_alpha :: proc(g:^Graph,n:u32) -> u32 {
+    if n==NONE || g.nodes[n].op!=.Mul {return NONE}
+    is_alpha :: proc(g:^Graph,n:u32) -> bool {
+        node:=g.nodes[n]
+        return node.op==.Swizzle && node.width==1 && node.swizzle[0]==3 && g.nodes[node.args[0]].op==.Vertex_Color
+    }
+    node:=g.nodes[n]
+    if is_alpha(g,node.args[0]) {return node.args[1]}
+    if is_alpha(g,node.args[1]) {return node.args[0]}
+    return NONE
 }
 
 // The base color as Mirai lights it: lit as opaque, the light Unreal

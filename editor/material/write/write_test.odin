@@ -199,11 +199,12 @@ translated_materials_are_written_with_their_images_and_programs :: proc(t:^testi
 
 // Masked leaves whose albedo moves, a program, with the opacity mask in the
 // alpha of the albedo (M_Alpha), in the red of a mask texture at doubled
-// coordinates times two (M_Red), or in that alpha moving too (M_Moving).
+// coordinates times two (M_Red), in that alpha moving too (M_Moving), or in
+// the still alpha times that of the vertex colors (M_Faded).
 @(private="file")
 leaves_package :: proc() -> []u8 {
     p:=fx.package_make()
-    names:=[3]string{"M_Alpha","M_Red","M_Moving"}
+    names:=[4]string{"M_Alpha","M_Red","M_Moving","M_Faded"}
     for name,i in names {
         leaf:=fx.export(&p,fx.class(&p,"/Script/Engine","Material"),0,name,nil)
         pan:=fx.writer(&p)
@@ -230,19 +231,27 @@ leaves_package :: proc() -> []u8 {
             fx.input_put(&m,"OpacityMask","ScalarMaterialInput",{expression=expression(&p,leaf,"Multiply","Twice",&twice)})
         case 2:
             fx.input_put(&m,"OpacityMask","ScalarMaterialInput",{expression=moving,mask={false,false,false,true}})
+        case 3:
+            still:=sample(&p,leaf,"T_Albedo","")
+            colors:=fx.writer(&p)
+            faded:=fx.writer(&p)
+            fx.input_put(&faded,"A","ExpressionInput",{expression=expression(&p,leaf,"VertexColor","Colors",&colors),mask={false,false,false,true}})
+            fx.input_put(&faded,"B","ExpressionInput",{expression=still,mask={false,false,false,true}})
+            fx.input_put(&m,"OpacityMask","ScalarMaterialInput",{expression=expression(&p,leaf,"Multiply","Faded",&faded)})
         }
         p.exports[leaf-1].data=fx.finish(&m)
     }
     return fx.package_bytes(&p,"/Game/M/M_Leaves")
 }
 
-// A masked material with a program gives the importer the mask its cards
-// are cut to when its opacity mask is a texture at a uv set of the mesh: the
+// A masked material with a program is cut by its mask map, never by its
+// program, when its opacity mask is a texture at a uv set of the mesh: the
 // texture itself when it is its alpha, else that alpha baked, with the map
-// and the cutoff over the constant that multiplies it. Any other keeps its
-// alpha test, and the import says why.
+// and the cutoff over the constant that multiplies it. The vertex color
+// alpha that multiplies it is left out with a warning; any other mask is
+// drawn opaque, and the import says why.
 @(test)
-the_mask_of_a_masked_program_is_given_when_it_is_a_texture_at_a_uv_set :: proc(t:^testing.T) {
+the_mask_of_a_masked_program_is_its_mask_map_when_it_is_a_texture_at_a_uv_set :: proc(t:^testing.T) {
     lib:material.Library
     material.library_init(&lib,nil)
     defer material.library_destroy(&lib)
@@ -256,30 +265,33 @@ the_mask_of_a_masked_program_is_given_when_it_is_a_texture_at_a_uv_set :: proc(t
     r.out=context.temp_allocator
     r.materials.allocator,r.images.allocator,r.warnings.allocator=context.temp_allocator,context.temp_allocator,context.temp_allocator
     r.image_rows.allocator,r.material_names.allocator=context.temp_allocator,context.temp_allocator
-    Case :: struct {name:string,given:bool,scale:[2]f32,cutoff:f32}
-    cases:=[]Case{{"M_Alpha",true,{1,1},0.5},{"M_Red",true,{2,2},0.25},{"M_Moving",false,{},0}}
+    Case :: struct {name:string,given:bool,scale:[2]f32,cutoff:f32,warned:string}
+    cases:=[]Case{{"M_Alpha",true,{1,1},0.5,""},{"M_Red",true,{2,2},0.25,""},{"M_Moving",false,{},0,"Time"},{"M_Faded",true,{1,1},0.5,"vertex color alpha"}}
     for c,i in cases {
         object,found:=material.object_find(&lib,strings.concatenate({"/Game/M/M_Leaves.",c.name},context.temp_allocator))
         if !testing.expect(t,found) {return}
         translated,error:=material.translate(&lib,object)
         if !testing.expect_value(t,error.code,material.Error_Code.None) {return}
         defer material.translated_destroy(&translated)
-        if !testing.expectf(t,!material.translated_is_standard(&translated) && translated.info.alpha_mode==.Mask,"%s is a masked program",c.name) {continue}
+        if !testing.expectf(t,!material.translated_is_standard(&translated) && (translated.info.alpha_mode==.Mask)==c.given,"%s is a program, masked or opaque: %v",c.name,translated.info.alpha_mode) {continue}
         warned:=len(r.warnings)
         row:=reader_material(&r,&b,&translated,i)
         imported:=r.materials[row]
-        mask,given:=imported.mask.?
-        if !testing.expectf(t,given==c.given,"%s gives a mask: %v",c.name,given) {continue}
-        if !given {
-            keeps:=false
-            for w in r.warnings[warned:] {keeps||=strings.contains(w,"keep their alpha test") && strings.contains(w,"Time")}
-            testing.expectf(t,keeps,"%s says its cards keep their alpha test because it moves: %v",c.name,r.warnings[warned:])
+        said:=c.warned==""
+        for w in r.warnings[warned:] {said||=strings.contains(w,c.warned)}
+        testing.expectf(t,said,"%s says what it leaves out (%s): %v",c.name,c.warned,r.warnings[warned:])
+        testing.expectf(t,!strings.contains(translated.program.source,"s.alpha="),"%s: its program leaves alpha alone",c.name)
+        image_row:=imported.images[.Mask]
+        if !testing.expectf(t,(image_row>=0)==c.given,"%s has a mask map: %v",c.name,image_row>=0) {continue}
+        if !c.given {
+            testing.expectf(t,imported.info.alpha_mode==.Opaque,"%s is drawn opaque",c.name)
             continue
         }
-        testing.expectf(t,mask.mapping.scale==c.scale && mask.mapping.uv_set==0 && abs(mask.cutoff-c.cutoff)<1e-6,"%s: %v",c.name,mask)
-        image:=r.images[mask.image]
-        if c.name=="M_Alpha" {
-            testing.expectf(t,slice.contains(imported.parameter_images,mask.image),"%s: its mask is the albedo the program reads",c.name)
+        mapping:=imported.info.maps.mask
+        testing.expectf(t,imported.info.alpha_mode==.Mask && mapping.scale==c.scale && mapping.uv_set==0 && abs(imported.info.alpha_cutoff/imported.info.opacity-c.cutoff)<1e-6,"%s: %v cut at %v",c.name,mapping,imported.info.alpha_cutoff)
+        image:=r.images[image_row]
+        if c.name!="M_Red" {
+            testing.expectf(t,slice.contains(imported.parameter_images,image_row),"%s: its mask is the albedo the program reads",c.name)
             continue
         }
         // The red of the mask, as Unreal's sampler reads it, in the alpha of the bake.

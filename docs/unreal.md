@@ -435,14 +435,15 @@ it names). Everything lives in the library's arena.
   sample, noise, a `Custom`, vertex colors, the tangent frame, layer weights) or custom HLSL that
   samples by implicit derivatives leave the whole program on the derivatives of the quad, never
   mixing both, with a note that names the node.
-- **Mask of a masked program.** The importer cuts masked cards to the outlines of a mask it can
-  read, which a program hides: when the opacity mask is a per-texel function of textures at one
-  uv set of the mesh times and plus constants, times a constant, the translation gives it
-  (`Translated_Mask`) and the import names it (`Imported_Material.mask`), the texture itself when
-  the mask is its alpha and that function baked otherwise. Any other mask (moving or world-space
-  coordinates, vertex colors, noise) keeps the alpha test of its cards, and the import says why.
-  A mask that keeps every point (unconnected, or a constant that reaches the cutoff) tests nothing:
-  the material is opaque.
+- **Mask of a masked program.** A masked material is cut by its mask map, never by its program,
+  which leaves alpha alone: when the opacity mask is a per-texel function of textures at one uv
+  set of the mesh times and plus constants, times a constant, the translation writes it as the
+  mask map (`images[.Mask]`, `maps.mask`), the texture itself when the mask is its alpha and that
+  function baked otherwise, the constant in its opacity or its cutoff; its cards are cut to it.
+  The vertex color alpha that multiplies it is left out with a warning, as a mask map holds no
+  vertex colors. Any other mask (moving or world-space coordinates, noise) is no mask map: the
+  material is opaque, and the import says why. A mask that keeps every point (unconnected, or a
+  constant that reaches the cutoff) tests nothing: the material is opaque.
 - **Runtime virtual textures.** Mirai has none: a `RuntimeVirtualTextureSample` (or its parameter)
   is what the material that writes that texture gives at the point of the sample, its graph
   evaluated there (`Options.writers`, the landscapes of a level that list it in
@@ -887,7 +888,7 @@ All with `mirai test` on the package folder inside a project with the plugin ins
   layers, landscape grass, a program, screen, depth, bounds, the world with its origin, `Custom`,
   noise, untranslated classes and damaged bytes; writing reads back `.mat` and `.tex` and reimports
   over a changed parameter; the mask of a masked program
-  (`the_mask_of_a_masked_program_is_given_when_it_is_a_texture_at_a_uv_set`) and a mask that
+  (`the_mask_of_a_masked_program_is_its_mask_map_when_it_is_a_texture_at_a_uv_set`) and a mask that
   keeps every point (`a_mask_that_keeps_every_point_is_opaque`).
 - `editor/level`, `landscape` and `foliage`: Unreal space against rotation matrices, the
   properties of an object staying where they were read

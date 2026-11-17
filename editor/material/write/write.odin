@@ -48,14 +48,6 @@ Built_Material :: struct {
     image_names:[asset.Material_Map_Kind]string, // of each image as this material names it: a baked one after the material, though another material baked the same pixels first
     parameters:[]asset.Material_Parameter,
     parameter_images:[]string, // by parameter; "" for one that is not a texture
-    mask:Maybe(Built_Mask),    // of a masked material with a program whose mask is an image
-}
-
-// The mask of a material as importer.Imported_Mask holds it, its image by key.
-Built_Mask :: struct {
-    image,name:string,
-    mapping:asset.Material_Map,
-    cutoff:f32,
 }
 
 // An image baked for a map of a material, and the scale its emission takes.
@@ -294,6 +286,7 @@ MAP_NAMES :: [asset.Material_Map_Kind]string{
     .Specular="Specular",.Specular_Color="SpecularColor",.Coat="Coat",.Coat_Roughness="CoatRoughness",.Coat_Normal="CoatNormal",
     .Fuzz_Color="FuzzColor",.Fuzz_Roughness="FuzzRoughness",.Anisotropy="Anisotropy",
     .Diffuse_Transmission="DiffuseTransmission",.Diffuse_Transmission_Color="DiffuseTransmissionColor",
+    .Mask="Mask",
 }
 
 // The material of a translation, with the images it needs added to b; the
@@ -321,22 +314,18 @@ material_build :: proc(b:^Builder,t:^material.Translated_Material,decoder:^krake
             relevant={true,true,true,false}
             encodings={.Normal,.Normal,.Normal,.Linear}
         case .Occlusion:relevant={true,false,false,false}
-        case .Specular:relevant={false,false,false,true}
+        case .Specular,.Mask:relevant={false,false,false,true}
         case:for c in 0..<4 {relevant[c]=image.channels[c]!=material.NONE}
         }
-        wanted:=texture.Usage.Data
-        if color {wanted=.Color}
-        if kind==.Normal {wanted=.Normal}
+        wanted:=bit_set[texture.Usage]{.Data}
+        if color {wanted={.Color}}
+        if kind==.Normal {wanted={.Normal}}
+        // A mask is the alpha of any texture as it is but a normal map.
+        if kind==.Mask {wanted={.Color,.Data}}
         scale:[4]f32
-        m.images[kind],m.image_names[kind],scale=image_build(b,t,image,names[kind],relevant,encodings,{wanted},color,kind==.Normal,kind==.Emission,decoder)
+        m.images[kind],m.image_names[kind],scale=image_build(b,t,image,names[kind],relevant,encodings,wanted,color,kind==.Normal,kind==.Emission,decoder)
         // The scale of an emission is the factor of the material.
         if kind==.Emission {m.info.emission*=scale.xyz}
-    }
-    // Its alpha, the mask: any texture as it is but a normal map.
-    if mask,given:=t.mask.?;given {
-        image:=material.Map_Image{{material.NONE,material.NONE,material.NONE,mask.alpha}}
-        key,name,_:=image_build(b,t,image,"Mask",{false,false,false,true},{},{.Color,.Data},false,false,false,decoder)
-        m.mask=Built_Mask{image=key,name=name,mapping=mask.mapping,cutoff=mask.cutoff}
     }
     // What a terrain gives each piece the material holds no value of.
     held:=0
@@ -421,11 +410,6 @@ reader_material :: proc(r:^importer.Reader,b:^Builder,t:^material.Translated_Mat
     images:=make([]int,len(m.parameter_images),r.out)
     for key,i in m.parameter_images {images[i]=reader_image(r,b,key,"",-1)}
     imported.parameter_images=images
-    if mask,given:=m.mask.?;given {
-        if image:=reader_image(r,b,mask.image,mask.name,-1);image>=0 {
-            imported.mask=importer.Imported_Mask{image=image,mapping=mask.mapping,cutoff=mask.cutoff}
-        }
-    }
     for w in b.warnings {importer.warn(r,"%s",w)}
     clear(&b.warnings)
     for n in t.notes {importer.warn(r,"material %s: %s",t.name,n)}
@@ -449,12 +433,14 @@ reader_image :: proc(r:^importer.Reader,b:^Builder,key,name:string,cutoff:f32) -
 }
 
 // The alpha cutoff a material gives the image of its map kind: that of a
-// masked material to its base color; -1 for none. A material decides it for
-// the images of its own import, whatever other materials that share the
-// builder gave the same image.
+// masked material to the image of its mask, or to its base color without
+// one; -1 for none. A material decides it for the images of its own import,
+// whatever other materials that share the builder gave the same image.
 @(private)
 material_cutoff :: proc(m:^Built_Material,kind:asset.Material_Map_Kind) -> f32 {
-    return m.info.alpha_cutoff if kind==.Base_Color && m.info.alpha_mode==.Mask else -1
+    if m.info.alpha_mode!=.Mask {return -1}
+    masked:=m.images[.Mask]!="" ? asset.Material_Map_Kind.Mask : .Base_Color
+    return m.info.alpha_cutoff if kind==masked else -1
 }
 
 // The program of a translation as a file of the shaders of a project,

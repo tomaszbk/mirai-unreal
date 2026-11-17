@@ -31,7 +31,7 @@ import mm "mirai:std/math"
 FORMAT :: importer.Format{
     name="Unreal",
     extensions={0=".uasset"},
-    version=1,
+    version=2,
     space=SPACE,
     sniff=sniff,
     read=read,
