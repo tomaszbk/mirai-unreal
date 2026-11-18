@@ -767,6 +767,39 @@ a_translucent_layer_has_a_highlight_only_when_shaded_per_pixel :: proc(t:^testin
     }
 }
 
+// The opacity of a translucent layer is how much of it is there; that of
+// glass, a layer that refracts or of the thin translucent model, is what it
+// stops of the light behind it: the glass is there whole and lets the rest through.
+@(test)
+the_opacity_of_glass_is_what_it_does_not_let_through :: proc(t:^testing.T) {
+    Case :: struct {shading:string,refraction,opacity,transmission:f32}
+    cases:=[]Case{
+        {"",0,0.3,0},
+        {"",1.5,1,0.7},
+        {"MSM_ThinTranslucent",0,1,0.7},
+    }
+    for c in cases {
+        b:=material_begin("M_Pane")
+        m:=fx.writer(&b.p)
+        fx.enum_put(&m,"BlendMode","EBlendMode","BLEND_Translucent")
+        if c.shading!="" {fx.enum_put(&m,"ShadingModel","EMaterialShadingModel",c.shading)}
+        fx.input_put(&m,"Opacity","ScalarMaterialInput",{use_constant=true,constant={0.3,0,0,0}})
+        if c.refraction>0 {fx.input_put(&m,"Refraction","ScalarMaterialInput",{use_constant=true,constant={c.refraction,0,0,0}})}
+        b.p.exports[0].data=fx.finish(&m)
+        lib:Library
+        library_with(&lib,{"/Game/M/M_Pane",fx.package_bytes(&b.p,"/Game/M/M_Pane")})
+        translated,ok:=translate_one(t,&lib,"/Game/M/M_Pane")
+        if ok {
+            info:=translated.info
+            testing.expectf(t,info.alpha_mode==.Blend && abs(info.opacity-c.opacity)<1e-5 && abs(info.transmission-c.transmission)<1e-5,
+                "%s refraction %v: opacity %v, transmission %v",c.shading,c.refraction,info.opacity,info.transmission)
+            if c.refraction>0 {testing.expectf(t,abs(info.ior-c.refraction)<1e-5,"the glass refracts with its IOR: %v",info.ior)}
+            translated_destroy(&translated)
+        }
+        library_destroy(&lib)
+    }
+}
+
 // An image is the value of its nodes at each texel: here one minus a channel
 // and a constant.
 @(test)

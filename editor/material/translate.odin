@@ -638,7 +638,9 @@ translate_values :: proc(t:^Translated_Material,e:^Evaluator,roots:[Attribute]u3
         }
     case .Subsurface_Profile:
         note(e,"shading model %v: Mirai has no volume scattering; the surface is lit as opaque",shading)
-    case .Hair,.Eye,.Single_Layer_Water,.Thin_Translucent,.Substrate,.From_Expression:
+    case .Thin_Translucent:
+        note(e,"shading model %v is glass that filters what it lets through by its base color, not by its transmittance color",shading)
+    case .Hair,.Eye,.Single_Layer_Water,.Substrate,.From_Expression:
         note(e,"shading model %v is lit as the standard model",shading)
     }
 
@@ -694,6 +696,12 @@ translate_values :: proc(t:^Translated_Material,e:^Evaluator,roots:[Attribute]u3
             info.alpha_mode=.Blend
             program_alpha=binary(g,.Step,scalar(g,info.alpha_cutoff),convert(g,alpha_root,1))
         }
+    }
+    if info.alpha_mode==.Blend {
+        ior,_:=refraction_ior(g,roots[.Refraction])
+        opacity,constant:=[4]f32{1,1,1,1},program_alpha==NONE
+        if !constant {opacity,constant=evaluate_constant(g,program_alpha)}
+        if glass_set(e,info,ior,shading,clamp(opacity.x,0,1),!constant) {info.opacity,program_alpha=1,NONE}
     }
     program_build(t,e,with_colors,program_alpha,metallic,roughness,specular,occlusion,emissive,normal,roots,shading)
     if mask.ok && t.program.name!="" {mask_map_apply(t,mask)}
@@ -1036,20 +1044,42 @@ standard_model :: proc(t:^Translated_Material,e:^Evaluator,base_color,alpha,meta
         info.fuzz.weight=clamp(weight.factor.x,0,1)
         info.fuzz.color={clamp(fuzz.factor.x,0,1),clamp(fuzz.factor.y,0,1),clamp(fuzz.factor.z,0,1)}
     }
-    refraction:=roots[.Refraction]
-    // Unreal's glass refracts by lerp(air, IOR, Fresnel): its IOR is the one
-    // a Mirai glass refracts and reflects with.
-    if refraction!=NONE {
-        if node:=g.nodes[refraction];node.op==.Lerp && g.nodes[node.args[2]].op==.Fresnel {refraction=node.args[1]}
+    if info.alpha_mode==.Blend {
+        ior,refracts:=refraction_ior(g,roots[.Refraction])
+        if !refracts {return refuse(e,"the refraction")}
+        if glass_set(e,info,ior,shading,info.opacity,alpha_form.image!=NONE) {info.opacity=1}
     }
-    if info.alpha_mode==.Blend && refraction!=NONE && !(is_constant(g,refraction) && g.nodes[refraction].value.x==1) {
-        form,ok:=map_form(g,refraction)
-        if !ok || form.image!=NONE {return refuse(e,"the refraction")}
-        if form.factor.x>1 {
-            info.transmission=1
-            info.ior=form.factor.x
-        }
+    return true
+}
+
+// The IOR of a blended layer that refracts, 0 where it does not; false where
+// the refraction is not a value. Unreal's glass refracts by lerp(air, IOR,
+// Fresnel): its IOR is the one a Mirai glass refracts and reflects with.
+@(private)
+refraction_ior :: proc(g:^Graph,root:u32) -> (ior:f32,ok:bool) {
+    refraction:=root
+    if refraction==NONE {return 0,true}
+    if node:=g.nodes[refraction];node.op==.Lerp && g.nodes[node.args[2]].op==.Fresnel {refraction=node.args[1]}
+    form:=map_form(g,refraction) or_return
+    if form.image!=NONE {return 0,false}
+    return form.factor.x>1?form.factor.x:0,true
+}
+
+// A layer that refracts, or of the thin translucent model, is glass, there
+// whole: what its opacity stops of the light behind it is what it does not
+// let through, and Mirai's opacity is how much a surface covers. A textured
+// opacity, which a transmission is not, stays its coverage. covers: the
+// caller gives the material an opacity of one in place of `opacity`.
+@(private)
+glass_set :: proc(e:^Evaluator,info:^asset.Material_Info,ior:f32,shading:Shading,opacity:f32,textured:bool) -> (covers:bool) {
+    if ior==0 && shading!=.Thin_Translucent {return false}
+    if ior>0 {info.ior=ior}
+    if textured {
+        info.transmission=1
+        note(e,"its opacity is a texture, which a transmission is not: the texture is how much of the glass is there, its highlight included")
+        return false
     }
+    info.transmission=1-opacity
     return true
 }
 
