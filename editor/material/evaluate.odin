@@ -119,6 +119,7 @@ Evaluator :: struct {
     counted:map[Object]struct{}, // the expressions untranslated has counted
     notes:[dynamic]string,       // why, and what was approximated
     missing:[dynamic]string,     // the object paths of what it reads that could not be read
+    names:[dynamic]string,       // of the material functions and collection parameters evaluated, in the order met
     depth:int,
     ue5:bool,
     fuzz:[2]u32, // the color and weight of fibers over the surface a legacy function asks for; NONE: none
@@ -149,6 +150,7 @@ evaluator_init :: proc(e:^Evaluator,lib:^Library,g:^Graph,allocator:=context.all
     e.counted.allocator=allocator
     e.notes.allocator=allocator
     e.missing.allocator=allocator
+    e.names.allocator=allocator
     e.layers.allocator=allocator
 }
 
@@ -495,8 +497,8 @@ expression_build :: proc(e:^Evaluator,o:Object,output:i32,scope:i32) -> Value {
         }
         return nodes(time)
     case "VertexColor":return nodes(context_value(g,.Vertex_Color,4))
-    // The point in the space of its object.
-    case "LocalPosition":return nodes(object_point(e,world_place(e,.World_Position)))
+    // The point in the space of its object: before skinning, that of a mesh without bones.
+    case "LocalPosition","PreSkinnedPosition":return nodes(object_point(e,world_place(e,.World_Position)))
     case "WorldPosition":
         if strings.contains(prop_name(o,"WorldPositionShaderOffset",""),"CameraRelative") {return untranslated(e,o,"Mirai programs see positions of the world, not those of the camera")}
         return nodes(world_place(e,.World_Position))
@@ -1134,6 +1136,7 @@ collection_parameter :: proc(e:^Evaluator,o:Object) -> Value {
     collection,found:=object_resolve(e.lib,o.pkg,reference)
     if !found {return unread(e,o,reference,"collection")}
     name:=prop_name(o,"ParameterName","")
+    append(&e.names,name)
     p:=&collection.pkg.p
     for &item in prop_structs(collection,"ScalarParameters") {
         if strings.equal_fold(list_name(p,&item,"ParameterName"),name) {
@@ -1155,6 +1158,7 @@ function_call :: proc(e:^Evaluator,o:Object,output:i32,scope:i32) -> Value {
     reference:=prop_object(o,"MaterialFunction")
     function,found:=object_resolve(e.lib,o.pkg,reference)
     if !found {return unread(e,o,reference,"function")}
+    append(&e.names,object_name(function))
     outputs:=prop_structs(o,"FunctionOutputs")
     if output<0 || int(output)>=len(outputs) {return untranslated(e,o,"the output it is read from does not exist")}
     p:=&o.pkg.p
