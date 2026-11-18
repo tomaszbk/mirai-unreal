@@ -410,7 +410,8 @@ it names). Everything lives in the library's arena.
   their part, scaled to what the surface receives if they sum more (`diffuse_transmission_split`).
   On a solid, `Subsurface` and `PreintegratedSkin` are lit opaque with the light they scatter
   added to the base color (`SUBSURFACE_BACKSCATTER`); `SubsurfaceProfile` is lit opaque: the
-  renderer has no subsurface. Translucent with refraction above 1 is glass with that IOR.
+  renderer has no subsurface. Translucent with refraction above 1 is glass with that IOR, and so
+  is `ThinTranslucent`: the glass covers whole and lets through what its opacity leaves.
 - **Vertex colors.** A standard-model base color multiplied by them drops them
   (`Multiply_Base_Color`), because that model always multiplies them; a program reads them as data
   (`ctx.vertex_color`) with its whole base color (`Program`); `Unused` says a mesh may discard
