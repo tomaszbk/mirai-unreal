@@ -737,6 +737,36 @@ unreal_specular_is_an_ior_and_below_two_percent_a_factor :: proc(t:^testing.T) {
     testing.expect(t,abs(f0-0.01)<1e-5 && abs(factor-0.5)<1e-5)
 }
 
+// A blended layer lit through a volume of light has no highlight, whatever
+// its Specular; one shaded per pixel keeps it, as an opaque surface does.
+@(test)
+a_translucent_layer_has_a_highlight_only_when_shaded_per_pixel :: proc(t:^testing.T) {
+    Case :: struct {blend,lighting:string,highlight:bool}
+    cases:=[]Case{
+        {"BLEND_Translucent","",false},
+        {"BLEND_Translucent","TLM_VolumetricDirectional",false},
+        {"BLEND_Translucent","TLM_Surface",false},
+        {"BLEND_Additive","",false},
+        {"BLEND_Translucent","TLM_SurfacePerPixelLighting",true},
+        {"BLEND_Opaque","",true},
+    }
+    for c in cases {
+        b:=material_begin("M_Layer")
+        m:=fx.writer(&b.p)
+        fx.enum_put(&m,"BlendMode","EBlendMode",c.blend)
+        if c.lighting!="" {fx.enum_put(&m,"TranslucencyLightingMode","ETranslucencyLightingMode",c.lighting)}
+        b.p.exports[0].data=fx.finish(&m)
+        lib:Library
+        library_with(&lib,{"/Game/M/M_Layer",fx.package_bytes(&b.p,"/Game/M/M_Layer")})
+        translated,ok:=translate_one(t,&lib,"/Game/M/M_Layer")
+        if ok {
+            testing.expectf(t,(translated.info.specular_factor>0)==c.highlight,"%s %s: specular factor %v",c.blend,c.lighting,translated.info.specular_factor)
+            translated_destroy(&translated)
+        }
+        library_destroy(&lib)
+    }
+}
+
 // An image is the value of its nodes at each texel: here one minus a channel
 // and a constant.
 @(test)
@@ -1512,6 +1542,7 @@ the_screen_the_depth_and_the_bounds_are_seen_by_a_program :: proc(t:^testing.T) 
     radius:=expression(&b,"ParticleRadius","Radius",&w)
     m:=fx.writer(&b.p)
     fx.enum_put(&m,"BlendMode","EBlendMode","BLEND_Translucent")
+    fx.enum_put(&m,"TranslucencyLightingMode","ETranslucencyLightingMode","TLM_SurfacePerPixelLighting")
     fx.input_put(&m,"Metallic","ScalarMaterialInput",{expression=particle,output=1})
     fx.input_put(&m,"BaseColor","ColorMaterialInput",{expression=bounds})
     fx.input_put(&m,"EmissiveColor","ColorMaterialInput",{expression=screen,output=1})

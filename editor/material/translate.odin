@@ -142,6 +142,10 @@ SHADING_NAMES :: []string{
 }
 @(private)
 Shading :: enum u8 {Unlit,Default_Lit,Subsurface,Preintegrated_Skin,Clear_Coat,Subsurface_Profile,Two_Sided_Foliage,Hair,Cloth,Eye,Single_Layer_Water,Thin_Translucent,Substrate,From_Expression}
+@(private)
+LIGHTING_NAMES :: []string{"TLM_VolumetricNonDirectional","TLM_VolumetricDirectional","TLM_VolumetricPerVertexNonDirectional","TLM_VolumetricPerVertexDirectional","TLM_Surface","TLM_SurfacePerPixelLighting"}
+@(private)
+Lighting :: enum u8 {Volumetric_Non_Directional,Volumetric_Directional,Volumetric_Per_Vertex_Non_Directional,Volumetric_Per_Vertex_Directional,Surface,Surface_Per_Pixel}
 
 @(private)
 Base_Properties :: struct {
@@ -188,6 +192,10 @@ translate :: proc(lib:^Library,material:Object,options:Options={},allocator:=con
     // A two-sided material is drawn on single sheets: a thin surface.
     thin:=base.two_sided_set?base.two_sided:prop_bool(base_material,"TwoSided",false)
     t.info.two_sided=thin
+    // A blended layer lit through a volume of light has no highlight: only one
+    // shaded per pixel reflects.
+    lighting:=Lighting(prop_enum(base_material,"TranslucencyLightingMode",LIGHTING_NAMES,0))
+    highlight:=blend==.Opaque || blend==.Masked || lighting==.Surface_Per_Pixel || shading==.Thin_Translucent
 
     e:Evaluator
     evaluator_init(&e,lib,&t.graph,out)
@@ -230,7 +238,7 @@ translate :: proc(lib:^Library,material:Object,options:Options={},allocator:=con
     }
 
     uv_sets_place(&t,&e,roots)
-    translate_values(&t,&e,roots,connected,blend,shading,clip,thin)
+    translate_values(&t,&e,roots,connected,blend,shading,clip,thin,highlight)
     untranslated:=make([dynamic]Untranslated,out)
     untranslated_counts(&e,&untranslated)
     t.untranslated=untranslated[:]
@@ -591,7 +599,7 @@ uv_affine :: proc(g:^Graph,n:u32) -> (scale,offset:[2]f32,set:u32,ok:bool) {
 }
 
 @(private)
-translate_values :: proc(t:^Translated_Material,e:^Evaluator,roots:[Attribute]u32,connected:[Attribute]bool,blend:Blend,shading:Shading,clip:f32,thin:bool) {
+translate_values :: proc(t:^Translated_Material,e:^Evaluator,roots:[Attribute]u32,connected:[Attribute]bool,blend:Blend,shading:Shading,clip:f32,thin,highlight:bool) {
     g:=&t.graph
     info:=&t.info
     if e.exposure_relative {info.emission_mode=.Relative}
@@ -664,6 +672,7 @@ translate_values :: proc(t:^Translated_Material,e:^Evaluator,roots:[Attribute]u3
 
     emissive:=roots[.Emissive]
     metallic,roughness,specular,occlusion,normal:=roots[.Metallic],roots[.Roughness],roots[.Specular],roots[.Ambient_Occlusion],roots[.Normal]
+    if !highlight {specular=scalar(g,0)}
     if shading==.Unlit {
         metallic,roughness,specular,occlusion,normal=NONE,NONE,NONE,NONE,NONE
         info.unlit=true
