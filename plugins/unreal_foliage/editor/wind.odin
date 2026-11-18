@@ -68,7 +68,9 @@ sway_wind :: proc(s:Sway) -> f32 {
     if s.winds==s.unmeasured {return foliage.FOLIAGE_TYPE_DEFAULT.wind}
     if !(s.tall>0) || !(s.moved>0) {return 0}
     lean:=math.asin(min(s.moved/s.tall,1))
-    return f32(lean)/(foliage.sway_amount(foliage.Foliage_Type{wind=1})*volume.WIND_DEFAULT.speed)
+    unit:=foliage.FOLIAGE_TYPE_DEFAULT
+    unit.wind=1
+    return f32(lean)/(foliage.sway_amount(unit)*volume.WIND_DEFAULT.speed)
 }
 
 // Unit, along Unreal's X and Y; zero where it sways both ways.

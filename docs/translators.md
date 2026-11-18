@@ -83,8 +83,8 @@ components of each scene. `foliage.odin` writes into a source what
 in the space of an entity at the scene origin.
 
 - **InstancedFoliageActor** (`foliage_source`, `foliage_add`): one type per Unreal static mesh
-  type, with the `.mesh` the caller gives per type; wind is 0, because in Unreal its materials move
-  it, and collision is a box of the mesh bounds. Each instance is manual in the cell where it
+  type, with the `.mesh` and the wind the caller gives per type, and collision is a box of the
+  mesh bounds. Each instance is manual in the cell where it
   falls, `INSTANCE_GROUNDED` if placed on something. An actor type is not a type: its actors are
   level actors, which the scene translates like the others (an instance without its actor is a
   warning). An ISM actors type is not one either: the actor's instanced components that draw it
@@ -92,8 +92,19 @@ in the space of an entity at the scene origin.
 - **Instanced components** (`instanced_add`): `InstancedStaticMeshComponent`, the hierarchical one
   and the foliage one, also those baked by PCG and by packed level actors. One type per mesh,
   materials of its slots, cull distance (`InstanceEndCullDistance`), shadows, rays and collision:
-  a box of the mesh bounds if the component collides, nothing if not. No generator or wind;
-  instances are manual, where they are.
+  a box of the mesh bounds if the component collides, nothing if not. No generator; instances are
+  manual, where they are.
+- **Wind** (`wind.odin`). Unreal sways foliage with the `WorldPositionOffset` of its materials,
+  Mirai with the wind of each type where a `Wind` blows. `material.offset_read` tells wind (it
+  moves with time and a function or parameter that feeds it is named for the wind) from another
+  motion and from a shape, and measures how far it moves vertices of each section of the mesh
+  across. The type leans by the angle whose rigid bend best matches those reaches in least
+  squares (`sin(lean) = sum(R*h)/sum(h*h)`, `h` the height above the pivot), and its wind is what
+  leans it that far at the peak of its sway in a `Wind` of `volume.WIND_DEFAULT`; the scene of the
+  map gets such a `Wind`, the way most swaying instances are moved. A sway that cannot be
+  measured is Mirai's default wind. Warnings: an offset that is not wind (it stands still),
+  per-vertex weights (vertex colors, uv: Mirai bends the whole plant by height), gusts drawn by a
+  texture, and the way and pace of each material (Mirai's wind has one of each where it blows).
 - **Cull distances.** Unreal fades an instance between its start and end cull distances only in
   a material that reads `PerInstanceFadeAmount`; otherwise it draws whole up to the end and is
   gone there. Every type of foliage starts its fade at its cull distance.

@@ -975,6 +975,92 @@ an_offset_that_collapses_the_surface_hides_it :: proc(t:^testing.T) {
     for text in translated.notes {testing.expectf(t,!strings.contains(text,"is not translated"),"note: %s",text)}
 }
 
+// An offset that moves with time is wind when what feeds it is named for
+// the wind, another motion when it is not, and a shape when it does not move;
+// how far it moves each vertex across is measured where the vertex is, by
+// what weighs it there (its color, its place in the mesh before skinning).
+@(test)
+an_offset_is_wind_another_motion_or_a_shape_with_its_reach_at_each_vertex :: proc(t:^testing.T) {
+    Case :: struct {
+        name,parameter,weight:string, // weight: the expression that weighs it per vertex
+        timed,connected:bool,
+        kind:Offset_Kind,
+        weights:bit_set[Offset_Weight],
+        reach:f32, // at the top vertex; the one at the pivot does not move
+    }
+    cases:=[]Case{
+        {"M_Grass","Wind Intensity","VertexColor",true,true,.Wind,{.Vertex_Color},5},
+        {"M_Tree","Wind Sway","PreSkinnedPosition",true,true,.Wind,{},5},
+        {"M_Flag","Flutter","VertexColor",true,true,.Motion,{.Vertex_Color},5},
+        {"M_Bulge","Wind Intensity","VertexColor",false,true,.Shape,{},0},
+        {"M_Still","","",false,false,.None,{},0},
+    }
+    // White at the top, a metre above the pivot; black at the pivot.
+    vertices:=[]Offset_Vertex{{position={0,0,100},color={1,1,1,1}},{color={0,0,0,1}}}
+    bounds:=[2][3]f32{{-10,-10,0},{10,10,100}}
+    for c in cases {
+        b:=material_begin(c.name)
+        m:=fx.writer(&b.p)
+        if c.connected {
+            w:=fx.writer(&b.p)
+            fx.name_property_put(&w,"ParameterName",c.parameter)
+            fx.float_put(&w,"DefaultValue",5)
+            amount:=expression(&b,"ScalarParameter","Amount",&w)
+            if c.timed {
+                w=fx.writer(&b.p)
+                time:=expression(&b,"Time","Time",&w)
+                w=fx.writer(&b.p)
+                fx.input_put(&w,"Input","ExpressionInput",{expression=time})
+                sine:=expression(&b,"Sine","Sine",&w)
+                w=fx.writer(&b.p)
+                fx.input_put(&w,"A","ExpressionInput",{expression=sine})
+                fx.input_put(&w,"B","ExpressionInput",{expression=amount})
+                amount=expression(&b,"Multiply","Gust",&w)
+            }
+            w=fx.writer(&b.p)
+            weight:=expression(&b,c.weight,"Weight",&w)
+            mask:=c.weight=="VertexColor"?[4]bool{true,false,false,false}:[4]bool{false,false,true,false}
+            w=fx.writer(&b.p)
+            fx.input_put(&w,"A","ExpressionInput",{expression=weight,mask=mask})
+            fx.float_put(&w,"ConstB",c.weight=="VertexColor"?1:0.01)
+            weighed:=expression(&b,"Multiply","Weighed",&w)
+            w=fx.writer(&b.p)
+            fx.input_put(&w,"A","ExpressionInput",{expression=amount})
+            fx.input_put(&w,"B","ExpressionInput",{expression=weighed})
+            swayed:=expression(&b,"Multiply","Swayed",&w)
+            w=fx.writer(&b.p)
+            fx.color_put(&w,"Constant",{1,0,0,0})
+            across:=expression(&b,"Constant3Vector","Across",&w)
+            w=fx.writer(&b.p)
+            fx.input_put(&w,"A","ExpressionInput",{expression=swayed})
+            fx.input_put(&w,"B","ExpressionInput",{expression=across})
+            offset:=expression(&b,"Multiply","Offset",&w)
+            fx.input_put(&m,"WorldPositionOffset","VectorMaterialInput",{expression=offset})
+        }
+        b.p.exports[0].data=fx.finish(&m)
+        name:=fmt.tprintf("/Game/M/%s",c.name)
+        lib:Library
+        library_with(&lib,{name,fx.package_bytes(&b.p,name)})
+        defer library_destroy(&lib)
+        material,_:=object_find(&lib,name)
+        reach:[2]f32
+        o,error:=offset_read(&lib,material,vertices,bounds,reach[:],context.temp_allocator)
+        if !testing.expect_value(t,error.code,Error_Code.None) {continue}
+        testing.expectf(t,o.kind==c.kind,"%s: %v, not %v",c.name,o.kind,c.kind)
+        testing.expectf(t,o.weights==c.weights,"%s: weighed by %v, not %v",c.name,o.weights,c.weights)
+        testing.expectf(t,o.why=="","%s: measured (%s)",c.name,o.why)
+        // Over a minute in half seconds, a sine comes within a thousandth of its peak.
+        testing.expectf(t,abs(reach[0]-c.reach)<=c.reach*1e-3,"%s: the top moves %v, not %v",c.name,reach[0],c.reach)
+        testing.expectf(t,reach[1]==0,"%s: the pivot moves %v",c.name,reach[1])
+        testing.expectf(t,o.direction==[2]f32{},"%s: a sine sways both ways, not %v",c.name,o.direction)
+        if c.connected {
+            found:=false
+            for n in o.names {found||=n==c.parameter}
+            testing.expectf(t,found,"%s: %v names %s",c.name,o.names,c.parameter)
+        }
+    }
+}
+
 // A masked material whose mask keeps every point, unconnected or a constant
 // that reaches the cutoff, is opaque; a mask of a texture or one below the
 // cutoff stays a mask.

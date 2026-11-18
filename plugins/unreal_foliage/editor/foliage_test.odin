@@ -1,8 +1,11 @@
 package unreal_foliage_editor
 
 import "core:math"
+import "core:strings"
 import "core:testing"
 import "mirai:asset"
+import volume "mirai:engine/volume"
+import "project:plugins/unreal/editor/material"
 import ufoliage "project:plugins/unreal/editor/foliage"
 import "mirai:std/base"
 import mm "mirai:std/math"
@@ -23,7 +26,7 @@ unreal_foliage_becomes_manual_instances_of_its_cells_with_their_ground :: proc(t
     f:=ufoliage.Foliage{types=types,instances=instances}
     s:foliage.Source
     defer foliage.source_destroy(&s)
-    result,ok:=foliage_source(&s,&f,{meshes={{1,2},{3,4}}})
+    result,ok:=foliage_source(&s,&f,{meshes={{1,2},{3,4}},winds={1.5,0}})
     if !testing.expect(t,ok) {return}
     defer delete(result.types)
     testing.expect_value(t,len(s.types),2)
@@ -35,9 +38,10 @@ unreal_foliage_becomes_manual_instances_of_its_cells_with_their_ground :: proc(t
     testing.expect_value(t,fern.height,[2]f32{1,1})
     testing.expect_value(t,fern.cull_distance,f32(50))
     testing.expect_value(t,fern.fade_distance,f32(50)) // whole up to where it is gone, as Unreal draws it
-    testing.expect_value(t,fern.wind,f32(0))
+    testing.expect_value(t,fern.wind,f32(1.5))
     testing.expect_value(t,fern.collision,foliage.Foliage_Collision.None)
     rock:=s.types[1]
+    testing.expect_value(t,rock.wind,f32(0))
     testing.expect_value(t,rock.collision,foliage.Foliage_Collision.Box)
     testing.expect_value(t,rock.size,[3]f32{2,1,4})
     testing.expect_value(t,rock.height,[2]f32{0.5,3})
@@ -200,4 +204,49 @@ unreal_foliage_of_actors_adds_only_its_static_mesh_types :: proc(t:^testing.T) {
     testing.expect_value(t,result.unplaced,1)
     cell:=foliage.source_cell(&s,{0,0})
     testing.expect(t,cell!=nil && len(cell.manual)==1,"only the instance of the fern")
+}
+
+// A type sways by the lean whose bend best matches, in least squares over
+// the vertices of its mesh, how far its materials sway them across, as a
+// Wind of Mirai's speed leans it at its peak. A material that moves its
+// vertices by other than wind sways nothing and is a warning; one whose
+// sway cannot be measured sways by Mirai's default wind.
+@(test)
+a_type_sways_as_its_materials_sway_its_mesh :: proc(t:^testing.T) {
+    Part :: struct {offset:material.Offset,heights,reach:[]f32}
+    Case :: struct {
+        name:string,
+        parts:[]Part,
+        sine:f64,       // of the lean the rule gives; -1: Mirai's default wind
+        warned:[]string, // what the warnings of its materials say
+    }
+    gusts:=material.Offset{kind=.Wind,names={"MF_FoliageWind_Sway","Wind Intensity"},weights={.Vertex_Color},textured=true}
+    cases:=[]Case{
+        {"grass",{{gusts,{100,0},{3.2,0}}},0.032,{"vertex colors","texture"}},
+        {"tree",{{material.Offset{kind=.Wind},{100},{3.2}},{{},{50},{0}}},0.0256,nil},
+        {"rock",{{{},{100},{0}}},0,nil},
+        {"flag",{{material.Offset{kind=.Motion,names={"MF_FlagWave"}},{100},{3.2}}},0,{"MF_FlagWave","not wind"}},
+        {"pulse",{{material.Offset{kind=.Shape},{100},{0}}},0,{"without time"}},
+        {"custom",{{material.Offset{kind=.Wind,why="it reads noise"},{100},{-1}}},-1,{"could not be measured"}},
+    }
+    per_wind:=f64(foliage.FOLIAGE_SWAY)*0.1*f64(volume.WIND_DEFAULT.speed) // radians of lean per wind at its peak
+    for c in cases {
+        s:Sway
+        warnings:=make([dynamic]string,context.temp_allocator)
+        for part in c.parts {
+            vertices:=make([]material.Offset_Vertex,len(part.heights),context.temp_allocator)
+            for &v,i in vertices {v.position.z=part.heights[i]}
+            sway_add(&s,part.offset,vertices,part.reach)
+            append(&warnings,..offset_warnings(c.name,"/Game/M/M_Part",part.offset))
+        }
+        wind:=sway_wind(s)
+        expected:=c.sine<0?f64(foliage.FOLIAGE_TYPE_DEFAULT.wind):math.asin(c.sine)/per_wind
+        testing.expectf(t,abs(f64(wind)-expected)<=1e-5*max(expected,1),"%s: wind %v, not %v",c.name,wind,expected)
+        testing.expectf(t,(len(c.warned)==0)==(len(warnings)==0),"%s: warnings %v",c.name,warnings[:])
+        for text in c.warned {
+            found:=false
+            for w in warnings {found||=strings.contains(w,text)}
+            testing.expectf(t,found,"%s: a warning says %q: %v",c.name,text,warnings[:])
+        }
+    }
 }
