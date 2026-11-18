@@ -1049,10 +1049,12 @@ an_offset_is_wind_another_motion_or_a_shape_with_its_reach_at_each_vertex :: pro
         testing.expectf(t,o.kind==c.kind,"%s: %v, not %v",c.name,o.kind,c.kind)
         testing.expectf(t,o.weights==c.weights,"%s: weighed by %v, not %v",c.name,o.weights,c.weights)
         testing.expectf(t,o.why=="","%s: measured (%s)",c.name,o.why)
-        // Over a minute in half seconds, a sine comes within a thousandth of its peak.
+        // A sine of Unreal turns once a second: in twentieths of a second it reaches its peak.
         testing.expectf(t,abs(reach[0]-c.reach)<=c.reach*1e-3,"%s: the top moves %v, not %v",c.name,reach[0],c.reach)
         testing.expectf(t,reach[1]==0,"%s: the pivot moves %v",c.name,reach[1])
         testing.expectf(t,o.direction==[2]f32{},"%s: a sine sways both ways, not %v",c.name,o.direction)
+        frequency:=f32(c.timed?1:0)
+        testing.expectf(t,abs(o.frequency-frequency)<0.05,"%s: sways %v times a second, not %v",c.name,o.frequency,frequency)
         if c.connected {
             found:=false
             for n in o.names {found||=n==c.parameter}

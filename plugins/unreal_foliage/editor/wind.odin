@@ -29,15 +29,22 @@ import foliage "plugins:foliage/runtime"
 //   one that moves its vertices by something else than wind, or not with
 //   time, sways nothing and is a warning.
 //
-// The scene of the map gets a Wind of that speed, blowing the way most of
-// the instances that sway are moved, when the foliage of a scene sways.
+// What says in the level that the air moves is those materials: Unreal's
+// foliage sways by them whatever its actors are, and the parameters of the
+// wind they read (a collection's or their own) are in what they measure.
+// The scene of the map gets a Wind of the speed the winds are measured
+// against, blowing the way most of the instances that sway are moved, with
+// the gusts they sway at on average (a cycle per second each time their top
+// sways back and forth); when the materials say neither a way nor a pace,
+// no Wind is added and the import says so.
 
-WIND_VERTICES :: 64 // of each material of a mesh, at most, its reach is measured at
+WIND_VERTICES :: 32 // of each material of a mesh, at most, its reach is measured at
 
 // What the materials of a mesh do to it, summed over its vertices measured.
 Sway :: struct {
     moved,tall:f64,   // Σ R·h and Σ h², cm²
     direction:[2]f64, // Unreal's X and Y: the way of each material that sways, by its reach
+    frequency:[2]f64, // Σ cycles per second of each material that sways and is measured to, by its reach, and Σ of those reaches
     winds:int,        // materials that sway in the wind
     unmeasured:int,   // of those, ones whose reach could not be measured
 }
@@ -60,7 +67,11 @@ sway_add :: proc(s:^Sway,o:material.Offset,vertices:[]material.Offset_Vertex,rea
         }
     }
     s.direction+=[2]f64{f64(o.direction.x),f64(o.direction.y)}*total
+    if o.frequency>0 {s.frequency+={f64(o.frequency)*total,total}}
 }
+
+// Cycles per second the mesh sways at; 0 where no material says.
+sway_frequency :: proc(s:Sway) -> f32 {return s.frequency.y>0?f32(s.frequency.x/s.frequency.y):0}
 
 // The wind of a type of the mesh, by the rule above.
 sway_wind :: proc(s:Sway) -> f32 {
@@ -113,11 +124,12 @@ Winds :: struct {
     meshes:map[string]Mesh_Wind, // by mesh and the materials of its slots
     warned:map[string]struct{},  // materials
     blown:[2]f64,                // Unreal's X and Y: the way of each type that sways, by its instances
+    paced:[2]f64,                // Σ cycles per second of each type that sways at a pace, by its instances, and Σ of those instances
     ways:[dynamic][2]f32,        // of the types that sway one way
     swaying:bool,                // some material sways in the wind
 }
 
-Mesh_Wind :: struct {wind:f32,direction:[2]f32}
+Mesh_Wind :: struct {wind:f32,direction:[2]f32,frequency:f32}
 
 winds_make :: proc() -> (w:Winds) {
     w.meshes=make(map[string]Mesh_Wind,context.temp_allocator)
@@ -126,22 +138,25 @@ winds_make :: proc() -> (w:Winds) {
     return
 }
 
-// A type that sways one way with instances counts toward the way of the Wind.
-winds_count :: proc(w:^Winds,direction:[2]f32,instances:int) {
-    if direction=={} {return}
-    append(&w.ways,direction)
-    w.blown+=[2]f64{f64(direction.x),f64(direction.y)}*f64(instances)
+// A type that sways, with its instances, counts toward the way and the
+// gusts of the Wind.
+winds_count :: proc(w:^Winds,sway:Mesh_Wind,instances:int) {
+    if sway.wind<=0 {return}
+    if sway.frequency>0 {w.paced+={f64(sway.frequency)*f64(instances),f64(instances)}}
+    if sway.direction=={} {return}
+    append(&w.ways,sway.direction)
+    w.blown+=[2]f64{f64(sway.direction.x),f64(sway.direction.y)}*f64(instances)
 }
 
 // The wind of a type that shows the StaticMesh at mesh (an object path)
 // with the materials of slots, by Unreal's index of its slot ("" or past
 // them: the mesh's), and the way its materials move it. owner names the
 // type in the warnings.
-mesh_wind :: proc(c:^unreal_scene.Context,w:^Winds,owner,mesh:string,slots:[]string) -> (wind:f32,direction:[2]f32) {
+mesh_wind :: proc(c:^unreal_scene.Context,w:^Winds,owner,mesh:string,slots:[]string) -> (sway:Mesh_Wind) {
     if mesh=="" {return}
     key:=strings.join({mesh,strings.join(slots,"|",context.temp_allocator)},"|",context.temp_allocator)
-    if found,seen:=w.meshes[key];seen {return found.wind,found.direction}
-    defer w.meshes[key]=Mesh_Wind{wind,direction}
+    if found,seen:=w.meshes[key];seen {return found}
+    defer w.meshes[key]=sway
     decoder,ready:=unreal_scene.decoder(c)
     if !ready {return}
     unreal_scene.library_lock(c)
@@ -169,7 +184,7 @@ mesh_wind :: proc(c:^unreal_scene.Context,w:^Winds,owner,mesh:string,slots:[]str
         w.warned[strings.clone(path,context.temp_allocator)]={}
         for text in offset_warnings(owner,path,o) {unreal_scene.warn(c,"%s",text)}
     }
-    return sway_wind(s),sway_direction(s)
+    return {sway_wind(s),sway_direction(s),sway_frequency(s)}
 }
 
 // Up to WIND_VERTICES vertices of the sections of the mesh that show the
@@ -208,9 +223,23 @@ section_vertices :: proc(m:^umesh.Mesh,slot:int) -> []material.Offset_Vertex {
 // materials is a warning.
 wind_write :: proc(c:^unreal_scene.Context,w:^Winds) {
     if !w.swaying {return}
-    way:=[2]f32{1,0}
     length:=math.sqrt(w.blown.x*w.blown.x+w.blown.y*w.blown.y)
-    if length>0 {way={f32(w.blown.x/length),f32(w.blown.y/length)}}
+    if !(length>0) && !(w.paced.y>0) {
+        unreal_scene.warn(c,"its foliage sways in the wind by its materials, but they say neither the way nor the pace of the wind: no Wind is added, and the foliage stands still until one blows")
+        return
+    }
+    wind:=volume.WIND_DEFAULT
+    if w.paced.y>0 {
+        wind.gusts=f32(w.paced.x/w.paced.y)
+    } else {
+        unreal_scene.warn(c,"the materials of its foliage do not say the pace of the wind: the Wind gusts at %g cycles a second, Mirai's default",wind.gusts)
+    }
+    way:=[2]f32{1,0}
+    if length>0 {
+        way={f32(w.blown.x/length),f32(w.blown.y/length)}
+    } else {
+        unreal_scene.warn(c,"the materials of its foliage sway it both ways alike: the Wind blows along the X of Unreal")
+    }
     apart:=0
     for d in w.ways {if d.x*way.x+d.y*way.y<WAY_ALIKE {apart+=1}}
     if apart>0 {
@@ -225,7 +254,6 @@ wind_write :: proc(c:^unreal_scene.Context,w:^Winds) {
     forward:=[3]f32{way.y,0,-way.x}
     e,made:=unreal_scene.entity_make(c,0,key,"Wind",{0,mm.quat_look(forward,{0,1,0}),{1,1,1}})
     if !made {return}
-    wind:=volume.WIND_DEFAULT
     unreal_scene.component_set(c,e,"Wind",&wind)
 }
 

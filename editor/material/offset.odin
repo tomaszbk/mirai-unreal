@@ -17,7 +17,8 @@ import "core:strings"
 // CPU at the vertex, with its uv and its color, its textures read as white
 // (their brightest) and its object standing on its pivot, over
 // OFFSET_SECONDS and a field of places; what it gives is the most it moves
-// the vertex across.
+// the vertex across, and how many times a second the highest vertex given
+// sways back and forth at the first place.
 
 Offset_Kind :: enum u8 {
     None,   // the surface stays where it is
@@ -34,6 +35,7 @@ Offset :: struct {
     direction:[2]f32, // along Unreal's X and Y, unit: the way it moves the vertices on the whole; zero where it sways both ways
     weights:bit_set[Offset_Weight],
     textured:bool,    // it reads a texture: gusts by an image
+    frequency:f32,    // cycles per second the first vertex sways at; 0 where it does not cross its middle
     names:[]string,   // the material functions, collection parameters and parameters that feed it, each once
     why:string,       // why its reach could not be measured; "" when it was, or it is no motion
 }
@@ -46,8 +48,8 @@ Offset_Vertex :: struct {
     color:[4]f32,
 }
 
-OFFSET_SECONDS :: 60     // of time over which the reach is measured
-OFFSET_STEPS :: 120      // instants of those seconds
+OFFSET_SECONDS :: 20     // of time over which the reach is measured
+OFFSET_STEPS :: 400      // instants of those seconds: what sways up to ten times a second shows
 OFFSET_PLACES :: 2       // places along each side of the field the reach is measured over
 OFFSET_FIELD :: f32(1e4) // centimetres a side of that field
 
@@ -105,16 +107,16 @@ offset_read :: proc(lib:^Library,material:Object,vertices:[]Offset_Vertex,bounds
         o.kind=value.xyz=={}?.None:.Shape
         return
     }
-    if depends_on(&g,root,{.Vertex_Color}) {o.weights+={.Vertex_Color}}
-    if depends_on(&g,root,{.UV}) {o.weights+={.UV}}
-    o.textured=depends_on(&g,root,{.Sample,.Sample_Grad,.Texture_Read})
     if !depends_on(&g,root,{.Time}) {
         o.kind=.Shape
         return
     }
+    if depends_on(&g,root,{.Vertex_Color}) {o.weights+={.Vertex_Color}}
+    if depends_on(&g,root,{.UV}) {o.weights+={.UV}}
+    o.textured=depends_on(&g,root,{.Sample,.Sample_Grad,.Texture_Read})
     o.kind=windy?.Wind:.Motion
-    direction,why:=offset_reach(&g,root,vertices,bounds,reach)
-    o.direction=direction
+    direction,frequency,why:=offset_reach(&g,root,vertices,bounds,reach)
+    o.direction,o.frequency=direction,frequency
     if why!="" {
         slice.fill(reach,-1)
         o.why=strings.clone(why,allocator)
@@ -127,15 +129,16 @@ offset_name_is_wind :: proc(name:string) -> bool {
     return strings.contains(strings.to_lower(name,context.temp_allocator),"wind")
 }
 
-// The reach of an offset at each vertex, as offset_read measures it, and
-// the way it moves them on the whole; why it cannot run on the CPU.
+// The reach of an offset at each vertex, as offset_read measures it, the
+// way it moves them on the whole and the frequency of the first; why it
+// cannot run on the CPU.
 @(private)
-offset_reach :: proc(g:^Graph,root:u32,vertices:[]Offset_Vertex,bounds:[2][3]f32,reach:[]f32) -> (direction:[2]f32,why:string) {
+offset_reach :: proc(g:^Graph,root:u32,vertices:[]Offset_Vertex,bounds:[2][3]f32,reach:[]f32) -> (direction:[2]f32,frequency:f32,why:string) {
     order:=nodes_under(g,{root})
     for n in order {
         #partial switch g.nodes[n].op {
         case .Noise,.Vector_Noise,.Custom,.Custom_Output,.Arguments,.Texture_Read:
-            return {},"it reads noise or HLSL that only a program computes"
+            return {},0,"it reads noise or HLSL that only a program computes"
         }
     }
     low,high:=bounds[0],bounds[1]
@@ -146,6 +149,7 @@ offset_reach :: proc(g:^Graph,root:u32,vertices:[]Offset_Vertex,bounds:[2][3]f32
     texel:Texel_Context
     sum:[2]f32
     across:f32
+    first:[OFFSET_STEPS][2]f32 // what the first vertex moves at the first place
     for vertex,i in vertices {
         texel.uv=vertex.uvs[0]
         for step in 0..<OFFSET_STEPS {
@@ -180,7 +184,8 @@ offset_reach :: proc(g:^Graph,root:u32,vertices:[]Offset_Vertex,bounds:[2][3]f32
                 }
                 moved:=values[root].xy
                 length:=math.sqrt(moved.x*moved.x+moved.y*moved.y)
-                if !(length<1e30) {return {},"it moves the surface by what is not a number"}
+                if !(length<1e30) {return {},0,"it moves the surface by what is not a number"}
+                if i==0 && k==0 {first[step]=moved}
                 reach[i]=max(reach[i],length)
                 sum+=moved
                 across+=length
@@ -190,7 +195,27 @@ offset_reach :: proc(g:^Graph,root:u32,vertices:[]Offset_Vertex,bounds:[2][3]f32
     mean:=math.sqrt(sum.x*sum.x+sum.y*sum.y)
     // Mostly one way: half of how far it moves on average is along its mean.
     if across>0 && mean>across*0.5 {direction=sum/mean}
+    frequency=offset_frequency(first[:])
     return
+}
+
+// Cycles per second of what moves along a path over OFFSET_SECONDS: half
+// the times it crosses its middle along the axis it moves most along.
+@(private)
+offset_frequency :: proc(path:[][2]f32) -> f32 {
+    if len(path)<2 {return 0}
+    middle:[2]f32
+    for p in path {middle+=p}
+    middle/=f32(len(path))
+    spread:[2]f32
+    for p in path {spread+=(p-middle)*(p-middle)}
+    axis:=spread.x>=spread.y?0:1
+    if !(spread[axis]>0) {return 0}
+    crossings:=0
+    for k in 1..<len(path) {
+        if (path[k-1][axis]-middle[axis]<0)!=(path[k][axis]-middle[axis]<0) {crossings+=1}
+    }
+    return f32(crossings)*0.5/OFFSET_SECONDS
 }
 
 // The names of an offset that call it wind, in order.

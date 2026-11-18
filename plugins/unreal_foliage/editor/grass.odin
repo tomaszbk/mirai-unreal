@@ -256,7 +256,7 @@ grass_look :: proc(c:^unreal_scene.Context,v:material.Grass_Variety,winds:^Winds
     if !ok {return}
     look.mesh=m.id
     _,object:=unreal_scene.object_split(v.mesh)
-    look.wind,_=mesh_wind(c,winds,unreal.asset_name(object),v.mesh,v.materials)
+    look.wind=mesh_wind(c,winds,unreal.asset_name(object),v.mesh,v.materials).wind
     for path,index in v.materials {
         if path=="" {continue}
         row,found:=slice.linear_search(m.slot_ids,u32(index+1))

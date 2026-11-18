@@ -319,9 +319,9 @@ foliages_translate :: proc(c:^unreal_scene.Context,actors:[]int) -> int {
                 type_winds:=make([]f32,len(f.types),context.temp_allocator)
                 for t,i in f.types {
                     if t.kind!=.Static_Mesh {continue}
-                    direction:[2]f32
-                    type_winds[i],direction=mesh_wind(c,&winds,unreal.asset_name(t.name),t.mesh,nil)
-                    if type_winds[i]>0 {winds_count(&winds,direction,t.instance_count)}
+                    sway:=mesh_wind(c,&winds,unreal.asset_name(t.name),t.mesh,nil)
+                    type_winds[i]=sway.wind
+                    winds_count(&winds,sway,t.instance_count)
                 }
                 unreal_scene.zone_end(wind_zone)
                 add_zone:=unreal_scene.zone_begin(c,"foliage.add")
@@ -446,9 +446,9 @@ instanced_batches :: proc(c:^unreal_scene.Context,winds:^Winds) -> []Instanced_B
         if end>0 {t.cull_distance=f32(end)/100}
         t.casts_shadow=shown.shadows
         t.ray_visible,_=level.bool_of(d,ref,"bVisibleInRayTracing",true)
-        direction:[2]f32
-        t.wind,direction=mesh_wind(c,winds,t.name,path,level.paths_of(d,ref,"OverrideMaterials"))
-        if t.wind>0 {winds_count(winds,direction,len(instances.matrices))}
+        sway:=mesh_wind(c,winds,t.name,path,level.paths_of(d,ref,"OverrideMaterials"))
+        t.wind=sway.wind
+        winds_count(winds,sway,len(instances.matrices))
         if profile,enabled,_:=level.component_collision(d,ref);level.profile_collides(profile,enabled) {
             if box:=level.mesh_box(d,path,&boxes);box.ok {t.size=mm.aabb_size(box.box)}
         }
