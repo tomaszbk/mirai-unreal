@@ -28,6 +28,7 @@ import foliage "plugins:foliage/runtime"
 Grass_Look :: struct {
     mesh:base.Asset_Id,
     materials:[render.MATERIAL_SLOTS]base.Asset_Id, // those its slots override; none: the mesh's
+    wind:f32,       // that its materials sway its mesh with (mesh_wind)
 }
 
 // A landscape and its grass, as its terrain shows it.
@@ -87,6 +88,7 @@ grass_add :: proc(s:^foliage.Source,landscapes:[]Grass_Landscape,origin:[3]f32) 
                 case .Lock_XY:scaling=.Lock_XY
                 }
                 type_from(&t,{density=v.density,scale=v.scale,scaling=scaling,random_yaw=v.random_rotation,align_to_normal=v.align,cull=v.cull,casts_shadow=v.casts_shadow})
+                t.wind=look.wind
                 t.rule.weight=clamp(v.weights[0],0,1)
                 if g.fit.ok {
                     t.rule.slope=g.fit.slope
@@ -191,7 +193,7 @@ FIT_NOTED :: f32(0.01) // of the density, a fit off by more than which the impor
 // of the map, where they are from origin; their meshes and the materials of
 // their slots imported as the other meshes of the level.
 @(private)
-grass_translate :: proc(c:^unreal_scene.Context,s:^foliage.Source,origin:[3]f32) -> (result:Grass_Result) {
+grass_translate :: proc(c:^unreal_scene.Context,s:^foliage.Source,origin:[3]f32,winds:^Winds) -> (result:Grass_Result) {
     d:=c.d
     by_material:=make(map[string][]material.Landscape_Grass,context.temp_allocator)
     some:=false
@@ -232,7 +234,7 @@ grass_translate :: proc(c:^unreal_scene.Context,s:^foliage.Source,origin:[3]f32)
         looks:=make([][]Grass_Look,len(grass),context.temp_allocator)
         for g,i in grass {
             looks[i]=make([]Grass_Look,len(g.varieties),context.temp_allocator)
-            for v,j in g.varieties {looks[i][j]=grass_look(c,v)}
+            for v,j in g.varieties {looks[i][j]=grass_look(c,v,winds)}
         }
         append(&inputs,Grass_Landscape{&l,grass,layers,looks})
     }
@@ -245,13 +247,16 @@ grass_translate :: proc(c:^unreal_scene.Context,s:^foliage.Source,origin:[3]f32)
     return
 }
 
-// The mesh of a variety and the materials it puts in its slots, imported once.
+// The mesh of a variety, the materials it puts in its slots and the wind
+// they sway it with, imported once.
 @(private)
-grass_look :: proc(c:^unreal_scene.Context,v:material.Grass_Variety) -> (look:Grass_Look) {
+grass_look :: proc(c:^unreal_scene.Context,v:material.Grass_Variety,winds:^Winds) -> (look:Grass_Look) {
     if v.mesh=="" {return}
     m,ok:=unreal_scene.mesh_import(c,v.mesh)
     if !ok {return}
     look.mesh=m.id
+    _,object:=unreal_scene.object_split(v.mesh)
+    look.wind,_=mesh_wind(c,winds,unreal.asset_name(object),v.mesh,v.materials)
     for path,index in v.materials {
         if path=="" {continue}
         row,found:=slice.linear_search(m.slot_ids,u32(index+1))

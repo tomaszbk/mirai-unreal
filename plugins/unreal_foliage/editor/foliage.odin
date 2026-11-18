@@ -26,7 +26,7 @@ import foliage "plugins:foliage/runtime"
 //   scales takes their geometric mean (the same area).
 // - An instance placed on something is INSTANCE_GROUNDED with its height
 //   over that point as `ground`.
-// - Unreal moves foliage with its materials, not its types: wind is 0.
+// - A type sways by the wind its materials sway its mesh with (wind.odin).
 // - Unreal fades an instance between its start and end cull distances only
 //   in a material that reads PerInstanceFadeAmount: it draws whole up to the
 //   end and is gone there, so the fade starts at the cull distance.
@@ -34,6 +34,7 @@ import foliage "plugins:foliage/runtime"
 
 Foliage_Options :: struct {
     meshes:[]base.Asset_Id, // the .mesh of each foliage type, in its order; zero for none
+    winds:[]f32,            // the wind of each foliage type (mesh_wind), in its order; none: 0
 }
 
 Foliage_Source :: struct {
@@ -74,6 +75,7 @@ foliage_add :: proc(s:^foliage.Source,f:^ufoliage.Foliage,options:Foliage_Option
         t:=foliage.source_type_add(s,unreal.asset_name(ut.name),mesh)
         result.types[i]=t.id
         type_from(t,ut)
+        if i<len(options.winds) {t.wind=options.winds[i]}
     }
     for instance in f.instances {
         if f.types[instance.type].kind!=.Static_Mesh {
@@ -135,6 +137,7 @@ Instanced_Type :: struct {
     mesh:base.Asset_Id,
     materials:[render.MATERIAL_SLOTS]base.Asset_Id, // those its slots override; none: the mesh's
     cull_distance:f32, // metres; 0 never culled
+    wind:f32,          // that its materials sway its mesh with (mesh_wind)
     casts_shadow,ray_visible:bool,
     size:[3]f32,       // of the box of its mesh, when it collides; zero for none
 }
@@ -161,7 +164,8 @@ instanced_add :: proc(s:^foliage.Source,batches:[]Instanced_Batch,origin:[3]f32,
             t.materials=b.type.materials
             t.density=0
             t.scale,t.height={1,1},{1,1}
-            t.yaw,t.tilt,t.align,t.wind=0,0,0,0
+            t.yaw,t.tilt,t.align=0,0,0
+            t.wind=b.type.wind
             t.fade_distance,t.cull_distance=b.type.cull_distance,b.type.cull_distance
             t.casts_shadow,t.ray_visible=b.type.casts_shadow,b.type.ray_visible
             t.collision=b.type.size=={}?foliage.Foliage_Collision.None:foliage.Foliage_Collision.Box
@@ -292,6 +296,7 @@ foliages_translate :: proc(c:^unreal_scene.Context,actors:[]int) -> int {
     s:foliage.Source
     defer foliage.source_destroy(&s)
     result:Foliage_Source
+    winds:=winds_make()
     translated,instances:=0,0
     if len(actors)>0 {
         read_zone:=unreal_scene.zone_begin(c,"foliage.read")
@@ -310,8 +315,17 @@ foliages_translate :: proc(c:^unreal_scene.Context,actors:[]int) -> int {
                     if m,ok:=unreal_scene.mesh_import(c,t.mesh);ok {meshes[i]=m.id}
                 }
                 unreal_scene.zone_end(meshes_zone)
+                wind_zone:=unreal_scene.zone_begin(c,"foliage.wind")
+                type_winds:=make([]f32,len(f.types),context.temp_allocator)
+                for t,i in f.types {
+                    if t.kind!=.Static_Mesh {continue}
+                    direction:[2]f32
+                    type_winds[i],direction=mesh_wind(c,&winds,unreal.asset_name(t.name),t.mesh,nil)
+                    if type_winds[i]>0 {winds_count(&winds,direction,t.instance_count)}
+                }
+                unreal_scene.zone_end(wind_zone)
                 add_zone:=unreal_scene.zone_begin(c,"foliage.add")
-                added,ok:=foliage_add(&s,&f,{meshes=meshes},origin)
+                added,ok:=foliage_add(&s,&f,{meshes=meshes,winds=type_winds},origin)
                 unreal_scene.zone_end(add_zone)
                 if !ok {
                     unreal_scene.warn(c,"%s: its %d types do not fit in a .foliage; it is left out",c.d.actors[f.actor].label,len(f.types))
@@ -331,7 +345,7 @@ foliages_translate :: proc(c:^unreal_scene.Context,actors:[]int) -> int {
     }
     if len(c.instanced)>0 {
         batches_zone:=unreal_scene.zone_begin(c,"foliage.instanced")
-        batches:=instanced_batches(c)
+        batches:=instanced_batches(c,&winds)
         unreal_scene.zone_end(batches_zone)
         add_zone:=unreal_scene.zone_begin(c,"foliage.add")
         instanced_add(&s,batches,origin,&result)
@@ -341,7 +355,7 @@ foliages_translate :: proc(c:^unreal_scene.Context,actors:[]int) -> int {
     grass:Grass_Result
     if c.section==0 {
         grass_zone:=unreal_scene.zone_begin(c,"foliage.grass")
-        grass=grass_translate(c,&s,origin)
+        grass=grass_translate(c,&s,origin,&winds)
         unreal_scene.zone_end(grass_zone)
     }
     unreal_scene.tally(c,"instances of foliage scaled differently along X and Y take the mean of both",result.averaged)
@@ -368,6 +382,7 @@ foliages_translate :: proc(c:^unreal_scene.Context,actors:[]int) -> int {
     if !made {return translated}
     shown:=foliage.Foliage{source=id}
     unreal_scene.component_set(c,e,"Foliage",&shown)
+    wind_write(c,&winds)
     return translated
 }
 
@@ -397,9 +412,10 @@ previous_keep :: proc(c:^unreal_scene.Context,s:^foliage.Source,name,path:string
 // its instances where they are in the world. A material the level keeps
 // inside an actor is written now, since no entity takes it at the end of the
 // level, and the instances of each set of custom data (PerInstanceSMCustomData)
-// are a batch that shows the variants of the materials that read it.
+// are a batch that shows the variants of the materials that read it. Each
+// takes the wind its materials sway its mesh with.
 @(private)
-instanced_batches :: proc(c:^unreal_scene.Context) -> []Instanced_Batch {
+instanced_batches :: proc(c:^unreal_scene.Context,winds:^Winds) -> []Instanced_Batch {
     d:=c.d
     batches:=make([dynamic]Instanced_Batch,context.temp_allocator)
     boxes:=make(map[string]level.Mesh_Box,context.temp_allocator)
@@ -430,6 +446,9 @@ instanced_batches :: proc(c:^unreal_scene.Context) -> []Instanced_Batch {
         if end>0 {t.cull_distance=f32(end)/100}
         t.casts_shadow=shown.shadows
         t.ray_visible,_=level.bool_of(d,ref,"bVisibleInRayTracing",true)
+        direction:[2]f32
+        t.wind,direction=mesh_wind(c,winds,t.name,path,level.paths_of(d,ref,"OverrideMaterials"))
+        if t.wind>0 {winds_count(winds,direction,len(instances.matrices))}
         if profile,enabled,_:=level.component_collision(d,ref);level.profile_collides(profile,enabled) {
             if box:=level.mesh_box(d,path,&boxes);box.ok {t.size=mm.aabb_size(box.box)}
         }
