@@ -196,6 +196,7 @@ translate :: proc(lib:^Library,material:Object,options:Options={},allocator:=con
     // shaded per pixel reflects.
     lighting:=Lighting(prop_enum(base_material,"TranslucencyLightingMode",LIGHTING_NAMES,0))
     highlight:=blend==.Opaque || blend==.Masked || lighting==.Surface_Per_Pixel || shading==.Thin_Translucent
+    around:=lighting==.Volumetric_Non_Directional || lighting==.Volumetric_Per_Vertex_Non_Directional
 
     e:Evaluator
     evaluator_init(&e,lib,&t.graph,out)
@@ -238,7 +239,7 @@ translate :: proc(lib:^Library,material:Object,options:Options={},allocator:=con
     }
 
     uv_sets_place(&t,&e,roots)
-    translate_values(&t,&e,roots,connected,blend,shading,clip,thin,highlight)
+    translate_values(&t,&e,roots,connected,blend,shading,clip,thin,highlight,around)
     untranslated:=make([dynamic]Untranslated,out)
     untranslated_counts(&e,&untranslated)
     t.untranslated=untranslated[:]
@@ -599,7 +600,7 @@ uv_affine :: proc(g:^Graph,n:u32) -> (scale,offset:[2]f32,set:u32,ok:bool) {
 }
 
 @(private)
-translate_values :: proc(t:^Translated_Material,e:^Evaluator,roots:[Attribute]u32,connected:[Attribute]bool,blend:Blend,shading:Shading,clip:f32,thin,highlight:bool) {
+translate_values :: proc(t:^Translated_Material,e:^Evaluator,roots:[Attribute]u32,connected:[Attribute]bool,blend:Blend,shading:Shading,clip:f32,thin,highlight,around:bool) {
     g:=&t.graph
     info:=&t.info
     if e.exposure_relative {info.emission_mode=.Relative}
@@ -660,6 +661,14 @@ translate_values :: proc(t:^Translated_Material,e:^Evaluator,roots:[Attribute]u3
     base_color:=base_color_lit(e,stripped,scattered,roots,shading,thin)
     with_colors:=base_color
     if colors==.Multiply_Base_Color {with_colors=NONE}
+    // A blended layer lit through a volume of light without its direction
+    // gets the same light whichever way it faces: a card that lets half of
+    // what it scatters through has that mean over the ways it can face a
+    // light, and shows the light behind it.
+    if around && info.alpha_mode==.Blend && shading!=.Unlit && e.diffuse_transmission[0]==NONE {
+        color:=base_color!=NONE?convert(g,base_color,3):constant(g,ATTRIBUTE_DEFAULTS[.Base_Color],3)
+        e.diffuse_transmission={unary(g,.Saturate,color),scalar(g,0.5)}
+    }
 
     alpha_root:=NONE
     if info.alpha_mode==.Mask {alpha_root=roots[.Opacity_Mask]}

@@ -739,16 +739,19 @@ unreal_specular_is_an_ior_and_below_two_percent_a_factor :: proc(t:^testing.T) {
 
 // A blended layer lit through a volume of light has no highlight, whatever
 // its Specular; one shaded per pixel keeps it, as an opaque surface does.
+// Lit by the volume without its direction, it is lit alike from both sides:
+// it lets half of what it scatters through.
 @(test)
 a_translucent_layer_has_a_highlight_only_when_shaded_per_pixel :: proc(t:^testing.T) {
-    Case :: struct {blend,lighting:string,highlight:bool}
+    Case :: struct {blend,lighting:string,highlight,through:bool}
     cases:=[]Case{
-        {"BLEND_Translucent","",false},
-        {"BLEND_Translucent","TLM_VolumetricDirectional",false},
-        {"BLEND_Translucent","TLM_Surface",false},
-        {"BLEND_Additive","",false},
-        {"BLEND_Translucent","TLM_SurfacePerPixelLighting",true},
-        {"BLEND_Opaque","",true},
+        {"BLEND_Translucent","",false,true},
+        {"BLEND_Translucent","TLM_VolumetricPerVertexNonDirectional",false,true},
+        {"BLEND_Translucent","TLM_VolumetricDirectional",false,false},
+        {"BLEND_Translucent","TLM_Surface",false,false},
+        {"BLEND_Additive","",false,true},
+        {"BLEND_Translucent","TLM_SurfacePerPixelLighting",true,false},
+        {"BLEND_Opaque","",true,false},
     }
     for c in cases {
         b:=material_begin("M_Layer")
@@ -761,6 +764,8 @@ a_translucent_layer_has_a_highlight_only_when_shaded_per_pixel :: proc(t:^testin
         translated,ok:=translate_one(t,&lib,"/Game/M/M_Layer")
         if ok {
             testing.expectf(t,(translated.info.specular_factor>0)==c.highlight,"%s %s: specular factor %v",c.blend,c.lighting,translated.info.specular_factor)
+            through:=translated.info.diffuse_transmission
+            testing.expectf(t,c.through?through.weight==0.5 && through.color==translated.info.base_color:through.weight==0,"%s %s: diffuse transmission %v",c.blend,c.lighting,through)
             translated_destroy(&translated)
         }
         library_destroy(&lib)
