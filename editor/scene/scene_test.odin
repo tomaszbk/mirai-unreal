@@ -6,6 +6,7 @@ import "core:math"
 import "core:math/linalg"
 import "core:mem"
 import "core:os"
+import "core:path/filepath"
 import "core:slice"
 import "core:strings"
 import "core:testing"
@@ -19,6 +20,7 @@ import "mirai:core"
 import render "mirai:engine/render"
 import "mirai:project"
 import "mirai:std/base"
+import "mirai:store"
 import "mirai:std/jobs"
 import mm "mirai:std/math"
 
@@ -200,6 +202,7 @@ Fixture_Folders :: struct {mirai,unreal,map_path:string}
 @(private="file")
 folders_make :: proc(name:string) -> (f:Fixture_Folders) {
     directory,_:=os.temp_directory(context.temp_allocator)
+    directory=strings.trim_right(directory,"/\\")
     top:=fmt.tprintf("%s/mirai-unreal-scene-%d-%s",directory,os.get_pid(),name)
     os.remove_all(top)
     f.mirai=fmt.tprintf("%s/project",top)
@@ -242,10 +245,12 @@ has_warning :: proc(report:^Level_Report,parts:..string) -> bool {
 a_map_becomes_a_scene_of_entities_meshes_lights_and_cameras_in_the_units_of_mirai :: proc(t:^testing.T) {
     f:=folders_make("scene")
     defer folders_remove(f)
-    report,error:=level_import(f.map_path,{root=f.mirai},engine_content="-")
+    imports:=fixture.store_open(f.mirai)
+    defer fixture.store_close(imports)
+    report,error:=level_import(f.map_path,fixture.into(f.mirai,imports),engine_content="-")
     if !testing.expectf(t,error.code==.None,"%v: %s",error.code,error.message) {return}
     defer level_report_destroy(&report)
-    testing.expect(t,strings.has_suffix(report.scene_path,"/Maps/Map/Map.scene"),report.scene_path)
+    testing.expect(t,strings.has_suffix(report.scene_path,"/assets/Map/Map.scene"),report.scene_path)
     testing.expect_value(t,report.meshes,1)
 
     types:asset.Types;asset.types_init(&types);defer asset.types_destroy(&types)
@@ -355,7 +360,7 @@ a_map_becomes_a_scene_of_entities_meshes_lights_and_cameras_in_the_units_of_mira
         testing.expect_value(t,overrides,[2]int{0,2})
         prefab_path:=""
         for a in report.imports.assets {if a.id==prefab_id {prefab_path=a.path}}
-        testing.expect(t,strings.has_suffix(prefab_path,"/Maps/Map/Lamp.scene"),prefab_path)
+        testing.expect(t,strings.has_suffix(prefab_path,"/assets/Map/Lamp.scene"),prefab_path)
         prefab:asset.Scene
         if testing.expect_value(t,asset.scene_load(&prefab,&types,prefab_path),asset.Error.None) {
             defer asset.scene_destroy(&prefab)
@@ -383,7 +388,7 @@ a_map_becomes_a_scene_of_entities_meshes_lights_and_cameras_in_the_units_of_mira
     testing.expect_value(t,len(report.cameras),1)
 
     // Importing again writes the same file with the same ids.
-    again,again_error:=level_import(f.map_path,{root=f.mirai},engine_content="-")
+    again,again_error:=level_import(f.map_path,fixture.into(f.mirai,imports),engine_content="-")
     if !testing.expectf(t,again_error.code==.None,"%s",again_error.message) {return}
     defer level_report_destroy(&again)
     testing.expect_value(t,again.scene,report.scene)
@@ -630,7 +635,9 @@ a_dome_that_encloses_the_level_is_its_sky_and_is_not_drawn :: proc(t:^testing.T)
         _=os.write_entire_file(f.map_path,fixture.level_bytes(&l))
 
         // Textures as they are, so the values of a shaded image can be read.
-        report,error:=level_import(f.map_path,{root=f.mirai,textures=.Uncompressed},engine_content="-")
+        imports:=fixture.store_open(f.mirai)
+        defer fixture.store_close(imports)
+        report,error:=level_import(f.map_path,fixture.into(f.mirai,imports,{textures=.Uncompressed}),engine_content="-")
         if !testing.expectf(t,error.code==.None,"case %d: %v: %s",n,error.code,error.message) {return}
         defer level_report_destroy(&report)
         types:asset.Types;asset.types_init(&types);defer asset.types_destroy(&types)
@@ -661,7 +668,7 @@ a_dome_that_encloses_the_level_is_its_sky_and_is_not_drawn :: proc(t:^testing.T)
         // The background as the level draws the dome; the image the sky light
         // lights by, the same above the horizon and black under it, as its
         // lower hemisphere is.
-        background:=sky_texture(&report,&types,sky.background_image)
+        background:=sky_texture(&report,imports,&types,sky.background_image)
         defer asset.asset_close(&background.file)
         if !testing.expectf(t,background.ok,"case %d: the background is a .tex of the import",n) {continue}
         view:=background.view
@@ -677,7 +684,7 @@ a_dome_that_encloses_the_level_is_its_sky_and_is_not_drawn :: proc(t:^testing.T)
             testing.expectf(t,abs(abs(real(q)*real(quarter)+imag(q)*imag(quarter)+jmag(q)*jmag(quarter)+kmag(q)*kmag(quarter))-1)<1e-4,"case %d: the Sky turns as the cube: %v",n,place.rotation)
             testing.expectf(t,sky.image!=sky.background_image && width>8,"case %d: the cube lights; the dome shows shaded: %dx%d",n,width,height)
         } else if c.lit {
-            lighting:=sky_texture(&report,&types,sky.image)
+            lighting:=sky_texture(&report,imports,&types,sky.image)
             defer asset.asset_close(&lighting.file)
             if !testing.expectf(t,lighting.ok,"case %d: the image it lights by is a .tex of the import",n) {continue}
             lit:=asset.texture_mip(lighting.view,0)
@@ -737,7 +744,9 @@ under_lumen_the_indirect_lighting_intensity_of_a_post_process_scales_no_light ::
     defer folders_remove(f)
     os.make_directory_all(fmt.tprintf("%s/Config",f.unreal))
     _=os.write_entire_file(fmt.tprintf("%s/Config/DefaultEngine.ini",f.unreal),"[/Script/Engine.RendererSettings]\nr.DynamicGlobalIlluminationMethod=1\n")
-    report,error:=level_import(f.map_path,{root=f.mirai},engine_content="-")
+    imports:=fixture.store_open(f.mirai)
+    defer fixture.store_close(imports)
+    report,error:=level_import(f.map_path,fixture.into(f.mirai,imports),engine_content="-")
     if !testing.expectf(t,error.code==.None,"%v: %s",error.code,error.message) {return}
     defer level_report_destroy(&report)
     types:asset.Types;asset.types_init(&types);defer asset.types_destroy(&types)
@@ -758,9 +767,9 @@ under_lumen_the_indirect_lighting_intensity_of_a_post_process_scales_no_light ::
 @(private="file")
 Sky_Texture :: struct {file:asset.Asset,view:asset.Texture_View,ok:bool}
 @(private="file")
-sky_texture :: proc(report:^Level_Report,types:^asset.Types,id:base.Asset_Id) -> (v:Sky_Texture) {
+sky_texture :: proc(report:^Level_Report,s:^store.Store,types:^asset.Types,id:base.Asset_Id) -> (v:Sky_Texture) {
     for a in report.imports.assets {
-        if a.id!=id || a.kind!=asset.KIND_TEXTURE || asset.asset_load(&v.file,a.path,context.temp_allocator)!=.None {continue}
+        if a.id!=id || a.kind!=asset.KIND_TEXTURE || importer.written_open(s,a,&v.file,context.temp_allocator)!=.None {continue}
         error:asset.Error
         v.view,error=asset.texture_view(&v.file,types)
         v.ok=error==.None
@@ -798,8 +807,10 @@ fog_translate :: proc(c:^Context,actors:[]int) -> int {
         marker:=render.Material_Values{color={f32(density),0,0,1}}
         if !component_set(c,e,"Material_Values",&marker) {return 0}
         id,path,info:=asset_place(c,asset.KIND_TEXTURE,c.d.actors[a].label,0,".tex")
-        _=info
-        if !asset_write(c,id,asset.KIND_TEXTURE,c.d.actors[a].label,path,{1,2,3}) {return 0}
+        pixel:=[4]u8{255,0,0,255}
+        mips:=[1][]u8{pixel[:]}
+        if asset.texture_save(path,c.types,{id=id,width=1,height=1,format=.RGBA8,mips=mips[:],source=&info})!=.None {return 0}
+        if importer.output_written(&c.outputs,id,c.d.actors[a].label).code!=.None {return 0}
     }
     return len(actors)
 }
@@ -809,7 +820,9 @@ a_translator_of_a_plugin_takes_the_actors_of_its_class_and_places_its_assets :: 
     f:=folders_make("translator")
     defer folders_remove(f)
     translators:=[]Translator{{classes={0="ExponentialHeightFog"},translate=fog_translate}}
-    report,error:=level_import(f.map_path,{root=f.mirai},translators,"-")
+    imports:=fixture.store_open(f.mirai)
+    defer fixture.store_close(imports)
+    report,error:=level_import(f.map_path,fixture.into(f.mirai,imports),translators,"-")
     if !testing.expectf(t,error.code==.None,"%s",error.message) {return}
     defer level_report_destroy(&report)
     testing.expect(t,!has_warning(&report,"ExponentialHeightFog"),"its actors are not warnings")
@@ -825,7 +838,7 @@ a_translator_of_a_plugin_takes_the_actors_of_its_class_and_places_its_assets :: 
     testing.expect(t,found && marked && close(marker.color.r,0.05))
     // Without the plugin of a class, among those of others, its actors are a warning that names it.
     others:=[]Translator{{classes={0="Emitter"},translate=fog_translate}}
-    without,without_error:=level_import(f.map_path,{root=f.mirai},others,"-")
+    without,without_error:=level_import(f.map_path,fixture.into(f.mirai,imports),others,"-")
     if !testing.expectf(t,without_error.code==.None,"%s",without_error.message) {return}
     defer level_report_destroy(&without)
     testing.expectf(t,has_warning(&without,"ExponentialHeightFog","the fog plugin translates it and is not in the project"),"%v",without.imports.warnings)
@@ -850,7 +863,9 @@ a_component_hook_of_a_plugin_adds_to_the_entity_of_each_mesh :: proc(t:^testing.
     f:=folders_make("component")
     defer folders_remove(f)
     translators:=[]Translator{{classes={0="StaticMeshComponent"},component=mesh_mark}}
-    report,error:=level_import(f.map_path,{root=f.mirai},translators,"-")
+    imports:=fixture.store_open(f.mirai)
+    defer fixture.store_close(imports)
+    report,error:=level_import(f.map_path,fixture.into(f.mirai,imports),translators,"-")
     if !testing.expectf(t,error.code==.None,"%s",error.message) {return}
     defer level_report_destroy(&report)
     types:asset.Types;asset.types_init(&types);defer asset.types_destroy(&types)
@@ -968,7 +983,9 @@ a_skeletal_mesh_of_a_level_is_the_skinned_mesh_of_its_import_with_its_overrides 
     _=os.write_entire_file(fmt.tprintf("%s/Content/Animations/MM_Fixture.uasset",f.unreal),fixture.animation_package(fixture.animation_figure(.Data_Model)))
     level:=fmt.tprintf("%s/Content/Maps/Characters.umap",f.unreal)
     _=os.write_entire_file(level,character_map())
-    report,error:=level_import(level,{root=f.mirai},engine_content="-")
+    imports:=fixture.store_open(f.mirai)
+    defer fixture.store_close(imports)
+    report,error:=level_import(level,fixture.into(f.mirai,imports),engine_content="-")
     if !testing.expectf(t,error.code==.None,"%v: %s",error.code,error.message) {return}
     defer level_report_destroy(&report)
     testing.expect_value(t,report.meshes,1)
@@ -1031,11 +1048,15 @@ a_skeletal_mesh_of_a_level_is_the_skinned_mesh_of_its_import_with_its_overrides 
 a_map_imported_on_a_job_system_writes_the_bytes_one_thread_writes :: proc(t:^testing.T) {
     f:=folders_make("jobs")
     defer folders_remove(f)
-    first,error:=level_import(f.map_path,{root=f.mirai},engine_content="-")
+    imports:=fixture.store_open(f.mirai)
+    defer fixture.store_close(imports)
+    first,error:=level_import(f.map_path,fixture.into(f.mirai,imports),engine_content="-")
     if !testing.expectf(t,error.code==.None,"%s",error.message) {return}
+    objects:=make(map[base.Asset_Id]store.Hash,context.temp_allocator)
+    for w in first.imports.assets {objects[w.id]=w.object}
     level_report_destroy(&first)
     written:=make(map[string]string,context.temp_allocator)
-    walker:=os.walker_create(f.mirai)
+    walker:=os.walker_create(fmt.tprintf("%s/assets",f.mirai))
     for info in os.walker_walk(&walker) {
         if info.type!=.Regular {continue}
         data,_:=os.read_entire_file(info.fullpath,context.temp_allocator)
@@ -1047,8 +1068,9 @@ a_map_imported_on_a_job_system_writes_the_bytes_one_thread_writes :: proc(t:^tes
     js:jobs.Job_System
     if !testing.expect(t,jobs.system_init(&js,{threads=3,allocator=runtime.heap_allocator()})) {return}
     defer jobs.system_destroy(&js)
-    again,again_error:=level_import(f.map_path,{root=f.mirai,rebuild=true,worker={system=&js}},engine_content="-")
+    again,again_error:=level_import(f.map_path,fixture.into(f.mirai,imports,{rebuild=true,worker={system=&js}}),engine_content="-")
     if !testing.expectf(t,again_error.code==.None,"%s",again_error.message) {return}
+    for w in again.imports.assets {testing.expectf(t,objects[w.id]==w.object,"%s is the same object",w.name)}
     level_report_destroy(&again)
     for path,bytes in written {
         now,_:=os.read_entire_file(path,context.temp_allocator)
@@ -1081,7 +1103,9 @@ an_atmosphere_of_unreal_is_the_air_of_the_sky :: proc(t:^testing.T) {
     f:=folders_make("atmosphere")
     defer folders_remove(f)
     _=os.write_entire_file(f.map_path,atmosphere_map())
-    report,error:=level_import(f.map_path,{root=f.mirai},engine_content="-")
+    imports:=fixture.store_open(f.mirai)
+    defer fixture.store_close(imports)
+    report,error:=level_import(f.map_path,fixture.into(f.mirai,imports),engine_content="-")
     if !testing.expectf(t,error.code==.None,"%s",error.message) {return}
     defer level_report_destroy(&report)
     types:asset.Types;asset.types_init(&types);defer asset.types_destroy(&types)
@@ -1133,7 +1157,9 @@ a_sky_light_of_a_cubemap_lights_from_its_image_by_its_intensity_turned_as_unreal
     // With an atmosphere too, the sky still lights from the cube Unreal's sky light names.
     for air in ([2]bool{false,true}) {
         _=os.write_entire_file(f.map_path,cubemap_map(air))
-        report,error:=level_import(f.map_path,{root=f.mirai},engine_content="-")
+        imports:=fixture.store_open(f.mirai)
+        defer fixture.store_close(imports)
+        report,error:=level_import(f.map_path,fixture.into(f.mirai,imports),engine_content="-")
         if !testing.expectf(t,error.code==.None,"%s",error.message) {return}
         defer level_report_destroy(&report)
         testing.expect(t,!has_warning(&report,"cubemap"),"the cubemap is translated")
@@ -1145,10 +1171,10 @@ a_sky_light_of_a_cubemap_lights_from_its_image_by_its_intensity_turned_as_unreal
         e,_,found:=entity_named(&scene,"Sky")
         sky,has_sky:=asset.scene_get(&scene,e,"Sky",render.Sky)
         if !testing.expect(t,found && has_sky && sky.image!={},"the Sky draws an image") {return}
-        image:=""
-        for a in report.imports.assets {if a.id==sky.image && a.kind==asset.KIND_TEXTURE {image=a.path}}
         file:asset.Asset
-        if !testing.expect(t,image!="" && asset.asset_load(&file,image,context.temp_allocator)==.None,"the image is a .tex of the import") {return}
+        opened:=false
+        for a in report.imports.assets {if a.id==sky.image && a.kind==asset.KIND_TEXTURE {opened=importer.written_open(imports,a,&file,context.temp_allocator)==.None}}
+        if !testing.expect(t,opened,"the image is a .tex of the import") {return}
         defer asset.asset_close(&file)
         view,view_error:=asset.texture_view(&file,&types)
         testing.expect(t,view_error==.None && view.info.width==2*view.info.height && view.info.layers==1 && .Cube not_in view.info.flags,"a longitude-latitude image of the whole sky")
@@ -1190,7 +1216,9 @@ the_basic_shapes_and_materials_of_an_unmounted_engine_are_primitives_with_the_gr
     defer folders_remove(f)
     path:=fmt.tprintf("%s/Content/Maps/Shapes.umap",f.unreal)
     _=os.write_entire_file(path,engine_shapes_map())
-    report,error:=level_import(path,{root=f.mirai},engine_content="-")
+    imports:=fixture.store_open(f.mirai)
+    defer fixture.store_close(imports)
+    report,error:=level_import(path,fixture.into(f.mirai,imports),engine_content="-")
     if !testing.expectf(t,error.code==.None,"%v: %s",error.code,error.message) {return}
     defer level_report_destroy(&report)
     types:asset.Types;asset.types_init(&types);defer asset.types_destroy(&types)
@@ -1303,7 +1331,9 @@ instanced_components_show_the_materials_the_level_keeps_and_the_variants_of_thei
     path:=fmt.tprintf("%s/Content/Maps/Tiles.umap",f.unreal)
     _=os.write_entire_file(path,instanced_map())
     translators:=[]Translator{{classes={0="InstancedFoliageActor"},translate=instanced_mark,instanced=true}}
-    report,error:=level_import(path,{root=f.mirai},translators,"-")
+    imports:=fixture.store_open(f.mirai)
+    defer fixture.store_close(imports)
+    report,error:=level_import(path,fixture.into(f.mirai,imports),translators,"-")
     if !testing.expectf(t,error.code==.None,"%v: %s",error.code,error.message) {return}
     defer level_report_destroy(&report)
     types:asset.Types;asset.types_init(&types);defer asset.types_destroy(&types)
@@ -1352,7 +1382,8 @@ the_packages_of_a_map_follow_its_soft_references_but_not_its_build_data :: proc(
     fixture.package_object(&l.w,"/Game/Meshes/SM_Wall_10","/Script/Engine","StaticMesh","SM_Wall_10")
     fixture.package_object(&l.w,"/Game/Maps/Map_BuiltData","/Script/Engine","MapBuildDataRegistry","Map_BuiltData")
     _=os.write_entire_file(f.map_path,fixture.level_bytes(&l))
-    content,_:=strings.replace_all(fmt.tprintf("%s/Content",f.unreal),"\\","/",context.temp_allocator)
+    absolute,_:=filepath.abs(fmt.tprintf("%s/Content",f.unreal),context.temp_allocator)
+    content,_:=strings.replace_all(absolute,"\\","/",context.temp_allocator)
     files,error:=level_packages(f.map_path,{{"/Game",content}},context.temp_allocator)
     if !testing.expectf(t,error.code==.None,"%s",error.message) {return}
     soft,numbered,built:=false,false,false
@@ -1385,7 +1416,9 @@ components_of_one_name_and_another_number_are_entities_apart :: proc(t:^testing.
     }
     fixture.actor_set(&l,actor,root.?)
     _=os.write_entire_file(f.map_path,fixture.level_bytes(&l))
-    report,error:=level_import(f.map_path,{root=f.mirai},engine_content="-")
+    imports:=fixture.store_open(f.mirai)
+    defer fixture.store_close(imports)
+    report,error:=level_import(f.map_path,fixture.into(f.mirai,imports),engine_content="-")
     if !testing.expectf(t,error.code==.None,"%s",error.message) {return}
     defer level_report_destroy(&report)
     testing.expect(t,!has_warning(&report,"same entity id"),"no two components give one id")
@@ -1431,7 +1464,9 @@ an_override_that_reads_other_uv_sets_than_the_mesh_holds_is_a_warning :: proc(t:
         fixture.actor_set(&l,actor,fixture.component_add(&l,actor,mesh_class,"StaticMeshComponent0",props))
     }
     _=os.write_entire_file(f.map_path,fixture.level_bytes(&l))
-    report,error:=level_import(f.map_path,{root=f.mirai},engine_content="-")
+    imports:=fixture.store_open(f.mirai)
+    defer fixture.store_close(imports)
+    report,error:=level_import(f.map_path,fixture.into(f.mirai,imports),engine_content="-")
     if !testing.expectf(t,error.code==.None,"%s",error.message) {return}
     defer level_report_destroy(&report)
     testing.expectf(t,has_warning(&report,"/Game/Materials/M_Light.M_Light","UV sets"),"the override that reads set 1 is named: %v",report.imports.warnings)

@@ -397,7 +397,7 @@ foliages_translate :: proc(c:^unreal_scene.Context,actors:[]int) -> int {
     }
     defer delete(bytes)
     detail:=fmt.tprintf("%d types, %d instances, %d cells of grass",len(s.types),instances-result.dropped,grass.cells)
-    if !unreal_scene.asset_write(c,id,foliage.FOLIAGE_KIND,name,path,bytes,detail) {return translated}
+    if !unreal_scene.asset_write(c,id,name,path,bytes,detail) {return translated}
     e,made:=unreal_scene.entity_make(c,0,fmt.tprintf("%s|foliage",name),"Foliage",{origin,1,{1,1,1}})
     if !made {return translated}
     shown:=foliage.Foliage{source=id}

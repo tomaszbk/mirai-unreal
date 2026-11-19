@@ -44,6 +44,7 @@ import "mirai:std/serial"
 // component) in the map, which Unreal keeps while labels change.
 
 LEVEL_VERSION :: 3 // of what the same map gives
+LEVEL_IMPORTER :: "Unreal maps" // what imports a map, as its package records it and the editor names it
 
 TRANSLATOR_CLASSES :: 4
 PROVIDER_TRANSLATORS :: 4
@@ -136,7 +137,7 @@ Camera_Note :: struct {
 Level_Report :: struct {
     imports:importer.Import_Report, // what was written, the meshes and materials included; the warnings
     scene:base.Asset_Id,
-    scene_path:string,
+    scene_path:string, // its document in the project, "" without a folder of the documents
     entities:int,
     classes:[dynamic]Class_Count,
     lights:[dynamic]Light_Note,
@@ -252,11 +253,11 @@ Landscape_Whole :: struct {label:string,mapping:material.Landscape_Mapping}
 // The materials written of a landscape material, and the wholes in its import.
 Layered_Entry :: struct {layered:Layered,wholes:[dynamic]Landscape_Whole,done:bool}
 
-// Imports the map at path, a source in the assets of the project at
-// options.root, as one import that owns everything it writes: the scene, and
+// Imports the map at path, wherever it is, into the project at options.root
+// as one import that owns everything it writes: the scene, and
 // as its parts the meshes, materials, textures and clips of the packages it
 // reads (each under the folder of its package) and what plugins write, in
-// the folder of the import (<map>/ beside it, or what its sidecar says).
+// the folder of its documents.
 // The packages it reads are its inputs (level_packages). translators are those
 // of the plugins of the project; without them, their actors are warnings that
 // say how to import them. reads are the textures the plugins' systems write
@@ -353,7 +354,7 @@ document_import :: proc(d:^level.Document,source:string,size,hash:u64,options:im
     // The packages the level imports find their documents in one scan of the assets.
     registry:asset.Registry
     if options.registry==nil {
-        asset.registry_init(&registry,c.assets,"",scratch,project.imported_path(root,scratch))
+        asset.registry_init(&registry,c.assets,"",scratch)
         asset.registry_scan(&registry)
         c.options.registry=&registry
     }
@@ -361,7 +362,7 @@ document_import :: proc(d:^level.Document,source:string,size,hash:u64,options:im
     c.post=post_defaults_read(mounts)
 
     outputs_zone:=importer.zone_begin(options,"level.outputs")
-    if begin_error:=importer.outputs_begin(&c.outputs,source,asset.safe_name(stem),size,hash,importer.import_version(LEVEL_VERSION),c.options,allocator);begin_error.code!=.None {
+    if begin_error:=importer.outputs_begin(&c.outputs,source,asset.safe_name(stem),size,hash,importer.import_version(LEVEL_VERSION),c.options,LEVEL_IMPORTER,allocator);begin_error.code!=.None {
         return {},fail(caller,begin_error.code,"%s",begin_error.message)
     }
     for file in inputs {importer.output_input(&c.outputs,file)}
@@ -430,7 +431,6 @@ document_import :: proc(d:^level.Document,source:string,size,hash:u64,options:im
     if !c.failed {
         section_use(&c,0)
         info:=importer.output_info(&c.outputs,stem,0)
-        existed:=os.exists(scene_path)
         os.make_directory_all(filepath.dir(scene_path))
         if asset.import_put(&scene.doc,&types,&info)!=.None {
             c.failed,c.error=true,{.Write,fmt.tprintf("the scene of %s could not be built",source)}
@@ -438,7 +438,7 @@ document_import :: proc(d:^level.Document,source:string,size,hash:u64,options:im
             c.failed,c.error=true,{.Write,fmt.tprintf("%s could not be written: %v",scene_path,save_error)}
         } else {
             report.entities+=asset.scene_entity_count(scene)
-            importer.output_written(&c.outputs,scene_id,asset.KIND_SCENE,stem,scene_path,existed,fmt.tprintf("%d entities",asset.scene_entity_count(scene)))
+            importer.output_written(&c.outputs,scene_id,stem,fmt.tprintf("%d entities",asset.scene_entity_count(scene)))
         }
     }
     base.profile_end(scene_zone)
@@ -450,12 +450,19 @@ document_import :: proc(d:^level.Document,source:string,size,hash:u64,options:im
     }
     end_zone:=importer.zone_begin(options,"level.end")
     notes_warn(&c)
-    report.imports=importer.outputs_end(&c.outputs,false)
+    end_error:importer.Error
+    report.imports,end_error=importer.outputs_end(&c.outputs,false,caller)
+    if end_error.code!=.None {
+        level_report_destroy(&report)
+        return {},end_error
+    }
     warnings_unique(&report.imports)
     base.profile_end(end_zone)
 
     report.scene=scene_id
-    report.scene_path=strings.clone(scene_path,allocator)
+    for written in report.imports.assets {
+        if written.id==scene_id {report.scene_path=strings.clone(written.path,allocator)}
+    }
     return report,{}
 }
 
@@ -812,7 +819,6 @@ sections_finish :: proc(c:^Context) {
         section.id,section.path=ids[i],paths[i]
         section.scene.doc.id=section.id
         info:=importer.output_info(&c.outputs,section.name,0)
-        existed:=os.exists(section.path)
         os.make_directory_all(filepath.dir(section.path))
         if asset.import_put(&section.scene.doc,c.types,&info)!=.None {fail_write(c,"the import of the section %s",section.name);return}
         if error:=asset.scene_save(&section.scene,section.path);error!=.None {
@@ -821,7 +827,7 @@ sections_finish :: proc(c:^Context) {
         }
         entities:=asset.scene_entity_count(&section.scene)
         c.report.entities+=entities
-        importer.output_written(&c.outputs,section.id,asset.KIND_SCENE,section.name,section.path,existed,fmt.tprintf("%d entities",entities))
+        importer.output_written(&c.outputs,section.id,section.name,fmt.tprintf("%d entities",entities))
         section_use(c,0)
         e,made:=entity_make(c,0,fmt.tprintf("section|%s",section.name),section.name,{section.origin,1,{1,1,1}})
         if !made {return}
@@ -1010,14 +1016,16 @@ asset_place :: proc(c:^Context,kind:asset.Fourcc,name:string,index:int,extension
 }
 
 // Writes an asset asset_place placed; the report lists it.
-asset_write :: proc(c:^Context,id:base.Asset_Id,kind:asset.Fourcc,name,path:string,bytes:[]u8,detail:="") -> bool {
-    existed:=os.exists(path)
+asset_write :: proc(c:^Context,id:base.Asset_Id,name,path:string,bytes:[]u8,detail:="") -> bool {
     os.make_directory_all(filepath.dir(path))
     if serial.file_write_atomic(path,bytes)!=.None {
         warn(c,"%s could not be written",path)
         return false
     }
-    importer.output_written(&c.outputs,id,kind,name,path,existed,detail)
+    if error:=importer.output_written(&c.outputs,id,name,detail);error.code!=.None {
+        warn(c,"%s",error.message)
+        return false
+    }
     return true
 }
 

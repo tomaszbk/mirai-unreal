@@ -136,7 +136,7 @@ particles_place :: proc(c:^unreal_scene.Context,a,k:int,niagara:bool,e:base.Enti
                 continue
             }
             defer delete(bytes)
-            if !unreal_scene.asset_write(c,id,effect.PARTICLE_KIND,part,file,bytes) {continue}
+            if !unreal_scene.asset_write(c,id,part,file,bytes) {continue}
             written.ids[written.count],written.loops[written.count],written.names[written.count]=id,emitter.loop,emitter.name
             written.grids[written.count],written.bindings[written.count]=emitter.grids,emitter.bindings
             written.count+=1

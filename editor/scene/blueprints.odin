@@ -67,7 +67,7 @@ blueprint_prefab :: proc(c:^Context,class:string,actors:[]int,index:int,children
     if error:=asset.import_put(&prefab.doc,c.types,&info);error!=.None {return fail_write(c,"the prefab of %s (%v recording its import)",name,error)}
     bytes,error:=asset.scene_bytes(&prefab,context.temp_allocator)
     if error!=.None {return fail_write(c,"the prefab of %s (%v encoding it)",name,error)}
-    if !asset_write(c,id,asset.KIND_SCENE,name,path,bytes,fmt.tprintf("%d instances",len(actors))) {return true}
+    if !asset_write(c,id,name,path,bytes,fmt.tprintf("%d instances",len(actors))) {return true}
     sources:=make(map[string]base.Entity_Id,context.temp_allocator)
     prefab_children:=children_of(&prefab)
     for e,place in subtree_places(&prefab,&prefab_children,root) {sources[place]=e}

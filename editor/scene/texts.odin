@@ -104,7 +104,7 @@ text_ui :: proc(c:^Context,text:string,size,width,height:f32,color:ui.Color,alig
     if asset.import_put(&doc,c.types,&info)!=.None {return {},fail_write(c,"the text %s",name)}
     bytes,error:=asset.document_bytes(&doc,context.temp_allocator)
     if error!=.None {return {},fail_write(c,"the text %s",name)}
-    if !asset_write(c,id,asset.KIND_UI,name,path,bytes,fmt.tprintf("%d characters",len(text))) {id={};return}
+    if !asset_write(c,id,name,path,bytes,fmt.tprintf("%d characters",len(text))) {id={};return}
     return id,true
 }
 

@@ -36,6 +36,7 @@ a_post_process_volume_blends_beyond_its_brush_as_in_unreal :: proc(t:^testing.T)
 @(test)
 a_post_process_volume_overrides_unreals_defaults_over_the_volumes_below_it :: proc(t:^testing.T) {
     directory,_:=os.temp_directory(context.temp_allocator)
+    directory=strings.trim_right(directory,"/\\")
     top:=fmt.tprintf("%s/mirai-unreal-post-process-%d",directory,os.get_pid())
     os.remove_all(top)
     defer os.remove_all(top)
@@ -71,7 +72,9 @@ a_post_process_volume_overrides_unreals_defaults_over_the_volumes_below_it :: pr
     fixture.actor_set(&l,room,room_brush,room_props)
     level:=fmt.tprintf("%s/assets/Unreal/Content/Maps/Cave.umap",root)
     _=os.write_entire_file(level,fixture.level_bytes(&l))
-    report,error:=level_import(level,{root=root},{},"-")
+    imports:=fixture.store_open(root)
+    defer fixture.store_close(imports)
+    report,error:=level_import(level,fixture.into(root,imports),{},"-")
     if !testing.expectf(t,error.code==.None,"%s",error.message) {return}
     defer level_report_destroy(&report)
     named,unmatched:=false,false
@@ -125,6 +128,7 @@ a_post_process_volume_overrides_unreals_defaults_over_the_volumes_below_it :: pr
 @(test)
 a_level_without_post_process_volumes_has_unreals_default_look :: proc(t:^testing.T) {
     directory,_:=os.temp_directory(context.temp_allocator)
+    directory=strings.trim_right(directory,"/\\")
     top:=fmt.tprintf("%s/mirai-unreal-post-default-%d",directory,os.get_pid())
     os.remove_all(top)
     defer os.remove_all(top)
@@ -139,7 +143,9 @@ a_level_without_post_process_volumes_has_unreals_default_look :: proc(t:^testing
     l:=fixture.level_begin("/Game/Maps/Plain")
     level:=fmt.tprintf("%s/assets/Unreal/Content/Maps/Plain.umap",root)
     _=os.write_entire_file(level,fixture.level_bytes(&l))
-    report,error:=level_import(level,{root=root},{},"-")
+    imports:=fixture.store_open(root)
+    defer fixture.store_close(imports)
+    report,error:=level_import(level,fixture.into(root,imports),{},"-")
     if !testing.expectf(t,error.code==.None,"%s",error.message) {return}
     defer level_report_destroy(&report)
     types:asset.Types;asset.types_init(&types);defer asset.types_destroy(&types)
@@ -174,6 +180,7 @@ the_post_process_of_a_level_without_its_project_takes_the_defaults_of_a_new_unre
         {project=true,white=1,warned="defaults of the Unreal project of the level"},
     }
     directory,_:=os.temp_directory(context.temp_allocator)
+    directory=strings.trim_right(directory,"/\\")
     for test_case,n in cases {
         top:=fmt.tprintf("%s/mirai-unreal-post-project-%d-%d",directory,os.get_pid(),n)
         os.remove_all(top)
@@ -197,7 +204,9 @@ the_post_process_of_a_level_without_its_project_takes_the_defaults_of_a_new_unre
         fixture.actor_set(&l,volume,fixture.component_add(&l,volume,fixture.engine_class(&l.w,"BrushComponent"),"BrushComponent0",fixture.bytes_make()),props)
         level:=fmt.tprintf("%s/assets/Unreal/Content/Maps/Cave.umap",root)
         _=os.write_entire_file(level,fixture.level_bytes(&l))
-        report,error:=level_import(level,{root=root},{},"-")
+        imports:=fixture.store_open(root)
+        defer fixture.store_close(imports)
+        report,error:=level_import(level,fixture.into(root,imports),{},"-")
         if !testing.expectf(t,error.code==.None,"%s",error.message) {return}
         defer level_report_destroy(&report)
         warned:=false

@@ -62,7 +62,7 @@ niagara_vector_field :: proc(w:^Niagara_Writer,di:^Niagara_Di) -> (field:Niagara
         unreal_scene.warn(c,"the vector field %s could not be baked (%v)",field.name,bytes_error)
         return
     }
-    if !unreal_scene.asset_write(c,id,gridfile.GRID_KIND,field.name,path,bytes,fmt.tprintf("%dx%dx%d texels",field.cells.x,field.cells.y,field.cells.z)) {return}
+    if !unreal_scene.asset_write(c,id,field.name,path,bytes,fmt.tprintf("%dx%dx%d texels",field.cells.x,field.cells.y,field.cells.z)) {return}
     field.id=id
     field.name=strings.clone(field.name,context.temp_allocator)
     return field,true

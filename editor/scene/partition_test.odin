@@ -97,6 +97,7 @@ Partition_Folders :: struct {top,mirai,map_path:string}
 @(private="file")
 partition_folders :: proc(name:string) -> (f:Partition_Folders) {
     directory,_:=os.temp_directory(context.temp_allocator)
+    directory=strings.trim_right(directory,"/\\")
     f.top=fmt.tprintf("%s/mirai-unreal-partition-%d-%s",directory,os.get_pid(),name)
     os.remove_all(f.top)
     f.mirai=fmt.tprintf("%s/project",f.top)
@@ -135,7 +136,9 @@ a_map_of_world_partition_is_a_scene_that_references_a_section_for_each_cell :: p
     f:=partition_folders("sections")
     defer os.remove_all(f.top)
     translators:=[]Translator{{classes={0="InstancedFoliageActor"},translate=batches_mark,instanced=true}}
-    report,error:=level_import(f.map_path,{root=f.mirai},translators,"-")
+    imports:=fixture.store_open(f.mirai)
+    defer fixture.store_close(imports)
+    report,error:=level_import(f.map_path,fixture.into(f.mirai,imports),translators,"-")
     if !testing.expectf(t,error.code==.None,"%v: %s",error.code,error.message) {return}
     defer level_report_destroy(&report)
     testing.expect_value(t,report.sections,2)
@@ -174,7 +177,7 @@ a_map_of_world_partition_is_a_scene_that_references_a_section_for_each_cell :: p
     testing.expect(t,far,"the rock 600 m forward is in the section of its cell")
 
     // Again: the same scenes, the same ids.
-    again,again_error:=level_import(f.map_path,{root=f.mirai},translators,"-")
+    again,again_error:=level_import(f.map_path,fixture.into(f.mirai,imports),translators,"-")
     if !testing.expectf(t,again_error.code==.None,"%s",again_error.message) {return}
     defer level_report_destroy(&again)
     second:asset.Scene
@@ -186,7 +189,7 @@ a_map_of_world_partition_is_a_scene_that_references_a_section_for_each_cell :: p
     testing.expect_value(t,again_reference.scene,reference.scene)
 
     // Without the translator, the instances are a warning that says how to import them.
-    alone,alone_error:=level_import(f.map_path,{root=f.mirai},{},"-")
+    alone,alone_error:=level_import(f.map_path,fixture.into(f.mirai,imports),{},"-")
     if !testing.expectf(t,alone_error.code==.None,"%s",alone_error.message) {return}
     defer level_report_destroy(&alone)
     warned:=false

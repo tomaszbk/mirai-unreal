@@ -68,7 +68,9 @@ the_bloom_and_vignette_of_an_unreal_post_process_volume_are_a_lens_volume :: pro
     level:=fmt.tprintf("%s/assets/Unreal/Content/Maps/Cave.umap",root)
     _=os.write_entire_file(level,fixture.level_bytes(&l))
     provider:=lens_unreal_default().provider
-    report,error:=unreal_scene.level_import(level,{root=root},provider.translators[:provider.count],"-")
+    imports:=fixture.store_open(root)
+    defer fixture.store_close(imports)
+    report,error:=unreal_scene.level_import(level,fixture.into(root,imports),provider.translators[:provider.count],"-")
     if !testing.expectf(t,error.code==.None,"%s",error.message) {return}
     defer unreal_scene.level_report_destroy(&report)
     no_equivalent:=false

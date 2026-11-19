@@ -47,7 +47,9 @@ the_navigation_actors_of_an_unreal_level_are_bounds_areas_and_links :: proc(t:^t
     level:=fmt.tprintf("%s/assets/Unreal/Content/Maps/Navigation.umap",root)
     _=os.write_entire_file(level,fixture.level_bytes(&l))
     provider:=navigation_unreal_default().provider
-    report,error:=unreal_scene.level_import(level,{root=root},provider.translators[:provider.count],"-")
+    imports:=fixture.store_open(root)
+    defer fixture.store_close(imports)
+    report,error:=unreal_scene.level_import(level,fixture.into(root,imports),provider.translators[:provider.count],"-")
     if !testing.expectf(t,error.code==.None,"%s",error.message) {return}
     defer unreal_scene.level_report_destroy(&report)
     types:asset.Types;asset.types_init(&types);defer asset.types_destroy(&types)
