@@ -982,23 +982,26 @@ an_offset_that_collapses_the_surface_hides_it :: proc(t:^testing.T) {
 
 // An offset that moves with time is wind when what feeds it is named for
 // the wind, another motion when it is not, and a shape when it does not move;
-// how far it moves each vertex across is measured where the vertex is, by
-// what weighs it there (its color, its place in the mesh before skinning).
+// how far it sways each vertex is measured where the vertex is, by what
+// weighs it there (its color, its place in the mesh before skinning), and
+// what it leans the vertex one way all the time is no swing.
 @(test)
 an_offset_is_wind_another_motion_or_a_shape_with_its_reach_at_each_vertex :: proc(t:^testing.T) {
     Case :: struct {
         name,parameter,weight:string, // weight: the expression that weighs it per vertex
         timed,connected:bool,
+        lean:f32, // the gust is the sine plus it: the vertex leans one way all the time
         kind:Offset_Kind,
         weights:bit_set[Offset_Weight],
         reach:f32, // at the top vertex; the one at the pivot does not move
     }
     cases:=[]Case{
-        {"M_Grass","Wind Intensity","VertexColor",true,true,.Wind,{.Vertex_Color},5},
-        {"M_Tree","Wind Sway","PreSkinnedPosition",true,true,.Wind,{},5},
-        {"M_Flag","Flutter","VertexColor",true,true,.Motion,{.Vertex_Color},5},
-        {"M_Bulge","Wind Intensity","VertexColor",false,true,.Shape,{},0},
-        {"M_Still","","",false,false,.None,{},0},
+        {"M_Grass","Wind Intensity","VertexColor",true,true,0,.Wind,{.Vertex_Color},10},
+        {"M_Tree","Wind Sway","PreSkinnedPosition",true,true,0,.Wind,{},10},
+        {"M_Leaning","Wind Intensity","VertexColor",true,true,2,.Wind,{.Vertex_Color},10},
+        {"M_Flag","Flutter","VertexColor",true,true,0,.Motion,{.Vertex_Color},10},
+        {"M_Bulge","Wind Intensity","VertexColor",false,true,0,.Shape,{},0},
+        {"M_Still","","",false,false,0,.None,{},0},
     }
     // White at the top, a metre above the pivot; black at the pivot.
     vertices:=[]Offset_Vertex{{position={0,0,100},color={1,1,1,1}},{color={0,0,0,1}}}
@@ -1017,6 +1020,12 @@ an_offset_is_wind_another_motion_or_a_shape_with_its_reach_at_each_vertex :: pro
                 w=fx.writer(&b.p)
                 fx.input_put(&w,"Input","ExpressionInput",{expression=time})
                 sine:=expression(&b,"Sine","Sine",&w)
+                if c.lean>0 {
+                    w=fx.writer(&b.p)
+                    fx.input_put(&w,"A","ExpressionInput",{expression=sine})
+                    fx.float_put(&w,"ConstB",c.lean)
+                    sine=expression(&b,"Add","Lean",&w)
+                }
                 w=fx.writer(&b.p)
                 fx.input_put(&w,"A","ExpressionInput",{expression=sine})
                 fx.input_put(&w,"B","ExpressionInput",{expression=amount})
@@ -1054,10 +1063,11 @@ an_offset_is_wind_another_motion_or_a_shape_with_its_reach_at_each_vertex :: pro
         testing.expectf(t,o.kind==c.kind,"%s: %v, not %v",c.name,o.kind,c.kind)
         testing.expectf(t,o.weights==c.weights,"%s: weighed by %v, not %v",c.name,o.weights,c.weights)
         testing.expectf(t,o.why=="","%s: measured (%s)",c.name,o.why)
-        // A sine of Unreal turns once a second: in twentieths of a second it reaches its peak.
-        testing.expectf(t,abs(reach[0]-c.reach)<=c.reach*1e-3,"%s: the top moves %v, not %v",c.name,reach[0],c.reach)
+        // A sine of Unreal turns once a second: in twentieths of a second it reaches both peaks.
+        testing.expectf(t,abs(reach[0]-c.reach)<=c.reach*1e-3,"%s: the top sways %v, not %v",c.name,reach[0],c.reach)
         testing.expectf(t,reach[1]==0,"%s: the pivot moves %v",c.name,reach[1])
-        testing.expectf(t,o.direction==[2]f32{},"%s: a sine sways both ways, not %v",c.name,o.direction)
+        direction:=c.lean>0?[2]f32{1,0}:[2]f32{}
+        testing.expectf(t,o.direction==direction,"%s: sways the way %v, not %v",c.name,o.direction,direction)
         frequency:=f32(c.timed?1:0)
         testing.expectf(t,abs(o.frequency-frequency)<0.05,"%s: sways %v times a second, not %v",c.name,o.frequency,frequency)
         if c.connected {

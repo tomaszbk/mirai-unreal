@@ -93,15 +93,17 @@ in the space of an entity at the scene origin.
   and the foliage one, also those baked by PCG and by packed level actors. One type per mesh,
   materials of its slots, cull distance (`InstanceEndCullDistance`), shadows, rays and collision:
   a box of the mesh bounds if the component collides, nothing if not. No generator; instances are
-  manual, where they are.
+  manual, where they are. A `StaticMeshComponent` whose materials sway in the wind is a batch of
+  one instance where it stands, not an entity (`mesh_sways`): Mirai sways foliage alone.
 - **Wind** (`wind.odin`). Unreal sways foliage with the `WorldPositionOffset` of its materials,
   Mirai with the wind of each type where a `Wind` blows. `material.offset_read` tells wind (it
   moves with time and a function or parameter that feeds it is named for the wind) from another
-  motion and from a shape, and measures how far it moves vertices of each section of the mesh
-  across. The type leans by the angle whose rigid bend best matches those reaches in least
-  squares (`sin(lean) = sum(R*h)/sum(h*h)`, `h` the height above the pivot), and its wind is what
-  leans it that far at the peak of its sway in a `Wind` of `volume.WIND_DEFAULT`. Those materials
-  are what says the air moves (Unreal sways foliage by them, with the wind parameters they read):
+  motion and from a shape, and measures how far it sways vertices of each section of the mesh:
+  the length of each one's path along the line it moves along, so what it leans a vertex one way
+  all the time is no sway. The type sways by the rigid bend whose swing best matches those in
+  least squares (`sum(S*h)/sum(h*h)`, `h` the height above the pivot), and its wind is what sways
+  it that far, from its least lean to its peak, in a `Wind` of `volume.WIND_DEFAULT`. Those
+  materials are what says the air moves (Unreal sways foliage by them, with the wind parameters they read):
   the scene of the map gets a `Wind` of that speed, the way most swaying instances are moved and
   the pace they sway at on average; when they say neither way nor pace, no `Wind` is added and
   the import says so. A sway that cannot be measured is Mirai's default wind. Warnings: an offset

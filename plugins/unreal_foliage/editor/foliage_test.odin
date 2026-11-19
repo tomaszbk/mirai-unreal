@@ -206,9 +206,9 @@ unreal_foliage_of_actors_adds_only_its_static_mesh_types :: proc(t:^testing.T) {
     testing.expect(t,cell!=nil && len(cell.manual)==1,"only the instance of the fern")
 }
 
-// A type sways by the lean whose bend best matches, in least squares over
-// the vertices of its mesh, how far its materials sway them across, as a
-// Wind of Mirai's speed leans it at its peak. A material that moves its
+// A type sways, in a Wind of Mirai's speed, from its least lean to its peak
+// by the swing whose bend best matches, in least squares over the vertices
+// of its mesh, how far its materials sway them. A material that moves its
 // vertices by other than wind sways nothing and is a warning; one whose
 // sway cannot be measured sways by Mirai's default wind.
 @(test)
@@ -217,7 +217,7 @@ a_type_sways_as_its_materials_sway_its_mesh :: proc(t:^testing.T) {
     Case :: struct {
         name:string,
         parts:[]Part,
-        sine:f64,       // of the lean the rule gives; -1: Mirai's default wind
+        sine:f64,       // of the swing of the lean the rule gives; -1: Mirai's default wind
         warned:[]string, // what the warnings of its materials say
     }
     gusts:=material.Offset{kind=.Wind,names={"MF_FoliageWind_Sway","Wind Intensity"},weights={.Vertex_Color},textured=true}
@@ -240,7 +240,7 @@ a_type_sways_as_its_materials_sway_its_mesh :: proc(t:^testing.T) {
             append(&warnings,..offset_warnings(c.name,"/Game/M/M_Part",part.offset))
         }
         wind:=sway_wind(s)
-        expected:=c.sine<0?f64(foliage.FOLIAGE_TYPE_DEFAULT.wind):math.asin(c.sine)/per_wind
+        expected:=c.sine<0?f64(foliage.FOLIAGE_TYPE_DEFAULT.wind):math.asin(c.sine/(1-SWAY_LEAST))/per_wind
         testing.expectf(t,abs(f64(wind)-expected)<=1e-5*max(expected,1),"%s: wind %v, not %v",c.name,wind,expected)
         testing.expectf(t,(len(c.warned)==0)==(len(warnings)==0),"%s: warnings %v",c.name,warnings[:])
         for text in c.warned {

@@ -146,6 +146,30 @@ slot_material_paths :: proc(c:^Context,k:int) -> []string {
     return paths
 }
 
+// Whether static mesh component k sways in the wind by the material of one
+// of its slots (material.offset_read), for a translator that takes the
+// instanced components: Mirai sways foliage alone, so that translator takes
+// it as a batch of one instance where it stands.
+@(private)
+mesh_sways :: proc(c:^Context,k:int) -> bool {
+    if !c.takes_instanced {return false}
+    for path in slot_material_paths(c,k) {
+        if path=="" {continue}
+        sways,known:=c.sways[path]
+        if !known {
+            library_lock(c)
+            if m,found:=material.object_find(c.lib,path);found {
+                o,error:=material.offset_read(c.lib,m,nil,{},nil,allocator=context.temp_allocator)
+                sways=error.code==.None && o.kind==.Wind
+            }
+            library_unlock(c)
+            c.sways[strings.clone(path,context.temp_allocator)]=sways
+        }
+        if sways {return true}
+    }
+    return false
+}
+
 // The object path of the material of each slot of the mesh at path, by
 // Unreal's index; "" for a slot without one.
 @(private)

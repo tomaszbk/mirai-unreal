@@ -17,15 +17,17 @@ import foliage "plugins:foliage/runtime"
 // sway in the wind (material.offset_read) gets the wind that leans it as
 // they do:
 //
-// - Each material measures, at vertices of its sections of the mesh, the
-//   most it moves each across, R, at the height h of the vertex above the
-//   pivot. Mirai bends the whole plant about where it stands, so the lean θ
-//   is the one whose bend best matches those reaches in least squares:
-//   sin θ = ΣR·h/Σh² over the vertices of the mesh, those that do not sway
-//   counting as still.
-// - wind leans a plant by θ at the peak of its sway in a Wind of the speed
-//   Mirai gives one (volume.WIND_DEFAULT): θ over that speed and over the
-//   lean per m/s of a wind of 1 (foliage.sway_amount).
+// - Each material measures, at vertices of its sections of the mesh, how far
+//   it sways each, S, at the height h of the vertex above the pivot: what the
+//   wind moves, not what it leans the vertex one way all the time. Mirai
+//   bends the whole plant about where it stands, so its swing is the one
+//   whose bend best matches those in least squares: ΣS·h/Σh² of its height
+//   over the vertices of the mesh, those that do not sway counting as still.
+// - A plant of Mirai sways between SWAY_LEAST of its lean at the peak and
+//   all of it (foliage_sway.slang), so the lean θ at the peak is the one whose
+//   sine is that swing over 1-SWAY_LEAST; wind leans a plant by θ in a Wind
+//   of the speed Mirai gives one (volume.WIND_DEFAULT): θ over that speed and
+//   over the lean per m/s of a wind of 1 (foliage.sway_amount).
 // - A material whose sway cannot be measured gives Mirai's default wind;
 //   one that moves its vertices by something else than wind, or not with
 //   time, sways nothing and is a warning.
@@ -40,10 +42,11 @@ import foliage "plugins:foliage/runtime"
 // no Wind is added and the import says so.
 
 WIND_VERTICES :: 32 // of each material of a mesh, at most, its reach is measured at
+SWAY_LEAST :: 0.2   // of its lean at the peak, the least a plant of Mirai leans as it sways
 
 // What the materials of a mesh do to it, summed over its vertices measured.
 Sway :: struct {
-    moved,tall:f64,   // Σ R·h and Σ h², cm²
+    moved,tall:f64,   // Σ S·h and Σ h², cm²
     direction:[2]f64, // Unreal's X and Y: the way of each material that sways, by its reach
     frequency:[2]f64, // Σ cycles per second of each material that sways and is measured to, by its reach, and Σ of those reaches
     winds:int,        // materials that sway in the wind
@@ -79,7 +82,7 @@ sway_wind :: proc(s:Sway) -> f32 {
     if s.winds==0 {return 0}
     if s.winds==s.unmeasured {return foliage.FOLIAGE_TYPE_DEFAULT.wind}
     if !(s.tall>0) || !(s.moved>0) {return 0}
-    lean:=math.asin(min(s.moved/s.tall,1))
+    lean:=math.asin(min(s.moved/s.tall/(1-SWAY_LEAST),1))
     unit:=foliage.FOLIAGE_TYPE_DEFAULT
     unit.wind=1
     return f32(lean)/(foliage.sway_amount(unit)*volume.WIND_DEFAULT.speed)

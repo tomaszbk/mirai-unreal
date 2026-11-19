@@ -57,7 +57,8 @@ PROVIDER_READS :: 4
 //   and warns of the others. root takes them all into the scene of the map,
 //   whatever their cell: what it writes streams by itself (a terrain by its
 //   pages). instanced also calls it with the instanced static mesh
-//   components the actors of the scene show (c.instanced), after them;
+//   components the actors of the scene show and their static mesh components
+//   that sway in the wind (c.instanced), after them;
 //   map_scene also calls it for the scene of the map without actors of its
 //   own there, for what it makes of those of others (the grass of a
 //   landscape);
@@ -78,7 +79,8 @@ Translator :: struct {
 // that takes them, never an entity each.
 INSTANCED_COMPONENTS :: []string{"InstancedStaticMeshComponent","HierarchicalInstancedStaticMeshComponent","FoliageInstancedStaticMeshComponent"}
 
-// An instanced component the actors of a scene show: component k of actor a.
+// An instanced component the actors of a scene show, or a static mesh
+// component of theirs that sways in the wind: component k of actor a.
 Instanced :: struct {actor,component:int}
 
 // A scene the map writes: that of the map, or the section of a cell of its
@@ -208,6 +210,7 @@ Context :: struct {
     materials:map[string]base.Asset_Id, // by object path; a variant (instanced_material) by its name
     slot_paths:map[string][]string,     // the materials of the slots of each mesh, by Unreal's index
     custom_reads:map[string]bool,       // whether a material reads PerInstanceCustomData, by object path
+    sways:map[string]bool,              // whether a material sways in the wind (mesh_sways), by object path
     uv_sets:map[string]material.Unreal_UV_Sets, // the Unreal uv sets a material reads, by object path
     prefixes:map[string]string,         // the folder of the parts of each package the level writes, by file ("" for the map)
     variant_uses:[dynamic]Variant_Use,  // the slots whose material is written at the end of the level
@@ -330,7 +333,7 @@ document_import :: proc(d:^level.Document,source:string,size,hash:u64,options:im
     c:=Context{d=d,lib=&materials,types=&types,options=options,report=&report}
     c.meshes.allocator,c.materials.allocator,c.layers.allocator,c.left.allocator=scratch,scratch,scratch,scratch
     c.clips.allocator,c.bodies.allocator,c.slot_paths.allocator,c.custom_reads.allocator=scratch,scratch,scratch,scratch
-    c.prefixes.allocator,c.uv_sets.allocator=scratch,scratch
+    c.prefixes.allocator,c.uv_sets.allocator,c.sways.allocator=scratch,scratch,scratch
     c.variant_uses.allocator,c.texts.allocator,c.held.allocator=scratch,scratch,scratch
     c.translators=translators
     c.texture_reads.allocator=scratch
@@ -677,7 +680,13 @@ actor_translate :: proc(c:^Context,a:int,native:level.Class) -> (translated,sile
         k:=actor.first_component+i
         ok:=false
         switch component.class.name {
-        case "StaticMeshComponent":ok=mesh_add(c,a,k,false)
+        case "StaticMeshComponent":
+            if mesh_sways(c,k) && instanced_shown(c,a,k) {
+                append(&c.instanced,Instanced{a,k})
+                ok=true
+            } else {
+                ok=mesh_add(c,a,k,false)
+            }
         case "SplineMeshComponent":
             // Its mesh drawn straight would be another shape: the bridge that bends it adds its curve.
             if !component_claimed(c,component.class.name) {

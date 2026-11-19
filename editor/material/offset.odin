@@ -17,9 +17,11 @@ import "core:strings"
 // CPU at the vertex, with its uv and its color, its textures as the caller
 // reads them (white, their brightest, where it does not) and its object
 // standing on its pivot, over
-// OFFSET_SECONDS and a field of places; what it gives is the most it moves
-// the vertex across, and how many times a second the highest vertex given
-// sways back and forth at the first place.
+// OFFSET_SECONDS and a field of places; what it gives is how far it sways
+// the vertex, the length of its path along the line it sways along (the most
+// of the places), and how many times a second the highest vertex given sways
+// back and forth at the first place. A swing is what the wind moves: what an
+// offset leans a vertex one way all the time is not in it.
 
 Offset_Kind :: enum u8 {
     None,   // the surface stays where it is
@@ -63,9 +65,8 @@ OFFSET_FIELD :: f32(1e4) // centimetres a side of that field
 
 // What the offset of material does to a mesh with the vertices given, its
 // pivot at the origin of its space and its box from bounds[0] to bounds[1]:
-// reach, as long as vertices, takes the centimetres it moves each across at
-// most, all -1 where that cannot be measured (why) and 0 for an offset that
-// is not motion. names and why live in allocator.
+// reach, as long as vertices, takes the centimetres it sways each, all -1
+// where that cannot be measured (why) and 0 for an offset that is not motion. names and why live in allocator.
 offset_read :: proc(lib:^Library,material:Object,vertices:[]Offset_Vertex,bounds:[2][3]f32,reach:[]f32,textures:=Offset_Textures{},allocator:=context.allocator) -> (o:Offset,error:Error) {
     if len(reach)<len(vertices) {return {},error_make(.Malformed,"reach holds %d vertices of %d",len(reach),len(vertices))}
     reach:=reach[:len(vertices)]
@@ -164,6 +165,7 @@ offset_reach :: proc(g:^Graph,root:u32,vertices:[]Offset_Vertex,bounds:[2][3]f32
     texel:Texel_Context
     sum:[2]f32
     across:f32
+    paths:[OFFSET_PLACES*OFFSET_PLACES][OFFSET_STEPS][2]f32 // what the vertex moves at each place
     first:[OFFSET_STEPS][2]f32 // what the first vertex moves at the first place
     for vertex,i in vertices {
         for step in 0..<OFFSET_STEPS {
@@ -203,12 +205,13 @@ offset_reach :: proc(g:^Graph,root:u32,vertices:[]Offset_Vertex,bounds:[2][3]f32
                 moved:=values[root].xy
                 length:=math.sqrt(moved.x*moved.x+moved.y*moved.y)
                 if !(length<1e30) {return {},0,"it moves the surface by what is not a number"}
-                if i==0 && k==0 {first[step]=moved}
-                reach[i]=max(reach[i],length)
+                paths[k][step]=moved
                 sum+=moved
                 across+=length
             }
         }
+        for &path in paths {reach[i]=max(reach[i],offset_swing(path[:]))}
+        if i==0 {first=paths[0]}
     }
     mean:=math.sqrt(sum.x*sum.x+sum.y*sum.y)
     // Mostly one way: half of how far it moves on average is along its mean.
@@ -217,21 +220,46 @@ offset_reach :: proc(g:^Graph,root:u32,vertices:[]Offset_Vertex,bounds:[2][3]f32
     return
 }
 
-// Cycles per second of what moves along a path over OFFSET_SECONDS: half
-// the times it crosses its middle along the axis it moves most along.
+// The middle of a path and the unit line through it that it moves most
+// along; false for one that stands still.
 @(private)
-offset_frequency :: proc(path:[][2]f32) -> f32 {
-    if len(path)<2 {return 0}
-    middle:[2]f32
+offset_axis :: proc(path:[][2]f32) -> (middle,axis:[2]f32,moves:bool) {
+    if len(path)<2 {return}
     for p in path {middle+=p}
     middle/=f32(len(path))
-    spread:[2]f32
-    for p in path {spread+=(p-middle)*(p-middle)}
-    axis:=spread.x>=spread.y?0:1
-    if !(spread[axis]>0) {return 0}
+    xx,yy,xy:f32
+    for p in path {
+        d:=p-middle
+        xx+=d.x*d.x;yy+=d.y*d.y;xy+=d.x*d.y
+    }
+    if !(xx+yy>0) {return}
+    angle:=0.5*math.atan2(2*xy,xx-yy)
+    return middle,{math.cos(angle),math.sin(angle)},true
+}
+
+// How far what moves along a path goes along the line it moves most along.
+@(private)
+offset_swing :: proc(path:[][2]f32) -> f32 {
+    middle,axis,moves:=offset_axis(path)
+    if !moves {return 0}
+    low,high:=f32(0),f32(0)
+    for p in path {
+        along:=(p.x-middle.x)*axis.x+(p.y-middle.y)*axis.y
+        low,high=min(low,along),max(high,along)
+    }
+    return high-low
+}
+
+// Cycles per second of what moves along a path over OFFSET_SECONDS: half
+// the times it crosses its middle along the line it moves most along.
+@(private)
+offset_frequency :: proc(path:[][2]f32) -> f32 {
+    middle,axis,moves:=offset_axis(path)
+    if !moves {return 0}
+    side :: proc(p,middle,axis:[2]f32) -> bool {return (p.x-middle.x)*axis.x+(p.y-middle.y)*axis.y<0}
     crossings:=0
     for k in 1..<len(path) {
-        if (path[k-1][axis]-middle[axis]<0)!=(path[k][axis]-middle[axis]<0) {crossings+=1}
+        if side(path[k-1],middle,axis)!=side(path[k],middle,axis) {crossings+=1}
     }
     return f32(crossings)*0.5/OFFSET_SECONDS
 }

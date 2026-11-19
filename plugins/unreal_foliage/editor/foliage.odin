@@ -18,8 +18,10 @@ import foliage "plugins:foliage/runtime"
 // level is written to: a type for each foliage type of its
 // InstancedFoliageActors, and for each mesh, materials and settings of the
 // instanced static mesh components its actors show (those PCG and packed
-// level actors bake too); each instance a manual one of the cell it falls
-// in, in the space of an entity at the origin of the scene. Nothing is
+// level actors bake too) and of their static mesh components that sway in
+// the wind, which Mirai sways as foliage alone; each instance a manual one
+// of the cell it falls in, in the space of an entity at the origin of the
+// scene. Nothing is
 // generated: Unreal's instances are the ones its artist or its graphs placed.
 //
 // - A Mirai instance has one scale across: one with different X and Y
@@ -406,7 +408,10 @@ previous_keep :: proc(c:^unreal_scene.Context,s:^foliage.Source,name,path:string
     }
 }
 
-// The batches of the instanced components of the scene (c.instanced): each
+IDENTITY :: [4][4]f64{{1,0,0,0},{0,1,0,0},{0,0,1,0},{0,0,0,1}}
+
+// The batches of the instanced components of the scene and of its static
+// mesh components that sway in the wind (c.instanced): each
 // its mesh and the materials its slots override, the cull distances of its
 // instances, its shadows and rays, and the box of its mesh when it collides;
 // its instances where they are in the world. A material the level keeps
@@ -435,7 +440,11 @@ instanced_batches :: proc(c:^unreal_scene.Context,winds:^Winds) -> []Instanced_B
         if missing {held+=1}
         instances_zone:=unreal_scene.zone_begin(c,"foliage.instances")
         world,world_error:=level.component_world(d,k)
-        instances,instances_error:=level.component_instances(d,k,context.temp_allocator)
+        // A static mesh component that sways is one instance where it stands.
+        single:=[1][4][4]f64{IDENTITY}
+        instances:=level.Instances{matrices=single[:]}
+        instances_error:unreal.Error
+        if d.components[k].class.name!="StaticMeshComponent" {instances,instances_error=level.component_instances(d,k,context.temp_allocator)}
         unreal_scene.zone_end(instances_zone)
         if world_error.code!=.None || instances_error.code!=.None {unread+=1;continue}
         if len(instances.matrices)==0 {continue}
