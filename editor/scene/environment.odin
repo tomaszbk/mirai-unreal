@@ -169,7 +169,7 @@ Sky_Dome :: struct {
     name:string,      // its actor and component
     texture:string,   // the object path of the texture its material shows; "": its material is shaded per direction
     material:string,  // the object path of that material
-    actor,component:int, // of the level
+    component:int,    // of the level
     luminance:[3]f32, // what its material multiplies the texture by, nits; 1 for a material shaded per direction
     turn:f32,         // of the Sky about up for its image to lie as on the dome, radians
     found:bool,
@@ -206,7 +206,7 @@ dome_add :: proc(c:^Context,a,k:int) {
     case reason!="":warn(c,"%s encloses the level as its sky and is not drawn: %s, so the Sky of the scene is Mirai's sky",name,reason)
     case c.dome.found:warn(c,"%s encloses the level as its sky and is not drawn: the image of the Sky is that of %s",name,c.dome.name)
     case:
-        dome.name,dome.actor=name,a
+        dome.name=name
         c.dome=dome
     }
 }
@@ -330,7 +330,7 @@ dome_sky_write :: proc(c:^Context,dome:^Sky_Dome) -> (id:base.Asset_Id) {
     }
     texels:=dome_shade(&geometry,world,&s,width)
     source:=textures.Source{texels=mem.slice_to_bytes(texels),width=width,height=width/2,layers=1,format=.RGBA32F}
-    owner:=c.d.actors[dome.actor].label
+    owner:=c.d.actors[c.d.components[dome.component].actor].label
     write_error:importer.Error
     id,write_error=material_write.sky_made_write(fmt.tprintf("%s_Sky",unreal.asset_name(owner)),source,&c.outputs,"",context.temp_allocator)
     if write_error.code!=.None {
