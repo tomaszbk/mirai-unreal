@@ -31,7 +31,7 @@ unreal_format_default :: proc() -> Unreal_Format {
 Unreal_Maps :: struct {provider:editor.Import_Source_Provider}
 
 unreal_maps_default :: proc() -> Unreal_Maps {
-    return {provider={source={name=unreal_scene.LEVEL_IMPORTER,extensions={0=".umap"},claims=map_claims,prepare=map_prepare,run=map_run,release=map_release}}}
+    return {provider={source={name=unreal_scene.LEVEL_IMPORTER,version=unreal_scene.LEVEL_VERSION,extensions={0=".umap"},claims=map_claims,prepare=map_prepare,run=map_run,release=map_release}}}
 }
 
 // What an import of a map is given of the session.
