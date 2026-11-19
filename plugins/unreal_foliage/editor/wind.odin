@@ -4,6 +4,7 @@ import "core:fmt"
 import "core:math"
 import "core:strings"
 import "project:plugins/unreal/editor/material"
+import material_write "project:plugins/unreal/editor/material/write"
 import umesh "project:plugins/unreal/editor/mesh"
 import unreal_scene "project:plugins/unreal/editor/scene"
 import volume "mirai:engine/volume"
@@ -176,7 +177,7 @@ mesh_wind :: proc(c:^unreal_scene.Context,w:^Winds,owner,mesh:string,slots:[]str
         m,known:=material.object_find(c.lib,path)
         if !known {continue}
         reach:=make([]f32,len(vertices),context.temp_allocator)
-        o,offset_error:=material.offset_read(c.lib,m,vertices,{geometry.bounds_min,geometry.bounds_max},reach,context.temp_allocator)
+        o,offset_error:=material.offset_read(c.lib,m,vertices,{geometry.bounds_min,geometry.bounds_max},reach,{texture_pixels,c},context.temp_allocator)
         if offset_error.code!=.None {continue}
         sway_add(&s,o,vertices,reach)
         w.swaying||=o.kind==.Wind
@@ -185,6 +186,16 @@ mesh_wind :: proc(c:^unreal_scene.Context,w:^Winds,owner,mesh:string,slots:[]str
         for text in offset_warnings(owner,path,o) {unreal_scene.warn(c,"%s",text)}
     }
     return {sway_wind(s),sway_direction(s),sway_frequency(s)}
+}
+
+// The texels of a texture an offset samples, from the textures of the level
+// (with its library taken).
+@(private)
+texture_pixels :: proc(data:rawptr,path:string) -> ^material.Pixels {
+    c:=(^unreal_scene.Context)(data)
+    decoder,ready:=unreal_scene.decoder(c)
+    if !ready {return nil}
+    return material_write.source_pixels(&c.images,path,decoder)
 }
 
 // Up to WIND_VERTICES vertices of the sections of the mesh that show the

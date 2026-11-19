@@ -1044,7 +1044,7 @@ an_offset_is_wind_another_motion_or_a_shape_with_its_reach_at_each_vertex :: pro
         defer library_destroy(&lib)
         material,_:=object_find(&lib,name)
         reach:[2]f32
-        o,error:=offset_read(&lib,material,vertices,bounds,reach[:],context.temp_allocator)
+        o,error:=offset_read(&lib,material,vertices,bounds,reach[:],allocator=context.temp_allocator)
         if !testing.expect_value(t,error.code,Error_Code.None) {continue}
         testing.expectf(t,o.kind==c.kind,"%s: %v, not %v",c.name,o.kind,c.kind)
         testing.expectf(t,o.weights==c.weights,"%s: weighed by %v, not %v",c.name,o.weights,c.weights)

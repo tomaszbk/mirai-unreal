@@ -14,8 +14,9 @@ import "core:strings"
 // that feeds it says wind, and a shape when it does not move.
 //
 // How far it moves each vertex of a mesh is measured: the graph runs on the
-// CPU at the vertex, with its uv and its color, its textures read as white
-// (their brightest) and its object standing on its pivot, over
+// CPU at the vertex, with its uv and its color, its textures as the caller
+// reads them (white, their brightest, where it does not) and its object
+// standing on its pivot, over
 // OFFSET_SECONDS and a field of places; what it gives is the most it moves
 // the vertex across, and how many times a second the highest vertex given
 // sways back and forth at the first place.
@@ -48,6 +49,13 @@ Offset_Vertex :: struct {
     color:[4]f32,
 }
 
+// The texels of the texture at an object path, as Unreal's sampler reads
+// them, for an offset that samples it; nil where they cannot be read.
+Offset_Textures :: struct {
+    read:proc(data:rawptr,path:string) -> ^Pixels,
+    data:rawptr,
+}
+
 OFFSET_SECONDS :: 20     // of time over which the reach is measured
 OFFSET_STEPS :: 400      // instants of those seconds: what sways up to ten times a second shows
 OFFSET_PLACES :: 2       // places along each side of the field the reach is measured over
@@ -58,7 +66,7 @@ OFFSET_FIELD :: f32(1e4) // centimetres a side of that field
 // reach, as long as vertices, takes the centimetres it moves each across at
 // most, all -1 where that cannot be measured (why) and 0 for an offset that
 // is not motion. names and why live in allocator.
-offset_read :: proc(lib:^Library,material:Object,vertices:[]Offset_Vertex,bounds:[2][3]f32,reach:[]f32,allocator:=context.allocator) -> (o:Offset,error:Error) {
+offset_read :: proc(lib:^Library,material:Object,vertices:[]Offset_Vertex,bounds:[2][3]f32,reach:[]f32,textures:=Offset_Textures{},allocator:=context.allocator) -> (o:Offset,error:Error) {
     if len(reach)<len(vertices) {return {},error_make(.Malformed,"reach holds %d vertices of %d",len(reach),len(vertices))}
     reach:=reach[:len(vertices)]
     slice.fill(reach,0)
@@ -115,7 +123,7 @@ offset_read :: proc(lib:^Library,material:Object,vertices:[]Offset_Vertex,bounds
     if depends_on(&g,root,{.UV}) {o.weights+={.UV}}
     o.textured=depends_on(&g,root,{.Sample,.Sample_Grad,.Texture_Read})
     o.kind=windy?.Wind:.Motion
-    direction,frequency,why:=offset_reach(&g,root,vertices,bounds,reach)
+    direction,frequency,why:=offset_reach(&g,root,vertices,bounds,reach,textures)
     o.direction,o.frequency=direction,frequency
     if why!="" {
         slice.fill(reach,-1)
@@ -133,7 +141,7 @@ offset_name_is_wind :: proc(name:string) -> bool {
 // way it moves them on the whole and the frequency of the first; why it
 // cannot run on the CPU.
 @(private)
-offset_reach :: proc(g:^Graph,root:u32,vertices:[]Offset_Vertex,bounds:[2][3]f32,reach:[]f32) -> (direction:[2]f32,frequency:f32,why:string) {
+offset_reach :: proc(g:^Graph,root:u32,vertices:[]Offset_Vertex,bounds:[2][3]f32,reach:[]f32,textures:Offset_Textures) -> (direction:[2]f32,frequency:f32,why:string) {
     order:=nodes_under(g,{root})
     for n in order {
         #partial switch g.nodes[n].op {
@@ -146,12 +154,18 @@ offset_reach :: proc(g:^Graph,root:u32,vertices:[]Offset_Vertex,bounds:[2][3]f32
     size:=high-low
     radius:=math.sqrt(size.x*size.x+size.y*size.y+size.z*size.z)*0.5
     values:=make([][4]f32,len(g.nodes),context.temp_allocator)
+    pixels:=make([]^Pixels,len(g.textures),context.temp_allocator)
+    if textures.read!=nil {
+        for n in order {
+            node:=&g.nodes[n]
+            if node.op==.Texture && int(node.index)<len(pixels) {pixels[node.index]=textures.read(textures.data,g.textures[node.index].path)}
+        }
+    }
     texel:Texel_Context
     sum:[2]f32
     across:f32
     first:[OFFSET_STEPS][2]f32 // what the first vertex moves at the first place
     for vertex,i in vertices {
-        texel.uv=vertex.uvs[0]
         for step in 0..<OFFSET_STEPS {
             time:=f32(step)*OFFSET_SECONDS/OFFSET_STEPS
             for k in 0..<OFFSET_PLACES*OFFSET_PLACES {
@@ -174,6 +188,10 @@ offset_reach :: proc(g:^Graph,root:u32,vertices:[]Offset_Vertex,bounds:[2][3]f32
                     case .Vertex_Bitangent:v.y=1
                     case .Two_Sided_Sign:v.x=1
                     case .Per_Instance_Random,.Particle_Random:v.x=0.5
+                    // At the coordinates it computes, which move with time and place.
+                    case .Sample,.Sample_Grad:
+                        index:=g.nodes[node.args[0]].index
+                        v=pixels_read(int(index)<len(pixels)?pixels[index]:nil,values[node.args[1]].xy)
                     case:
                         if node.op in CONTEXT {break}
                         args:[3][4]f32
