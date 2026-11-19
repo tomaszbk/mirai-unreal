@@ -261,7 +261,7 @@ kraken_rejects_other_compressors_and_damaged_headers :: proc(t:^testing.T) {
     testing.expect_value(t,own_decode(&decoder,{0x0c,0x0b,0,0,0},out),Error.Unsupported)
     testing.expect_value(t,own_decode(&decoder,{0x0d,0x06,0,0,0},out),Error.Malformed)
     testing.expect_value(t,own_decode(&decoder,{0x0c},out),Error.Truncated)
-    testing.expect_value(t,own_decode(nil,{0x0c,0x06},out),Error.Malformed)
+    testing.expect_value(t,decode(nil,{0x0c,0x06},out),Error.Malformed)
 }
 
 // Any damage to a stream is decoded or refused, never a crash or a read or
