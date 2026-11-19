@@ -81,3 +81,25 @@ mesh_body :: proc(c:^Context,path:string) -> (body:Mesh_Body,ok:bool) {
     body.shapes=shapes
     return body,true
 }
+
+// How static mesh component k collides: its profile, or that of its mesh
+// where it takes the default, and whether it simulates; body is the
+// collision of its mesh, and collides is false where that cannot be read.
+component_body :: proc(c:^Context,k:int) -> (body:Mesh_Body,collides,simulates:bool) {
+    d:=c.d
+    ref:=d.components[k].ref
+    profile,enabled,simulate:=level.component_collision(d,ref)
+    ok:bool
+    if body,ok=mesh_body(c,level.path_of(d,ref,"StaticMesh"));!ok {return}
+    if use,_:=level.bool_of(d,ref,"bUseDefaultCollision",false);use && body.profile!="" {profile=body.profile}
+    return body,level.profile_collides(profile,enabled),simulate
+}
+
+// Whether a body collides as the convex hulls its mesh stores: what a
+// collider of the mesh takes of it (not its triangles, nor boxes, spheres
+// and capsules a collider each).
+body_hulls :: proc(body:Mesh_Body) -> bool {
+    if body.trace==.Complex_As_Simple || len(body.shapes)==0 {return false}
+    for shape in body.shapes {if shape.kind!=.Convex {return false}}
+    return true
+}

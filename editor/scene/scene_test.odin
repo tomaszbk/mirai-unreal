@@ -1379,7 +1379,8 @@ taken_mark :: proc(c:^Context,actors:[]int) -> int {
 // A static mesh actor whose material sways in the wind goes to the translator
 // that takes the instanced components, which Mirai sways as foliage, and is
 // no entity of the scene; one whose material stands still is an entity, and
-// so is one that sways when no translator takes the instanced components.
+// so is one that sways when no translator takes the instanced components or
+// collides by its triangles, which foliage does not (a warning).
 @(test)
 a_mesh_that_sways_in_the_wind_goes_to_the_translator_of_the_instanced_components :: proc(t:^testing.T) {
     f:=folders_make("swaying")
@@ -1388,12 +1389,18 @@ a_mesh_that_sways_in_the_wind_goes_to_the_translator_of_the_instanced_components
     l:=fixture.level_begin("/Game/Maps/Grove")
     w:=&l.w
     mesh:=fixture.package_object(w,"/Game/Meshes/SM_Fixture","/Script/Engine","StaticMesh","SM_Fixture")
-    for label,i in ([2]string{"Tree","Stone"}) {
-        material:=fixture.package_object(w,i==0?"/Game/Materials/M_Wind":"/Game/Materials/M_Red","/Script/Engine","Material",i==0?"M_Wind":"M_Red")
+    // The mesh keeps no collision of its own: one that collides, collides by its triangles.
+    for label,i in ([3]string{"Tree","Stone","Hedge"}) {
+        material:=fixture.package_object(w,i!=1?"/Game/Materials/M_Wind":"/Game/Materials/M_Red","/Script/Engine","Material",i!=1?"M_Wind":"M_Red")
         actor:=fixture.actor_add(&l,fixture.engine_class(w,"StaticMeshActor"),fmt.tprintf("StaticMeshActor_%d",i),label)
         props:=fixture.bytes_make()
         fixture.object_property(&props,w,"StaticMesh",mesh)
         fixture.objects_property(&props,w,"OverrideMaterials",{material})
+        if i<2 {
+            body:=fixture.bytes_make()
+            fixture.name_property(&body,w,"CollisionProfileName","NoCollision")
+            fixture.struct_property(&props,w,"BodyInstance","BodyInstance",&body)
+        }
         fixture.actor_set(&l,actor,fixture.component_add(&l,actor,fixture.engine_class(w,"StaticMeshComponent"),"StaticMeshComponent0",props))
     }
     path:=fmt.tprintf("%s/Content/Maps/Grove.umap",f.unreal)
@@ -1417,6 +1424,10 @@ a_mesh_that_sways_in_the_wind_goes_to_the_translator_of_the_instanced_components
         _,_,stone_taken:=entity_named(&scene,"Taken Stone")
         testing.expectf(t,taken==c.taken && tree!=c.taken,"%s: the tree that sways is taken %v, an entity %v",c.name,taken,tree)
         testing.expectf(t,stone && !stone_taken,"%s: the stone stands still, an entity",c.name)
+        _,_,hedge:=entity_named(&scene,"Hedge")
+        _,_,hedge_taken:=entity_named(&scene,"Taken Hedge")
+        testing.expectf(t,hedge && !hedge_taken,"%s: the hedge that collides by its triangles stands still, an entity",c.name)
+        testing.expect_value(t,has_warning(&report,"collide by their triangles"),c.taken)
     }
 }
 

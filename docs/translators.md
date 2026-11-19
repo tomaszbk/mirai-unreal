@@ -94,7 +94,10 @@ in the space of an entity at the scene origin.
   materials of its slots, cull distance (`InstanceEndCullDistance`), shadows, rays and collision:
   a box of the mesh bounds if the component collides, nothing if not. No generator; instances are
   manual, where they are. A `StaticMeshComponent` whose materials sway in the wind is a batch of
-  one instance where it stands, not an entity (`mesh_sways`): Mirai sways foliage alone.
+  one instance where it stands, not an entity (`mesh_sways`): Mirai sways foliage alone. It keeps
+  what its entity had: never culled, seen by rays, and its collision, by the hulls its mesh
+  stores (`Hull`) or none; one that collides otherwise (its triangles, boxes, spheres or capsules,
+  a body that moves) stays an entity that stands still, and the import says so.
 - **Wind** (`wind.odin`). Unreal sways foliage with the `WorldPositionOffset` of its materials,
   Mirai with the wind of each type where a `Wind` blows. `material.offset_read` tells wind (it
   moves with time and a function or parameter that feeds it is named for the wind) from another

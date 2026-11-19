@@ -141,7 +141,8 @@ Instanced_Type :: struct {
     cull_distance:f32, // metres; 0 never culled
     wind:f32,          // that its materials sway its mesh with (mesh_wind)
     casts_shadow,ray_visible:bool,
-    size:[3]f32,       // of the box of its mesh, when it collides; zero for none
+    collision:foliage.Foliage_Collision,
+    size:[3]f32,       // of the box of its mesh, when it collides as one
 }
 
 // The instances of instanced components with their types: those of a type
@@ -170,8 +171,7 @@ instanced_add :: proc(s:^foliage.Source,batches:[]Instanced_Batch,origin:[3]f32,
             t.wind=b.type.wind
             t.fade_distance,t.cull_distance=b.type.cull_distance,b.type.cull_distance
             t.casts_shadow,t.ray_visible=b.type.casts_shadow,b.type.ray_visible
-            t.collision=b.type.size=={}?foliage.Foliage_Collision.None:foliage.Foliage_Collision.Box
-            t.size=b.type.size
+            t.collision,t.size=b.type.collision,b.type.size
             t.preset=0
             id=t.id
             ids[key]=id
@@ -414,7 +414,9 @@ IDENTITY :: [4][4]f64{{1,0,0,0},{0,1,0,0},{0,0,1,0},{0,0,0,1}}
 // mesh components that sway in the wind (c.instanced): each
 // its mesh and the materials its slots override, the cull distances of its
 // instances, its shadows and rays, and the box of its mesh when it collides;
-// its instances where they are in the world. A material the level keeps
+// its instances where they are in the world. A static mesh component is one
+// instance that is drawn, seen by rays and collides as its entity would:
+// never culled, and by the hulls its mesh stores (unreal_scene.mesh_sways). A material the level keeps
 // inside an actor is written now, since no entity takes it at the end of the
 // level, and the instances of each set of custom data (PerInstanceSMCustomData)
 // are a batch that shows the variants of the materials that read it. Each
@@ -440,11 +442,11 @@ instanced_batches :: proc(c:^unreal_scene.Context,winds:^Winds) -> []Instanced_B
         if missing {held+=1}
         instances_zone:=unreal_scene.zone_begin(c,"foliage.instances")
         world,world_error:=level.component_world(d,k)
-        // A static mesh component that sways is one instance where it stands.
-        single:=[1][4][4]f64{IDENTITY}
-        instances:=level.Instances{matrices=single[:]}
+        one:=[1][4][4]f64{IDENTITY}
+        instances:=level.Instances{matrices=one[:]}
         instances_error:unreal.Error
-        if d.components[k].class.name!="StaticMeshComponent" {instances,instances_error=level.component_instances(d,k,context.temp_allocator)}
+        single:=d.components[k].class.name=="StaticMeshComponent"
+        if !single {instances,instances_error=level.component_instances(d,k,context.temp_allocator)}
         unreal_scene.zone_end(instances_zone)
         if world_error.code!=.None || instances_error.code!=.None {unread+=1;continue}
         if len(instances.matrices)==0 {continue}
@@ -458,8 +460,11 @@ instanced_batches :: proc(c:^unreal_scene.Context,winds:^Winds) -> []Instanced_B
         sway:=mesh_wind(c,winds,t.name,path,level.paths_of(d,ref,"OverrideMaterials"))
         t.wind=sway.wind
         winds_count(winds,sway,len(instances.matrices))
-        if profile,enabled,_:=level.component_collision(d,ref);level.profile_collides(profile,enabled) {
-            if box:=level.mesh_box(d,path,&boxes);box.ok {t.size=mm.aabb_size(box.box)}
+        if single {
+            t.cull_distance,t.ray_visible=0,true
+            if _,collides,_:=unreal_scene.component_body(c,k);collides {t.collision=.Hull}
+        } else if profile,enabled,_:=level.component_collision(d,ref);level.profile_collides(profile,enabled) {
+            if box:=level.mesh_box(d,path,&boxes);box.ok {t.collision,t.size=.Box,mm.aabb_size(box.box)}
         }
         place_zone:=unreal_scene.zone_begin(c,"foliage.place")
         defer unreal_scene.zone_end(place_zone)
