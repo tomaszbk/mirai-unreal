@@ -2,9 +2,11 @@ package kraken
 
 import "base:intrinsics"
 import "core:mem"
+import compressor_data "compressor:data"
 
 // Decoder of the Oodle LZ streams Unreal writes: Kraken, the compressor of
-// editor payloads, Mermaid and Selkie (one format) and Leviathan. A stream is
+// editor payloads, Mermaid and Selkie (one format) and Leviathan. This package is
+// GPL-3.0-or-later (LICENSE), derived from ooz; the rest of the plugin is not. A stream is
 // a run of 256 KiB blocks; each block is split into 128 KiB chunks of
 // entropy-coded literals and LZ matches whose offsets may reach back into
 // earlier blocks of the same stream.
@@ -38,6 +40,7 @@ Decoder :: struct {
     temp_used:int,
     huffman:Huffman,
     tans:[TANS_MAX]Tans_Entry,
+    compressor:compressor_data.Decoder,
     allocator:mem.Allocator,
 }
 
@@ -55,6 +58,10 @@ decoder_make :: proc(allocator:=context.allocator) -> (Decoder,mem.Allocator_Err
     for error in errors {
         if error!=nil {decoder_destroy(&d);return {},error}
     }
+    if compressor_data.decoder_init(&d.compressor,allocator)!=.None {
+        decoder_destroy(&d)
+        return {},.Out_Of_Memory
+    }
     return d,nil
 }
 
@@ -68,12 +75,23 @@ decoder_destroy :: proc(decoder:^Decoder) {
     delete(decoder.offsets,decoder.allocator)
     delete(decoder.lengths,decoder.allocator)
     delete(decoder.temp,decoder.allocator)
+    compressor_data.decoder_destroy(&decoder.compressor)
     decoder^={}
 }
 
-// Decodes one Oodle stream whose raw size is exactly len(destination).
+// Decodes one Oodle stream whose raw size is exactly len(destination): with the private
+// compressor of the engine when the build has it, with the decoder of this package otherwise.
 decode :: proc(decoder:^Decoder,source,destination:[]u8) -> Error {
     if decoder==nil || len(decoder.literals)!=CHUNK_SIZE {return .Malformed}
+    #partial switch compressor_data.decode(&decoder.compressor,compressor_data.MLZ1,source,destination) {
+    case .None:return .None
+    case .Unknown_Format:return own_decode(decoder,source,destination)
+    }
+    return .Malformed
+}
+
+@(private)
+own_decode :: proc(decoder:^Decoder,source,destination:[]u8) -> Error {
     at,o:=0,0
     for o<len(destination) {
         // Each block starts with two bytes: 0xC in the low nibble, flags, and the compressor.

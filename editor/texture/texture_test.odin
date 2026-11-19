@@ -389,7 +389,7 @@ texture_damaged_packages_are_decoded_or_refused :: proc(t:^testing.T) {
 // per component, the block rows [s*n,(s+1)*n) with n=ceil(shortest/splits)*
 // rows/shortest; inside, coefficient e of every block of the component in a
 // row, each plus 0x80, the low bytes of the split before its high bytes. An
-// Oodle split is a Kraken stream of one stored block.
+// Oodle split is a Kraken stream of one stored block, which resets as a first block does.
 @(private="file")
 Uejpeg :: struct {
     width,height,components,splits:int,
@@ -427,7 +427,7 @@ uejpeg_payload :: proc(u:Uejpeg) -> []u8 {
         }
         chunk:[dynamic]u8
         chunk.allocator=context.temp_allocator
-        if u.oodle && len(values)>0 {append(&chunk,0x4C,0x06)}
+        if u.oodle && len(values)>0 {append(&chunk,0xCC,0x06)}
         for value in values {append(&chunk,u8(value))}
         for value in values {append(&chunk,u8(u16(value)>>8))}
         u32_put(&w,u32(len(chunk)));append(&w.bytes,..transmute([]u8)string("SPLT"))

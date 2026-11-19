@@ -162,7 +162,7 @@ check :: proc(t:^testing.T,stream,expected:[]u8,loc:=#caller_location) {
     decoder,_:=decoder_make()
     defer decoder_destroy(&decoder)
     out:=make([]u8,len(expected),context.temp_allocator)
-    error:=decode(&decoder,stream,out)
+    error:=own_decode(&decoder,stream,out)
     testing.expect_value(t,error,Error.None,loc=loc)
     testing.expect(t,string(out)==string(expected),"decoded bytes match",loc=loc)
 }
@@ -258,9 +258,9 @@ kraken_rejects_other_compressors_and_damaged_headers :: proc(t:^testing.T) {
     decoder,_:=decoder_make()
     defer decoder_destroy(&decoder)
     out:=make([]u8,64,context.temp_allocator)
-    testing.expect_value(t,decode(&decoder,{0x0c,0x0b,0,0,0},out),Error.Unsupported)
-    testing.expect_value(t,decode(&decoder,{0x0d,0x06,0,0,0},out),Error.Malformed)
-    testing.expect_value(t,decode(&decoder,{0x0c},out),Error.Truncated)
+    testing.expect_value(t,own_decode(&decoder,{0x0c,0x0b,0,0,0},out),Error.Unsupported)
+    testing.expect_value(t,own_decode(&decoder,{0x0d,0x06,0,0,0},out),Error.Malformed)
+    testing.expect_value(t,own_decode(&decoder,{0x0c},out),Error.Truncated)
     testing.expect_value(t,decode(nil,{0x0c,0x06},out),Error.Malformed)
 }
 
@@ -289,13 +289,13 @@ kraken_damaged_streams_are_decoded_or_refused :: proc(t:^testing.T) {
     state:=u32(0x9e3779b9)
     for s in streams {
         source:=s[:]
-        for length in 0..<len(source) {if decode(&decoder,source[:length],out)!=.None {refused+=1}}
+        for length in 0..<len(source) {if own_decode(&decoder,source[:length],out)!=.None {refused+=1}}
         damaged:=make([]u8,len(source),context.temp_allocator)
         for position in 0..<len(source) {
             for value in ([3]u8{0,0xff,source[position]~0x55}) {
                 copy(damaged,source)
                 damaged[position]=value
-                if decode(&decoder,damaged,out)!=.None {refused+=1}
+                if own_decode(&decoder,damaged,out)!=.None {refused+=1}
             }
         }
         for _ in 0..<2000 {
@@ -304,7 +304,7 @@ kraken_damaged_streams_are_decoded_or_refused :: proc(t:^testing.T) {
                 state=state*1664525+1013904223
                 damaged[int(state>>8)%len(damaged)]=u8(state>>24)
             }
-            if decode(&decoder,damaged,out)!=.None {refused+=1}
+            if own_decode(&decoder,damaged,out)!=.None {refused+=1}
         }
     }
     for _ in 0..<2000 {
@@ -312,7 +312,7 @@ kraken_damaged_streams_are_decoded_or_refused :: proc(t:^testing.T) {
         for &value in noise {state=state*1664525+1013904223;value=u8(state>>24)}
         noise[0]=0x0c
         noise[1]=0x06
-        if decode(&decoder,noise,out)!=.None {refused+=1}
+        if own_decode(&decoder,noise,out)!=.None {refused+=1}
     }
     testing.expect(t,refused>0)
 }
@@ -377,5 +377,21 @@ kraken_whole_match_and_stored_quanta :: proc(t:^testing.T) {
     decoder,_:=decoder_make()
     defer decoder_destroy(&decoder)
     out:=make([]u8,BLOCK_SIZE,context.temp_allocator)
-    testing.expect_value(t,decode(&decoder,{0x0c,0x06,0x03,0xff,0xff,0x80,0x05},out),Error.Malformed)
+    testing.expect_value(t,own_decode(&decoder,{0x0c,0x06,0x03,0xff,0xff,0x80,0x05},out),Error.Malformed)
+}
+
+// decode goes through the compressor of the build (private or open) and still decodes.
+@(test)
+kraken_decode_through_the_compressor_of_the_build :: proc(t:^testing.T) {
+    expected:=pattern(300,3)
+    stream:[dynamic]u8
+    stream.allocator=context.temp_allocator
+    append(&stream,0xcc,0x06) // first block: reset and stored
+    append(&stream,..expected)
+    decoder,_:=decoder_make()
+    defer decoder_destroy(&decoder)
+    out:=make([]u8,len(expected),context.temp_allocator)
+    testing.expect_value(t,decode(&decoder,stream[:],out),Error.None)
+    testing.expect(t,string(out)==string(expected),"decoded bytes match")
+    testing.expect(t,decode(&decoder,stream[:2],out)!=.None,"a truncated stream is refused")
 }
