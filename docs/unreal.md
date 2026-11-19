@@ -346,9 +346,9 @@ it names). Everything lives in the library's arena.
   of its bounds, pivot and axes with their scale), the point in the view image and its depth, and
   the scene's behind it: `Transform` between tangent, object (or instance) and world and
   `TransformPosition` between object and world are a program with that frame and those axes;
-  `LocalPosition` is the point in object space, `ObjectOrientation` its local Z and
-  `ObjectScale`, the length of its axes; `ObjectBounds`, `Bounds` and `ObjectLocalBounds` come
-  from the corners and axes.
+  `LocalPosition` (and `PreSkinnedPosition`, the same for a mesh without bones) is the point in
+  object space, `ObjectOrientation` its local Z and `ObjectScale`, the length of its axes;
+  `ObjectBounds`, `Bounds` and `ObjectLocalBounds` come from the corners and axes.
 - **The world from its center.** A world location (`WorldPosition`, the object's center and pivot,
   the coordinates of a whole Landscape) is the one relative to the render origin plus the origin
   (`Origin`), and subtracting two locations removes the origin they share:
@@ -372,7 +372,7 @@ it names). Everything lives in the library's arena.
   material reads) and domains that are not surfaces (`Error`). Outputs the translation does not
   read (position, tangent, subsurface, depth) are not evaluated, nor is `WorldPositionOffset`: a
   Mirai material does not move its vertices (the engine deforms surfaces with three fixed
-  mechanisms).
+  mechanisms). Foliage reads it apart: [wind](translators.md#foliage-unreal_foliage).
 - **Approximations** (in `notes`): `ActorPositionWS` is the object's pivot; `PerInstanceRandom` is
   0.5; `VertexInterpolator` passes its input, computed per pixel; `TwoSidedSign` is 1 (Mirai flips
   a back face's frame); `Fresnel` is its reflectance at normal incidence; the view looks down the

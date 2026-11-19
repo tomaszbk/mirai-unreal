@@ -252,7 +252,6 @@ texture_note :: proc(b:^Builder,source:^Source_Texture,text:string) {
 // The texels of a texture as Unreal reads them: color as linear values, a
 // normal map unpacked to -1..1 with its Z rebuilt, data as it is. None of a
 // cube or an array, which a map of uv does not read.
-@(private)
 source_pixels :: proc(b:^Builder,path:string,decoder:^kraken.Decoder) -> ^material.Pixels {
     source:=source_texture(b,path)
     if !source_decoded(b,path,source,decoder) || source.input.source.cube || source.input.source.layers>1 {return nil}

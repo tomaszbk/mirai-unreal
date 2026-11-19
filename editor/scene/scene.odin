@@ -971,8 +971,8 @@ decoder :: proc(c:^Context) -> (^kraken.Decoder,bool) {
     return &c.decoder,true
 }
 
-// Takes lib and images for the translation, from the jobs that read ahead.
-@(private)
+// Takes lib and images for the translation, from the jobs that read ahead,
+// until library_unlock.
 library_lock :: proc(c:^Context) {
     lock_zone:=importer.zone_begin(c.options,"level.lock")
     sync.mutex_lock(&c.library_lock)
@@ -980,7 +980,6 @@ library_lock :: proc(c:^Context) {
     c.lib.worker=c.options.worker
 }
 
-@(private)
 library_unlock :: proc(c:^Context) {sync.mutex_unlock(&c.library_lock)}
 
 @(private)
