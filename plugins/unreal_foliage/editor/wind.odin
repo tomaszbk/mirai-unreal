@@ -290,7 +290,7 @@ wind_write :: proc(c:^unreal_scene.Context,w:^Winds) {
     apart:=0
     for d in w.ways {if d.x*way.x+d.y*way.y<WAY_ALIKE {apart+=1}}
     if apart>0 {
-        unreal_scene.warn(c,"%d types of foliage sway another way than the most of them; Mirai's wind blows one way where it is, the way of most of the instances",apart)
+        unreal_scene.warn(c,"%d types of foliage sway another way than the foliage that moves most; Mirai's wind blows one way where it is, the way of that foliage",apart)
     }
     unreal_scene.warn(c,"the materials of the foliage sway each at a pace of their own; Mirai's foliage sways at the gusts of the Wind where it stands")
     previous:=unreal_scene.section_use(c,0)
