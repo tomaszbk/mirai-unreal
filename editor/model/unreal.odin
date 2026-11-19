@@ -147,7 +147,11 @@ read :: proc(r:^importer.Reader,bytes:[]u8) -> bool {
     if c.library!=nil {
         c.lock=options.lock
     } else {
-        material.library_init(&own,mounts_find(r.path,options,&p,plugins=false),context.temp_allocator,plugins_pending=true)
+        mounts:=mounts_find(r.path,options,&p,plugins=false)
+        engine:=false
+        for mount in mounts {engine||=mount.package_prefix=="/Engine"}
+        if !engine {importer.warn(r,"%s: %s",r.file_name,upackage.ENGINE_UNSET)}
+        material.library_init(&own,mounts,context.temp_allocator,plugins_pending=true)
         c.library=&own
     }
     defer if c.library==&own {material.library_destroy(&own)}

@@ -1,5 +1,6 @@
 package unreal
 
+import "core:encoding/json"
 import "core:os"
 import "core:path/filepath"
 import "core:strconv"
@@ -166,8 +167,8 @@ package_prefix_matches :: proc(name,prefix:string) -> bool {
 }
 
 // The Content folder of the engine: UNREAL_ENGINE (an installation or its
-// Engine folder), else the newest UE_<version> where the Epic launcher
-// installs them. "" when there is none.
+// Engine folder) when it is set, else the newest installation of this
+// machine that holds one (engine_places). "" when there is none.
 engine_content_find :: proc(allocator:=context.temp_allocator) -> string {
     if value,exists:=os.lookup_env("UNREAL_ENGINE",context.temp_allocator);exists && value!="" {
         for candidate in ([2][]string{{value,"Content"},{value,"Engine","Content"}}) {
@@ -176,31 +177,118 @@ engine_content_find :: proc(allocator:=context.temp_allocator) -> string {
         }
         return ""
     }
-    launcher:string
-    when ODIN_OS==.Windows {
-        files,exists:=os.lookup_env("ProgramFiles",context.temp_allocator)
-        if !exists {return ""}
-        launcher,_=filepath.join({files,"Epic Games"},context.temp_allocator)
-    } else when ODIN_OS==.Darwin {
-        launcher="/Users/Shared/Epic Games"
-    } else {
-        return ""
+    return engine_content_in(engine_places(),allocator)
+}
+
+ENGINE_UNSET :: "no Unreal installation with its engine content was found, so what the level reads of /Engine (its material functions, meshes and textures) is left to Mirai's substitutes; set UNREAL_ENGINE to an installation (the folder that holds Engine/Content) and import again"
+
+// Where installations of Unreal may be: folders that hold UE_<version>
+// folders, and the records of the Epic launcher that name installation
+// folders wherever the user put them.
+Engine_Places :: struct {
+    folders:[]string, // whose UE_* folders are installations
+    lists:[]string,   // of installations as the launcher writes them, a JSON object a line ("dir")
+    launched:[]string, // of installations of the older launcher, one JSON object ("InstallationList", "InstallLocation")
+    builds:[]string,  // of the builds registered with the engine, an INI of folders by key
+}
+
+// The places of this machine: the launcher's folder and the one under the
+// user's home, which it offers, and its records.
+engine_places :: proc() -> (p:Engine_Places) {
+    env :: proc(name:string,tail:..string) -> string {
+        value,exists:=os.lookup_env(name,context.temp_allocator)
+        if !exists || value=="" {return ""}
+        parts:=make([dynamic]string,context.temp_allocator)
+        append(&parts,value)
+        append(&parts,..tail)
+        joined,_:=filepath.join(parts[:],context.temp_allocator)
+        return joined
     }
-    entries,error:=os.read_all_directory_by_path(launcher,context.temp_allocator)
-    if error!=nil {return ""}
+    when ODIN_OS==.Windows {
+        p.folders=[]string{env("ProgramFiles","Epic Games"),env("USERPROFILE","Epic Games")}
+        p.lists=[]string{env("LOCALAPPDATA","com.epicgames.eglv2","installations.jsonl")}
+        p.launched=[]string{env("ProgramData","Epic","UnrealEngineLauncher","LauncherInstalled.dat")}
+        p.builds=[]string{env("ProgramData","Epic","UnrealEngine","Install.ini")}
+    } else when ODIN_OS==.Darwin {
+        p.folders=[]string{"/Users/Shared/Epic Games",env("HOME","Epic Games")}
+        p.launched=[]string{env("HOME","Library","Application Support","Epic","UnrealEngineLauncher","LauncherInstalled.dat")}
+    }
+    return
+}
+
+ENGINE_RECORD_BYTES :: 16<<20 // the largest record of the launcher that is read
+
+// The Content folder of the newest installation the places name that holds
+// one: its version from Engine/Build/Build.version, else from a folder named
+// UE_<major>.<minor>. A recorded folder that is gone or holds no content is
+// left out. "" when none does.
+engine_content_in :: proc(places:Engine_Places,allocator:=context.temp_allocator) -> string {
+    candidates:=make([dynamic]string,context.temp_allocator)
+    for folder in places.folders {
+        if folder=="" {continue}
+        entries,error:=os.read_all_directory_by_path(folder,context.temp_allocator)
+        if error!=nil {continue}
+        for entry in entries {
+            if entry.type==.Directory && strings.has_prefix(entry.name,"UE_") {append(&candidates,entry.fullpath)}
+        }
+    }
+    record_lines :: proc(path:string) -> []string {
+        if path=="" {return nil}
+        bytes,error:=serial.file_read(path,context.temp_allocator,limit=ENGINE_RECORD_BYTES)
+        if error!=.None {return nil}
+        return strings.split_lines(string(bytes),context.temp_allocator)
+    }
+    for path in places.lists {
+        for line in record_lines(path) {
+            entry:struct {dir:string}
+            if json.unmarshal_string(line,&entry,allocator=context.temp_allocator)==nil && entry.dir!="" {append(&candidates,entry.dir)}
+        }
+    }
+    for path in places.launched {
+        if path=="" {continue}
+        bytes,error:=serial.file_read(path,context.temp_allocator,limit=ENGINE_RECORD_BYTES)
+        if error!=.None {continue}
+        record:struct {InstallationList:[]struct {InstallLocation:string}}
+        if json.unmarshal(bytes,&record,allocator=context.temp_allocator)!=nil {continue}
+        for item in record.InstallationList {if item.InstallLocation!="" {append(&candidates,item.InstallLocation)}}
+    }
+    for path in places.builds {
+        for line in record_lines(path) {
+            _,_,folder:=strings.partition(strings.trim_space(line),"=")
+            if folder!="" {append(&candidates,strings.trim_space(folder))}
+        }
+    }
     best:string
     best_version:[2]int
-    for entry in entries {
-        if entry.type!=.Directory || !strings.has_prefix(entry.name,"UE_") {continue}
-        parts:=strings.split(entry.name[3:],".",context.temp_allocator)
-        version:[2]int
-        for part,i in parts[:min(len(parts),2)] {version[i],_=strconv.parse_int(part)}
-        content,_:=filepath.join({entry.fullpath,"Engine","Content"},context.temp_allocator)
+    for folder in candidates {
+        content,_:=filepath.join({folder,"Engine","Content"},context.temp_allocator)
         if !os.is_dir(content) {continue}
+        version,known:=engine_version(folder)
+        if !known {continue}
         if best=="" || version[0]>best_version[0] || version[0]==best_version[0] && version[1]>best_version[1] {best,best_version=content,version}
     }
     if best=="" {return ""}
     return strings.clone(best,allocator)
+}
+
+// The major and minor version of an installation: of its Build.version, or
+// of its folder named UE_<major>.<minor>.
+@(private="file")
+engine_version :: proc(folder:string) -> (version:[2]int,known:bool) {
+    build,_:=filepath.join({folder,"Engine","Build","Build.version"},context.temp_allocator)
+    if bytes,error:=serial.file_read(build,context.temp_allocator,limit=1<<16);error==.None {
+        v:struct {MajorVersion,MinorVersion:int}
+        if json.unmarshal(bytes,&v,allocator=context.temp_allocator)==nil && v.MajorVersion>0 {return {v.MajorVersion,v.MinorVersion},true}
+    }
+    name:=filepath.base(folder)
+    if !strings.has_prefix(name,"UE_") {return}
+    parts:=strings.split(name[3:],".",context.temp_allocator)
+    for part,i in parts[:min(len(parts),2)] {
+        n,ok:=strconv.parse_int(part)
+        if !ok {return}
+        version[i]=n
+    }
+    return version,len(parts)>=2
 }
 
 // The mounts of the plugins of the engine whose Content folder is engine:

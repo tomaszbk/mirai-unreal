@@ -258,3 +258,22 @@ a_type_sways_as_its_materials_sway_its_mesh :: proc(t:^testing.T) {
         }
     }
 }
+
+// The Wind blows the way and at the pace of the foliage that moves most of
+// the air: each type by its instances times how much it is moved, so a
+// forest leads the many tufts of grass that sway another way.
+@(test)
+the_wind_blows_the_way_the_foliage_that_moves_most_is_moved :: proc(t:^testing.T) {
+    w:=winds_make()
+    winds_count(&w,{wind=1.5,direction={1,0},frequency=0.18,moved=38000},400)
+    winds_count(&w,{wind=12,direction={-0.7071,-0.7071},frequency=0.2,moved=600},11000)
+    winds_count(&w,{wind=0,direction={0,1},frequency=1,moved=1e6},1000)
+    length:=math.sqrt(w.blown.x*w.blown.x+w.blown.y*w.blown.y)
+    way:=w.blown/length
+    tree,grass:=400*38000.0,11000*600.0
+    expected:=[2]f64{tree-grass*0.7071,-grass*0.7071}
+    expected/=math.sqrt(expected.x*expected.x+expected.y*expected.y)
+    testing.expectf(t,abs(way.x-expected.x)<1e-4 && abs(way.y-expected.y)<1e-4 && way.x>0.9,"the wind blows %v, not %v",way,expected)
+    pace:=w.paced.x/w.paced.y
+    testing.expectf(t,abs(pace-(0.18*tree+0.2*grass)/(tree+grass))<1e-6,"the gusts are %v a second",pace)
+}

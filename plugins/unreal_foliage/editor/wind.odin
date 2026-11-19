@@ -44,10 +44,12 @@ import foliage "plugins:foliage/runtime"
 // foliage sways by them whatever its actors are, and the parameters of the
 // wind they read (a collection's or their own) are in what they measure.
 // The scene of the map gets a Wind of the speed the winds are measured
-// against, blowing the way most of the instances that sway are moved, with
-// the gusts they sway at on average (a cycle per second each time their top
-// sways back and forth); when the materials say neither a way nor a pace,
-// no Wind is added and the import says so.
+// against, blowing the way the foliage is moved and with the gusts it sways
+// at (a cycle per second each time its top sways back and forth), each type
+// counting by its instances times how much it is moved (Mesh_Wind.moved): a
+// forest sets the way and the pace its grass does not, as the eye reads the
+// wind by what moves most of the air. When the materials say neither a way
+// nor a pace, no Wind is added and the import says so.
 
 SWAY_LEAST :: 0.2   // of its lean at the peak, the least a plant of Mirai leans as it sways
 FLUTTER_MEAN :: 0.6 // of its flutter in the peak of a gust, what a plant of Mirai flutters on average
@@ -55,6 +57,7 @@ FLUTTER_MEAN :: 0.6 // of its flutter in the peak of a gust, what a plant of Mir
 // What the materials of a mesh do to it, summed over its vertices measured.
 Sway :: struct {
     moved,tall:f64,   // Σ S·h and Σ h², cm²
+    vertices:int,     // measured
     fluttered:[2]f64, // Σ of the flutter of the vertices of the sections that flutter, cm, and how many
     direction:[2]f64, // Unreal's X and Y: the way of each material that sways, by its reach
     frequency:[2]f64, // Σ cycles per second of each material that sways and is measured to, by its reach, and Σ of those reaches
@@ -74,6 +77,7 @@ sway_add :: proc(s:^Sway,o:material.Offset,vertices:[]material.Offset_Vertex,rea
     for v,i in vertices {
         h:=f64(max(v.position.z,0))
         s.tall+=h*h
+        s.vertices+=1
         if wind && i<len(reach) && reach[i].sway>0 {
             s.moved+=f64(reach[i].sway)*h
             total+=f64(reach[i].sway)
@@ -149,13 +153,18 @@ Winds :: struct {
     meshes:map[string]Mesh_Wind, // by mesh and the materials of its slots
     materials:map[string]bool,   // whether a material sways in the wind, by object path
     warned:map[string]struct{},  // materials
-    blown:[2]f64,                // Unreal's X and Y: the way of each type that sways, by its instances
-    paced:[2]f64,                // Σ cycles per second of each type that sways at a pace, by its instances, and Σ of those instances
+    blown:[2]f64,                // Unreal's X and Y: the way of each type that sways, by how much its instances are moved
+    paced:[2]f64,                // Σ cycles per second of each type that sways at a pace, by how much its instances are moved, and Σ of that
     ways:[dynamic][2]f32,        // of the types that sway one way
     swaying:bool,                // some material sways in the wind
 }
 
-Mesh_Wind :: struct {wind,flutter:f32,direction:[2]f32,frequency:f32}
+Mesh_Wind :: struct {
+    wind,flutter:f32,
+    direction:[2]f32,
+    frequency:f32,
+    moved:f32, // cm²: how far it sways each vertex times its height, on average
+}
 
 winds_make :: proc() -> (w:Winds) {
     w.meshes=make(map[string]Mesh_Wind,context.temp_allocator)
@@ -196,13 +205,14 @@ materials_sway :: proc(c:^unreal_scene.Context,w:^Winds,paths:[]string) -> bool 
 }
 
 // A type that sways, with its instances, counts toward the way and the
-// gusts of the Wind.
+// gusts of the Wind by how much they are moved.
 winds_count :: proc(w:^Winds,sway:Mesh_Wind,instances:int) {
     if sway.wind<=0 {return}
-    if sway.frequency>0 {w.paced+={f64(sway.frequency)*f64(instances),f64(instances)}}
+    weight:=f64(instances)*f64(max(sway.moved,0))
+    if sway.frequency>0 {w.paced+={f64(sway.frequency)*weight,weight}}
     if sway.direction=={} {return}
     append(&w.ways,sway.direction)
-    w.blown+=[2]f64{f64(sway.direction.x),f64(sway.direction.y)}*f64(instances)
+    w.blown+=[2]f64{f64(sway.direction.x),f64(sway.direction.y)}*weight
 }
 
 // The wind of a type that shows the StaticMesh at mesh (an object path)
@@ -241,7 +251,7 @@ mesh_wind :: proc(c:^unreal_scene.Context,w:^Winds,owner,mesh:string,slots:[]str
         w.warned[strings.clone(path,context.temp_allocator)]={}
         for text in offset_warnings(owner,path,o) {unreal_scene.warn(c,"%s",text)}
     }
-    return {sway_wind(s),sway_flutter(s),sway_direction(s),sway_frequency(s)}
+    return {sway_wind(s),sway_flutter(s),sway_direction(s),sway_frequency(s),s.vertices>0?f32(s.moved/f64(s.vertices)):0}
 }
 
 // The texels of a texture an offset samples, from the textures of the level
