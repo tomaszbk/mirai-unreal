@@ -192,8 +192,8 @@ Engine_Places :: struct {
     builds:[]string,  // of the builds registered with the engine, an INI of folders by key
 }
 
-// The places of this machine: the launcher's folder and the one under the
-// user's home, which it offers, and its records.
+// The places of this machine, in the temporary allocator: the launcher's
+// folder and the one under the user's home, which it offers, and its records.
 engine_places :: proc() -> (p:Engine_Places) {
     env :: proc(name:string,tail:..string) -> string {
         value,exists:=os.lookup_env(name,context.temp_allocator)
@@ -204,14 +204,19 @@ engine_places :: proc() -> (p:Engine_Places) {
         joined,_:=filepath.join(parts[:],context.temp_allocator)
         return joined
     }
+    list :: proc(paths:..string) -> []string {
+        out:=make([]string,len(paths),context.temp_allocator)
+        copy(out,paths)
+        return out
+    }
     when ODIN_OS==.Windows {
-        p.folders=[]string{env("ProgramFiles","Epic Games"),env("USERPROFILE","Epic Games")}
-        p.lists=[]string{env("LOCALAPPDATA","com.epicgames.eglv2","installations.jsonl")}
-        p.launched=[]string{env("ProgramData","Epic","UnrealEngineLauncher","LauncherInstalled.dat")}
-        p.builds=[]string{env("ProgramData","Epic","UnrealEngine","Install.ini")}
+        p.folders=list(env("ProgramFiles","Epic Games"),env("USERPROFILE","Epic Games"))
+        p.lists=list(env("LOCALAPPDATA","com.epicgames.eglv2","installations.jsonl"))
+        p.launched=list(env("ProgramData","Epic","UnrealEngineLauncher","LauncherInstalled.dat"))
+        p.builds=list(env("ProgramData","Epic","UnrealEngine","Install.ini"))
     } else when ODIN_OS==.Darwin {
-        p.folders=[]string{"/Users/Shared/Epic Games",env("HOME","Epic Games")}
-        p.launched=[]string{env("HOME","Library","Application Support","Epic","UnrealEngineLauncher","LauncherInstalled.dat")}
+        p.folders=list("/Users/Shared/Epic Games",env("HOME","Epic Games"))
+        p.launched=list(env("HOME","Library","Application Support","Epic","UnrealEngineLauncher","LauncherInstalled.dat"))
     }
     return
 }
