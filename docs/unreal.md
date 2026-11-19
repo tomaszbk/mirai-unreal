@@ -765,7 +765,8 @@ entity, the imported meshes and the time.
   most), with that constant and turn; else what its material emits in each direction from the
   centre of the dome (`material.sky_graph`, `dome_shade`): the graph run on the CPU where each
   direction meets the mesh, with its uvs and colors there, seen from that centre, at time 0, into
-  a float long-lat image as wide as the widest texture it samples (or a smooth one). The level's
+  a float long-lat image as wide as the widest texture it samples (or a smooth one), whose
+  lower half goes toward the sky light's lower hemisphere as a cube of it does. The level's
   sky is what it shows; a dynamic instance keeps the values the level saved. The `luminance` is
   the sky light's `Intensity` times its color times that constant: Unreal lights by the dome times
   them, and Mirai's `Sky` shows what it lights by, so a sky light other than 1 is a warning, as are
