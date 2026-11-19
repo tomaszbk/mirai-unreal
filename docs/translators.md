@@ -97,16 +97,21 @@ in the space of an entity at the scene origin.
   entity, with its transform and collision, and gets a `Foliage_Sway` of the wind they give
   (`mesh_sway`): it sways as foliage of that wind does.
 - **Wind** (`wind.odin`). Unreal sways foliage with the `WorldPositionOffset` of its materials,
-  Mirai with the wind of each type where a `Wind` blows. `material.offset_read` tells wind (it
-  moves with time and a function or parameter that feeds it is named for the wind) from another
-  motion and from a shape, and measures how far it sways vertices of each section of the mesh:
-  the length of each one's path along the line it moves along, so what it leans a vertex one way
-  all the time is no sway. The type sways by the rigid bend whose swing best matches those in
-  least squares (`sum(S*h)/sum(h*h)`, `h` the height above the pivot), and its wind is what sways
-  it that far, from its least lean to its peak, in a `Wind` of `volume.WIND_DEFAULT`. Those
-  materials are what says the air moves (Unreal sways foliage by them, with the wind parameters they read):
-  the scene of the map gets a `Wind` of that speed, the way most swaying instances are moved and
-  the pace they sway at on average; when they say neither way nor pace, no `Wind` is added and
+  Mirai with the wind of each type where a `Wind` blows and the flutter of its leaves on top.
+  `material.offset_read` tells wind (it moves with time and a function or parameter that feeds it is
+  named for the wind) from another motion and from a shape, and measures what it moves vertices of
+  each section of the mesh by (`material.Offset_Reach`): what moves a vertex slower than
+  `material.OFFSET_SLOW` is its sway, the length of its path along the line it moves along, so what
+  it leans a vertex one way all the time is no sway; what moves it faster about that is its flutter.
+  The type sways by the rigid bend whose swing best matches the sways in least squares
+  (`sum(S*h)/sum(h*h)`, `h` the height above the pivot), and its wind is what sways it that far,
+  from its least lean to its peak, in a `Wind` of `volume.WIND_DEFAULT`; its `flutter` is what
+  flutters the leaves of the sections that flutter (`material.offset_flutters`) as far on average in
+  that `Wind`. The mesh import gives those leaves their green: a mesh whose sections flutter apart
+  carries green 0 on the sections that do not, those a program shows (`model/flutter.odin`). Those
+  materials are what says the air moves (Unreal sways foliage by them, with the wind parameters they
+  read): the scene of the map gets a `Wind` of that speed, the way most swaying instances are moved
+  and the pace they sway at on average; when they say neither way nor pace, no `Wind` is added and
   the import says so. A sway that cannot be measured is Mirai's default wind. Warnings: an offset
   that is not wind (it stands still), per-vertex weights (vertex colors, uv: Mirai bends the whole
   plant by height), gusts drawn by a texture, and the way and pace of each material (Mirai's wind
