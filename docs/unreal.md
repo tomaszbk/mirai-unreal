@@ -758,23 +758,25 @@ entity, the imported meshes and the time.
   sky shows if the level draws it (`SkyAtmosphere`, `AtmosphericFog`, the engine's sky sphere or a
   dome), and otherwise black; a dome is a static mesh that casts no shadow, whose materials are all
   unlit and whose bounds hold what every other actor shows, or the mesh of the engine's sky sphere:
-  it is the level's sky, not drawn, since Mirai's `Sky` stands for it. When a sky light captures the
-  scene, the first dome gives the `Sky` its image: the texture its material shows as it is times a
-  constant (`translated_plain_emission`) when the uvs of its mesh lay it over the sphere by latitude
-  and longitude as the `Sky` reads its image (each corner within a tolerance, turned about up at
-  most), with that constant and turn; else what its material emits in each direction from the
-  centre of the dome (`material.sky_graph`, `dome_shade`): the graph run on the CPU where each
-  direction meets the mesh, with its uvs and colors there, seen from that centre, at time 0, into
-  a float long-lat image as wide as the widest texture it samples (or a smooth one), whose
-  lower half goes toward the sky light's lower hemisphere as a cube of it does. The level's
-  sky is what it shows; a dynamic instance keeps the values the level saved. The `luminance` is
-  the sky light's `Intensity` times its color times that constant: Unreal lights by the dome times
-  them, and Mirai's `Sky` shows what it lights by, so a sky light other than 1 is a warning, as are
-  a material that changes with time and the values a Blueprint gave a dynamic instance; a material
-  only a program computes (noise, HLSL, the view's image) leaves Mirai's sky, with a warning. A cube
-  of the sky light wins over a dome. With an atmosphere, the `Sky`
-  is the air the sun lights (`atmosphere`), unless it has an image: Mirai's `Sky` draws the image or
-  the air, and the image wins, with a warning. `VolumetricCloud` is a warning: Mirai
+  it is the level's sky, not drawn, since Mirai's `Sky` shows it. The first dome is the `Sky`'s
+  background (`use_background`, `background_image`), as the level draws it: the texture its
+  material shows as it is times a constant (`translated_plain_emission`) when the uvs of its mesh
+  lay it over the sphere by latitude and longitude as the `Sky` reads its image (each corner within
+  a tolerance, turned about up at most), at that constant (`background`) and turn; else what its
+  material emits in each direction from the centre of the dome (`material.sky_graph`,
+  `dome_shade`): the graph run on the CPU where each direction meets the mesh, with its uvs and
+  colors there, seen from that centre, at time 0, into a float long-lat image as wide as the widest
+  texture it samples (or a smooth one). A dynamic instance keeps the values the level saved; a
+  material that changes with time and the values a Blueprint gave a dynamic instance are warnings,
+  and a material only a program computes (noise, HLSL, the view's image) leaves Mirai's sky, with a
+  warning. A sky light that captures the scene lights by the dome as Unreal does: the `Sky`'s image
+  is the same one with its lower half toward the sky light's lower hemisphere, as a cube of it (a
+  `.tex` of its own), and its `luminance` the sky light's `Intensity` times its color times that
+  constant; a cube of the sky light lights instead, and a dome laid at another turn than the cube is
+  shaded per direction at the cube's, since one turn turns both images. Without a sky light the
+  `Sky` shows the dome and gives no light. With an atmosphere, the `Sky` is the air the sun lights
+  (`atmosphere`), unless it has an image: Mirai's `Sky` lights by the image or the air, and the
+  image wins, with a warning. `VolumetricCloud` is a warning: Mirai
   draws no clouds. The post process is Unreal's: the defaults of the Unreal project of the level
   (Unreal's under its `DefaultEngine.ini`: its `r.DefaultFeature` bloom and auto exposure, method
   and bias, and the extended range, off unless it is set) or, for content copied without its

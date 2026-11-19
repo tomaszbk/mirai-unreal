@@ -175,7 +175,7 @@ Sky_Dome :: struct {
     texture:string,   // the object path of the texture its material shows; "": its material is shaded per direction
     material:string,  // the object path of that material
     component:int,    // of the level
-    luminance:[3]f32, // what its material multiplies the texture by, nits; 1 for a material shaded per direction
+    luminance:[3]f32, // what its material multiplies the texture by, nits
     turn:f32,         // of the Sky about up for its image to lie as on the dome, radians
     found:bool,
 }
@@ -247,7 +247,7 @@ dome_image :: proc(c:^Context,k:int) -> (dome:Sky_Dome,reason:string) {
     s,graph_error:=material.sky_graph(c.lib,object,{},context.temp_allocator)
     if graph_error.code!=.None {return {},"its material could not be translated"}
     if s.why!="" {return {},s.why}
-    return {material=strings.clone(path,context.temp_allocator),component=k,luminance={1,1,1},found=true},""
+    return {material=strings.clone(path,context.temp_allocator),component=k,found=true},""
 }
 
 // The mesh of the dome k, decoded, and its place; why it cannot be read.
@@ -581,7 +581,10 @@ environment_finish :: proc(c:^Context) {
         // turn than the cube's is shaded per direction at the cube's.
         cube_turn:=c.sky.image!={} ? c.sky_turn : c.dome.turn
         background,lighting:base.Asset_Id
+        // What multiplies the image: a shaded one holds what the material shows.
+        shown:=[3]f32{1,1,1}
         if c.dome.texture!="" && abs(cube_turn-c.dome.turn)<1e-4 {
+            shown=c.dome.luminance
             background,_=sky_image_write(c,c.dome.texture,{})
             if lit {lighting,_=sky_image_write(c,c.dome.texture,c.sky_below)}
         } else {
@@ -592,11 +595,11 @@ environment_finish :: proc(c:^Context) {
             warn(c,"%s encloses the level as its sky and is not drawn: its image could not be written",c.dome.name)
         } else {
             c.sky.background_image=background
-            c.sky.background=c.dome.luminance
+            c.sky.background=shown
             c.sky_turn=cube_turn
             if lighting!={} {
                 c.sky.image=lighting
-                c.sky.luminance*=c.dome.luminance
+                c.sky.luminance*=shown
             }
             if !c.sky_lit {c.sky.luminance={}}
             warn(c,"%s encloses the level as its sky and is not drawn: it is what the Sky shows behind the scene",c.dome.name)

@@ -552,15 +552,15 @@ unlit_finish :: proc(p:^fx.Package,name:string,emission:i32) -> []u8 {
 }
 
 // A dome of the level casts no shadow, is unlit and holds the rest of the
-// level: it is the sky, which the Sky of the scene is, and is not drawn. When
-// its material is one texture as it is, laid over the sphere by latitude and
-// longitude, and a sky light captures it, its image is the Sky's at the
-// luminance of its material, turned about up as the dome; any other material
-// that runs on the CPU gives the Sky what it shows in each direction from the
-// centre of the dome, under the horizon toward the lower hemisphere of the
-// sky light. The LightColor times Intensity of the sky light multiplies the
-// image, as Unreal lights by it. A material only a program
-// computes and a dome without a sky light are a warning; a level without a
+// level: it is the sky, which the Sky of the scene shows behind it as its
+// background, and is not drawn. When its material is one texture as it is,
+// laid over the sphere by latitude and longitude, the background is that
+// texture at the luminance of its material, turned about up as the dome; any
+// other material that runs on the CPU gives it what it shows in each
+// direction from the centre of the dome. A sky light that captures it lights
+// by the same image times its LightColor and Intensity, black under the
+// horizon as its lower hemisphere is; without one no light comes from the
+// sky. A material only a program computes is a warning; a level without a
 // dome keeps Mirai's sky at the light of its sky light. A mesh that casts no
 // shadow and holds nothing is drawn, without shadows.
 @(test)
@@ -579,14 +579,21 @@ a_dome_that_encloses_the_level_is_its_sky_and_is_not_drawn :: proc(t:^testing.T)
     pixels:=make([]u8,8*4*4,context.temp_allocator)
     for &v,i in pixels {v=u8(i*7)}
     _=os.write_entire_file(fmt.tprintf("%s/Content/Textures/T_Sky.uasset",f.unreal),fx.texture_package("/Game/Textures/T_Sky","T_Sky",pixels,8,4))
+    faces:=make([]u8,6*4*4*4,context.temp_allocator)
+    for &v,i in faces {v=u8(i/64*40)}
+    _=os.write_entire_file(fmt.tprintf("%s/Content/Textures/T_Cube.uasset",f.unreal),fx.texture_package("/Game/Textures/T_Cube","T_Cube",faces,4,4,texture_class="TextureCube",slices=6))
     Image :: enum {None,Texture,Shaded}
-    Case :: struct {dome:string,lit:bool,intensity:f32,image:Image,warning:string}
+    Case :: struct {dome:string,lit,cube:bool,intensity:f32,image:Image,warning:string}
     cases:=[]Case{
-        {dome="SM_Dome",lit=true,intensity=1,image=.Texture,warning="its image is the Sky's"},
-        {dome="SM_Cube",lit=true,intensity=1,image=.Shaded,warning="its image is the Sky's"},
-        {dome="SM_Gradient",lit=true,intensity=2,image=.Shaded,warning="its image is the Sky's"},
+        {dome="SM_Dome",lit=true,intensity=1,image=.Texture,warning="what the Sky shows"},
+        {dome="SM_Cube",lit=true,intensity=1,image=.Shaded,warning="what the Sky shows"},
+        {dome="SM_Gradient",lit=true,intensity=2,image=.Shaded,warning="what the Sky shows"},
         {dome="SM_Coded",lit=true,intensity=1,warning="only a program computes"},
-        {dome="SM_Dome",warning="without a sky light"},
+        {dome="SM_Dome",image=.Texture,warning="what the Sky shows"},
+        {dome="SM_Gradient",image=.Shaded,warning="what the Sky shows"},
+        // A cube of the sky light lights, turned a quarter: the dome laid at
+        // its own turn shows shaded per direction at the cube's.
+        {dome="SM_Dome",lit=true,cube=true,intensity=1,image=.Shaded,warning="what the Sky shows"},
         {lit=true,intensity=2},
     }
     yaw:=f32(30)
@@ -613,6 +620,11 @@ a_dome_that_encloses_the_level_is_its_sky_and_is_not_drawn :: proc(t:^testing.T)
             sky:=fixture.actor_add(&l,fixture.engine_class(w,"SkyLight"),"SkyLight_0","Sky light")
             props:=fixture.bytes_make()
             fixture.float_property(&props,w,"Intensity",c.intensity)
+            if c.cube {
+                fixture.enum_property(&props,w,"SourceType","ESkyLightSourceType","ESkyLightSourceType::SLS_SpecifiedCubemap")
+                fixture.object_property(&props,w,"Cubemap",fixture.package_object(w,"/Game/Textures/T_Cube","/Script/Engine","TextureCube","T_Cube"))
+                fixture.float_property(&props,w,"SourceCubemapAngle",90)
+            }
             fixture.actor_set(&l,sky,fixture.component_add(&l,sky,fixture.engine_class(w,"SkyLightComponent"),"SkyLightComponent0",props))
         }
         _=os.write_entire_file(f.map_path,fixture.level_bytes(&l))
@@ -639,32 +651,57 @@ a_dome_that_encloses_the_level_is_its_sky_and_is_not_drawn :: proc(t:^testing.T)
         testing.expectf(t,!has_warning(&report,"Glow","encloses"),"case %d: a lit or enclosed mesh is drawn",n)
         e,_,has_entity:=entity_named(&scene,"Sky")
         sky,has_sky:=asset.scene_get(&scene,e,"Sky",render.Sky)
-        testing.expectf(t,has_sky==c.lit,"case %d: a Sky only with a sky light",n)
-        testing.expectf(t,(sky.image!={})==(c.image!=.None),"case %d: the image of the dome is the Sky's: %v",n,sky.image)
+        testing.expectf(t,has_sky==(c.lit || c.image!=.None),"case %d: a Sky with a sky light or a dome it shows",n)
+        testing.expectf(t,(sky.background_image!={})==(c.image!=.None),"case %d: the image of the dome is the Sky's background: %v",n,sky.background_image)
+        testing.expectf(t,(sky.image!={})==(c.image!=.None && c.lit),"case %d: the sky light lights by the dome: %v",n,sky.image)
+        testing.expect(t,!has_warning(&report,"Dome","LightColor times Intensity"),"the dome shows as the level draws it, whatever its sky light")
         if c.dome=="" {testing.expectf(t,sky.use_background && sky.luminance.r>c.intensity,"case %d: Mirai's sky at the light of the sky light: %v",n,sky)}
         if c.image==.None || !has_entity {continue}
-        testing.expectf(t,!sky.use_background && !sky.atmosphere,"case %d: the Sky shows its image",n)
-        image:=""
-        for a in report.imports.assets {if a.id==sky.image && a.kind==asset.KIND_TEXTURE {image=a.path}}
-        file:asset.Asset
-        if !testing.expectf(t,image!="" && asset.asset_load(&file,image,context.temp_allocator)==.None,"case %d: the image is a .tex of the import",n) {continue}
-        defer asset.asset_close(&file)
-        view,view_error:=asset.texture_view(&file,&types)
-        if !testing.expectf(t,view_error==.None,"case %d: the image reads",n) {continue}
+        testing.expectf(t,sky.use_background && !sky.atmosphere,"case %d: the Sky shows the dome behind the scene",n)
+        // The background as the level draws the dome; the image the sky light
+        // lights by, the same above the horizon and black under it, as its
+        // lower hemisphere is.
+        background:=sky_texture(&report,&types,sky.background_image)
+        defer asset.asset_close(&background.file)
+        if !testing.expectf(t,background.ok,"case %d: the background is a .tex of the import",n) {continue}
+        view:=background.view
         width,height:=int(view.info.width),int(view.info.height)
         testing.expectf(t,width==2*height,"case %d: the whole sky, twice as wide as tall: %dx%d",n,width,height)
+        drawn:=asset.texture_mip(view,0)
+        texel_bytes:=len(drawn)/(width*height)
+        channel:=texel_bytes/4
+        if c.cube {
+            place,_:=asset.scene_get(&scene,e,"Transform",core.Transform)
+            quarter:=mm.quat_axis_angle({0,1,0},math.PI/2)
+            q:=place.rotation
+            testing.expectf(t,abs(abs(real(q)*real(quarter)+imag(q)*imag(quarter)+jmag(q)*jmag(quarter)+kmag(q)*kmag(quarter))-1)<1e-4,"case %d: the Sky turns as the cube: %v",n,place.rotation)
+            testing.expectf(t,sky.image!=sky.background_image && width>8,"case %d: the cube lights; the dome shows shaded: %dx%d",n,width,height)
+        } else if c.lit {
+            lighting:=sky_texture(&report,&types,sky.image)
+            defer asset.asset_close(&lighting.file)
+            if !testing.expectf(t,lighting.ok,"case %d: the image it lights by is a .tex of the import",n) {continue}
+            lit:=asset.texture_mip(lighting.view,0)
+            above,under,drawn_under:=len(lit)==len(drawn),true,false
+            for texel in 0..<width*height {
+                if !above {break}
+                rgb:=texel*texel_bytes
+                for b in rgb..<rgb+3*channel {
+                    if texel<width*height/2 {above&&=lit[b]==drawn[b]} else {under&&=lit[b]==0;drawn_under||=drawn[b]!=0}
+                }
+            }
+            testing.expectf(t,above && under && drawn_under,"case %d: lit by the dome above the horizon and black under it, which the dome is not",n)
+        }
         if c.image==.Shaded {
-            testing.expectf(t,sky.luminance==[3]f32{c.intensity,c.intensity,c.intensity},"case %d: at the LightColor times Intensity of the sky light: %v",n,sky.luminance)
-            testing.expectf(t,(c.intensity!=1)==has_warning(&report,"Dome","LightColor times Intensity"),"case %d: a sky light that is not 1 is a warning",n)
+            testing.expectf(t,sky.background==[3]f32{1,1,1},"case %d: the dome as its material shows it: %v",n,sky.background)
+            testing.expectf(t,sky.luminance==(c.lit?[3]f32{c.intensity,c.intensity,c.intensity}:[3]f32{}),"case %d: lit at the LightColor times Intensity of the sky light: %v",n,sky.luminance)
             if c.dome!="SM_Gradient" {continue}
             // Read along the rows nearest the zenith and the horizon.
-            texels:=([^]f16)(raw_data(asset.texture_mip(view,0)))[:width*height*4]
+            texels:=([^]f16)(raw_data(drawn))[:width*height*4]
             row_mean :: proc(texels:[]f16,width,row:int) -> (mean:[3]f32) {
                 for x in 0..<width {for k in 0..<3 {mean[k]+=f32(texels[(row*width+x)*4+k])}}
                 return mean/f32(width)
             }
-            zenith,horizon,under:=row_mean(texels,width,0),row_mean(texels,width,height/2-1),row_mean(texels,width,height/2)
-            testing.expectf(t,under=={},"case %d: under the horizon, the black lower hemisphere of the sky light: %v",n,under)
+            zenith,horizon:=row_mean(texels,width,0),row_mean(texels,width,height/2-1)
             expected_zenith,expected_horizon:=ZENITH,HORIZON
             for k in 0..<3 {
                 testing.expectf(t,abs(zenith[k]-expected_zenith[k])<0.02,"case %d: the zenith is the material's: %v",n,zenith)
@@ -672,7 +709,8 @@ a_dome_that_encloses_the_level_is_its_sky_and_is_not_drawn :: proc(t:^testing.T)
             }
             continue
         }
-        testing.expectf(t,sky.luminance==[3]f32{3,3,3},"case %d: at the luminance of its material: %v",n,sky.luminance)
+        testing.expectf(t,sky.background==[3]f32{3,3,3},"case %d: the dome at the luminance of its material: %v",n,sky.background)
+        testing.expectf(t,sky.luminance==(c.lit?[3]f32{3,3,3}:[3]f32{}),"case %d: lit at the luminance of its material times the sky light: %v",n,sky.luminance)
         testing.expectf(t,width==8 && height==4,"case %d: the texture as it is",n)
         // Where the dome, turned by its yaw about Unreal's up, shows the u of a
         // point, the Sky turned by its entity reads the same u.
@@ -713,6 +751,22 @@ under_lumen_the_indirect_lighting_intensity_of_a_post_process_scales_no_light ::
     bulb,has_bulb:=asset.scene_get(&scene,torch,"Point_Light",render.Point_Light)
     testing.expectf(t,has_bulb && close(bulb.intensity,100) && bulb.indirect==1,"a Static light as it is: %v cd, %v of its bounce",bulb.intensity,bulb.indirect)
     testing.expect(t,!has_warning(&report,"Cellar","IndirectLightingIntensity"),"a bound volume changes nothing as the camera goes in")
+}
+
+// The texture id names among the assets of an import, open; ok false
+// without one that reads.
+@(private="file")
+Sky_Texture :: struct {file:asset.Asset,view:asset.Texture_View,ok:bool}
+@(private="file")
+sky_texture :: proc(report:^Level_Report,types:^asset.Types,id:base.Asset_Id) -> (v:Sky_Texture) {
+    for a in report.imports.assets {
+        if a.id!=id || a.kind!=asset.KIND_TEXTURE || asset.asset_load(&v.file,a.path,context.temp_allocator)!=.None {continue}
+        error:asset.Error
+        v.view,error=asset.texture_view(&v.file,types)
+        v.ok=error==.None
+        return
+    }
+    return
 }
 
 @(private="file")
