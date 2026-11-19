@@ -261,11 +261,15 @@ arrives with its cause and offset.
   have a `Content` are listed). A package outside any `Content` folder (a pack copied without its
   project) mounts what `source_mount_guess` gives from the name it stores of itself or, if it was
   renamed, `source_mount_near` of a package it imports; `/Engine`, `Options.engine_content` or,
-  without it, `UNREAL_ENGINE` (an install or its `Engine` folder) or the newest `UE_<version>`
-  install where Epic's launcher leaves them. Each engine plugin with content mounts its own
-  (`/Niagara` is `Engine/Plugins/FX/Niagara/Content`, `engine_plugin_mounts`). Walking them reads
-  hundreds of folders: importing a single package mounts them only when it reads a package that
-  only a plugin can have (`library_plugins_mount`); importing a level, at the start.
+  without it, `UNREAL_ENGINE` (an install or its `Engine` folder) or the newest install that holds
+  `Engine/Content` among the `UE_*` folders of the launcher's folder and of `Epic Games` under the
+  home, and those the launcher records wherever they are (its list of installations, the builds
+  registered with the engine), its version from `Engine/Build/Build.version`
+  (`engine_content_find`); a recorded folder that is gone is left out. An import that finds none
+  warns once (`ENGINE_UNSET`), saying to set `UNREAL_ENGINE`. Each engine plugin with content mounts
+  its own (`/Niagara` is `Engine/Plugins/FX/Niagara/Content`, `engine_plugin_mounts`). Walking them
+  reads hundreds of folders: importing a single package mounts them only when it reads a package
+  that only a plugin can have (`library_plugins_mount`); importing a level, at the start.
 - **`/Engine` without Unreal** (`engine.odin`): a `/Engine` material that no mount has, or one
   that reads a missing `/Engine` texture, function, collection or parent, is the engine grid
   (`engine_grid`: the standard model with the `Grid` program of `shaders/materials`, lines every

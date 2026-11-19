@@ -93,21 +93,29 @@ in the space of an entity at the scene origin.
   and the foliage one, also those baked by PCG and by packed level actors. One type per mesh,
   materials of its slots, cull distance (`InstanceEndCullDistance`), shadows, rays and collision:
   a box of the mesh bounds if the component collides, nothing if not. No generator; instances are
-  manual, where they are.
+  manual, where they are. A `StaticMeshComponent` whose materials sway in the wind stays its
+  entity, with its transform and collision, and gets a `Foliage_Sway` of the wind they give
+  (`mesh_sway`): it sways as foliage of that wind does.
 - **Wind** (`wind.odin`). Unreal sways foliage with the `WorldPositionOffset` of its materials,
-  Mirai with the wind of each type where a `Wind` blows. `material.offset_read` tells wind (it
-  moves with time and a function or parameter that feeds it is named for the wind) from another
-  motion and from a shape, and measures how far it moves vertices of each section of the mesh
-  across. The type leans by the angle whose rigid bend best matches those reaches in least
-  squares (`sin(lean) = sum(R*h)/sum(h*h)`, `h` the height above the pivot), and its wind is what
-  leans it that far at the peak of its sway in a `Wind` of `volume.WIND_DEFAULT`. Those materials
-  are what says the air moves (Unreal sways foliage by them, with the wind parameters they read):
-  the scene of the map gets a `Wind` of that speed, the way most swaying instances are moved and
-  the pace they sway at on average; when they say neither way nor pace, no `Wind` is added and
-  the import says so. A sway that cannot be measured is Mirai's default wind. Warnings: an offset
-  that is not wind (it stands still), per-vertex weights (vertex colors, uv: Mirai bends the whole
-  plant by height), gusts drawn by a texture, and the way and pace of each material (Mirai's wind
-  has one of each where it blows).
+  Mirai with the wind of each type where a `Wind` blows and the flutter of its leaves on top.
+  `material.offset_read` tells wind (it moves with time and a function or parameter that feeds it is
+  named for the wind) from another motion and from a shape, and measures what it moves vertices of
+  each section of the mesh by (`material.Offset_Reach`): what moves a vertex slower than
+  `material.OFFSET_SLOW` is its sway, the length of its path along the line it moves along, so what
+  it leans a vertex one way all the time is no sway; what moves it faster about that is its flutter.
+  The type sways by the rigid bend whose swing best matches the sways in least squares
+  (`sum(S*h)/sum(h*h)`, `h` the height above the pivot), and its wind is what sways it that far,
+  from its least lean to its peak, in a `Wind` of `volume.WIND_DEFAULT`; its `flutter` is what
+  flutters the leaves of the sections that flutter (`material.offset_flutters`) as far on average in
+  that `Wind`. The mesh import gives those leaves their green: a mesh whose sections flutter apart
+  carries green 0 on the sections that do not, those a program shows (`model/flutter.odin`). Those
+  materials are what says the air moves (Unreal sways foliage by them, with the wind parameters they
+  read): the scene of the map gets a `Wind` of that speed, the way and the pace the foliage sways
+  at, each type counting by its instances times how much it is moved (a forest leads its grass);
+  when they say neither way nor pace, no `Wind` is added and the import says so. A sway that cannot
+  be measured is Mirai's default wind. Warnings: an offset that is not wind (it stands still),
+  per-vertex weights (vertex colors, uv: Mirai bends the whole plant by height), gusts drawn by a
+  texture, and the way and pace of each material (Mirai's wind has one of each where it blows).
 - **Cull distances.** Unreal fades an instance between its start and end cull distances only in
   a material that reads `PerInstanceFadeAmount`; otherwise it draws whole up to the end and is
   gone there. Every type of foliage starts its fade at its cull distance.
@@ -351,7 +359,8 @@ the area the Blueprint simulates; at 1, those of the mesh. `PressureDivergenceBu
   `unreal_foliage_becomes_manual_instances_of_its_cells_with_their_ground`,
   `instanced_components_are_one_type_for_each_mesh_and_materials_with_instances_from_the_origin`,
   `a_reimported_level_keeps_the_ids_of_the_foliage_it_had`,
-  `unreal_foliage_of_actors_adds_only_its_static_mesh_types` and
+  `unreal_foliage_of_actors_adds_only_its_static_mesh_types`,
+  `a_placed_mesh_that_sways_stays_an_entity_with_the_wind_of_its_mesh` and
   `landscape_grass_is_a_generated_type_on_its_layer_over_the_cells_where_it_is_painted`; the
   grass of a material, `a_grass_output_gives_each_grass_type_its_layers_rule_and_varieties` of
   `editor/material`.

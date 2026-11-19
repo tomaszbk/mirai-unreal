@@ -344,6 +344,7 @@ document_import :: proc(d:^level.Document,source:string,size,hash:u64,options:im
     c.shaders=project.folder_path(root,.Shaders,scratch)
     engine:=""
     for mount in mounts {if mount.package_prefix=="/Engine" {engine=mount.directory}}
+    if engine=="" {warn(&c,"%s: %s",stem,unreal.ENGINE_UNSET)}
     material_write.builder_init(&c.images,c.lib,c.report.allocator,&c.library_lock,MEMORY_FLOOR)
     defer material_write.builder_destroy(&c.images)
     defer if c.decoder_ready {kraken.decoder_destroy(&c.decoder)}
