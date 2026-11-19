@@ -2,6 +2,14 @@
 
 Code of other projects that this repository translates or adapts.
 
+## ooz
+
+- Project: <https://github.com/powzix/ooz>
+- License: GPL-3.0-or-later, full text in [`editor/kraken/LICENSE`](editor/kraken/LICENSE)
+- Copyright (C) 2016, Powzix
+- Where: `editor/kraken` (the decoder of Oodle LZ streams: Kraken, Mermaid, Selkie and
+  Leviathan), translated to Odin. That package is licensed under GPL-3.0-or-later.
+
 ## egs-api-rs
 
 - Project: <https://github.com/AchetaGames/egs-api-rs>

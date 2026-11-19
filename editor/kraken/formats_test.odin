@@ -691,7 +691,7 @@ decode_matches :: proc(stream,expected:[]u8) -> bool {
     decoder,_:=decoder_make()
     defer decoder_destroy(&decoder)
     out:=make([]u8,len(expected),context.temp_allocator)
-    return decode(&decoder,stream,out)==.None && string(out)==string(expected)
+    return own_decode(&decoder,stream,out)==.None && string(out)==string(expected)
 }
 
 @(test)
@@ -700,7 +700,7 @@ kraken_rejects_the_excess_stream_and_other_compressors :: proc(t:^testing.T) {
     defer decoder_destroy(&decoder)
     out:=make([]u8,64,context.temp_allocator)
     for compressor in ([]u8{5,11}) {
-        testing.expect_value(t,decode(&decoder,{0x0c,compressor,0,0,0},out),Error.Unsupported)
+        testing.expect_value(t,own_decode(&decoder,{0x0c,compressor,0,0,0},out),Error.Unsupported)
     }
     chunk:=make([dynamic]u8,context.temp_allocator)
     append(&chunk,0x80,0x00,0x14)
@@ -709,9 +709,9 @@ kraken_rejects_the_excess_stream_and_other_compressors :: proc(t:^testing.T) {
     for _ in 0..<11 {append(&chunk,0)}
     stream:=bytes()
     block_put(&stream,chunk[:])
-    testing.expect_value(t,decode(&decoder,stream[:],out),Error.Unsupported)
+    testing.expect_value(t,own_decode(&decoder,stream[:],out),Error.Unsupported)
     stream[len(stream)-12]=0xc0
-    testing.expect_value(t,decode(&decoder,stream[:],out),Error.Malformed)
+    testing.expect_value(t,own_decode(&decoder,stream[:],out),Error.Malformed)
 }
 
 // Every damaged form of these streams is decoded or refused without a read
@@ -757,14 +757,14 @@ kraken_damaged_formats_are_decoded_or_refused :: proc(t:^testing.T) {
     state:=u32(0x2545f491)
     for source,index in streams {
         out:=make([]u8,sizes[index],context.temp_allocator)
-        testing.expect_value(t,decode(&decoder,source,out),Error.None)
-        for length in 0..<len(source) {_=decode(&decoder,source[:length],out)}
+        testing.expect_value(t,own_decode(&decoder,source,out),Error.None)
+        for length in 0..<len(source) {_=own_decode(&decoder,source[:length],out)}
         damaged:=make([]u8,len(source),context.temp_allocator)
         for position in 0..<len(source) {
             for value in ([3]u8{0,0xff,source[position]~0x55}) {
                 copy(damaged,source)
                 damaged[position]=value
-                _=decode(&decoder,damaged,out)
+                _=own_decode(&decoder,damaged,out)
             }
         }
         for _ in 0..<1000 {
@@ -773,7 +773,7 @@ kraken_damaged_formats_are_decoded_or_refused :: proc(t:^testing.T) {
                 state=state*1664525+1013904223
                 damaged[int(state>>8)%len(damaged)]=u8(state>>24)
             }
-            _=decode(&decoder,damaged,out)
+            _=own_decode(&decoder,damaged,out)
         }
     }
 }
