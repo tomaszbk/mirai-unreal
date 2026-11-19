@@ -63,9 +63,9 @@ library:
   library. Without the bridge for an actor class, the map leaves it as a warning saying which
   plugin to enable.
 - A map's package is recorded as read by `scene.LEVEL_IMPORTER` and its build is named under the
-  key of its identity and `scene.LEVEL_VERSION`; the refresh of the engine finds a whole source's
-  build only by the build this machine chose for its manifest, so a peer without the map and its
-  packages reports the package as missing.
+  key of its identity and `scene.LEVEL_VERSION`. A peer without the map and its packages finds that
+  build by key with the plugin built: a join builds the project's editor before it refreshes the
+  packages. Where the editor does not build, it takes the build a peer chose for the manifest.
 
 ## Invariants
 
