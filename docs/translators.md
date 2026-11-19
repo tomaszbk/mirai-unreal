@@ -110,12 +110,12 @@ in the space of an entity at the scene origin.
   that `Wind`. The mesh import gives those leaves their green: a mesh whose sections flutter apart
   carries green 0 on the sections that do not, those a program shows (`model/flutter.odin`). Those
   materials are what says the air moves (Unreal sways foliage by them, with the wind parameters they
-  read): the scene of the map gets a `Wind` of that speed, the way most swaying instances are moved
-  and the pace they sway at on average; when they say neither way nor pace, no `Wind` is added and
-  the import says so. A sway that cannot be measured is Mirai's default wind. Warnings: an offset
-  that is not wind (it stands still), per-vertex weights (vertex colors, uv: Mirai bends the whole
-  plant by height), gusts drawn by a texture, and the way and pace of each material (Mirai's wind
-  has one of each where it blows).
+  read): the scene of the map gets a `Wind` of that speed, the way and the pace the foliage sways
+  at, each type counting by its instances times how much it is moved (a forest leads its grass);
+  when they say neither way nor pace, no `Wind` is added and the import says so. A sway that cannot
+  be measured is Mirai's default wind. Warnings: an offset that is not wind (it stands still),
+  per-vertex weights (vertex colors, uv: Mirai bends the whole plant by height), gusts drawn by a
+  texture, and the way and pace of each material (Mirai's wind has one of each where it blows).
 - **Cull distances.** Unreal fades an instance between its start and end cull distances only in
   a material that reads `PerInstanceFadeAmount`; otherwise it draws whole up to the end and is
   gone there. Every type of foliage starts its fade at its cull distance.
