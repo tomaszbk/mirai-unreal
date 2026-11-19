@@ -122,10 +122,12 @@ offset_warnings :: proc(owner,path:string,o:material.Offset,allocator:=context.t
     return out[:]
 }
 
-// The wind of the foliage of a scene: what each mesh gives, the materials
-// warned of, and the way the instances that sway are moved.
+// The wind of the foliage of an import and of its placed meshes that sway:
+// what each mesh gives, the materials warned of, and the way the instances
+// that sway are moved.
 Winds :: struct {
     meshes:map[string]Mesh_Wind, // by mesh and the materials of its slots
+    materials:map[string]bool,   // whether a material sways in the wind, by object path
     warned:map[string]struct{},  // materials
     blown:[2]f64,                // Unreal's X and Y: the way of each type that sways, by its instances
     paced:[2]f64,                // Σ cycles per second of each type that sways at a pace, by its instances, and Σ of those instances
@@ -137,9 +139,40 @@ Mesh_Wind :: struct {wind:f32,direction:[2]f32,frequency:f32}
 
 winds_make :: proc() -> (w:Winds) {
     w.meshes=make(map[string]Mesh_Wind,context.temp_allocator)
+    w.materials=make(map[string]bool,context.temp_allocator)
     w.warned=make(map[string]struct{},context.temp_allocator)
     w.ways=make([dynamic][2]f32,context.temp_allocator)
     return
+}
+
+WINDS_KEPT :: "foliage|winds"
+
+// The winds of the import, which its translators and its components share.
+winds_kept :: proc(c:^unreal_scene.Context) -> ^Winds {
+    if kept,found:=c.kept[WINDS_KEPT];found {return (^Winds)(kept)}
+    w:=new(Winds,context.temp_allocator)
+    w^=winds_make()
+    c.kept[WINDS_KEPT]=w
+    return w
+}
+
+// Whether a material of paths sways in the wind (material.offset_read).
+materials_sway :: proc(c:^unreal_scene.Context,w:^Winds,paths:[]string) -> bool {
+    for path in paths {
+        if path=="" {continue}
+        sways,known:=w.materials[path]
+        if !known {
+            unreal_scene.library_lock(c)
+            if m,found:=material.object_find(c.lib,path);found {
+                o,error:=material.offset_read(c.lib,m,nil,{},nil,allocator=context.temp_allocator)
+                sways=error.code==.None && o.kind==.Wind
+            }
+            unreal_scene.library_unlock(c)
+            w.materials[strings.clone(path,context.temp_allocator)]=sways
+        }
+        if sways {return true}
+    }
+    return false
 }
 
 // A type that sways, with its instances, counts toward the way and the

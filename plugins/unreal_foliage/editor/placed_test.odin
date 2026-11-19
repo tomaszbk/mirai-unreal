@@ -40,9 +40,9 @@ wind_package :: proc() -> []u8 {
     return fx.package_bytes(&p,"/Game/Materials/M_Wind")
 }
 
-// A quad standing a metre tall, in the slot of M_Wind, with body as its collision.
+// A quad standing a metre tall, in the slot of material, with body as its collision.
 @(private="file")
-plant_package :: proc(name:string,body:fixture.Body_Fixture) -> []u8 {
+plant_package :: proc(name,material:string,body:fixture.Body_Fixture) -> []u8 {
     out:=[3]f32{0,-1,0}
     f:fixture.Mesh_Fixture
     f.layout=.Raw_Mesh
@@ -53,16 +53,17 @@ plant_package :: proc(name:string,body:fixture.Body_Fixture) -> []u8 {
     f.uvs=slice.clone([][2]f32{{0,1},{1,0},{1,1},{0,1},{0,0},{1,0}},context.temp_allocator)
     f.groups=slice.clone([]u32{0,0},context.temp_allocator)
     f.smoothing=slice.clone([]u32{1,1},context.temp_allocator)
-    f.slots=slice.clone([]fixture.Mesh_Slot{{name="Leaves",imported_name="Leaves",material="/Game/Materials/M_Wind"}},context.temp_allocator)
+    f.slots=slice.clone([]fixture.Mesh_Slot{{name="Leaves",imported_name="Leaves",material=material}},context.temp_allocator)
     f.body=body
     return fixture.static_mesh_package(f)
 }
 
-// A placed mesh whose material sways in the wind is an instance of foliage
-// that collides as its entity did: by the hulls its mesh stores, or not at
-// all.
+// A placed mesh whose material sways in the wind stays an entity, with its
+// collision, and sways as foliage with the wind the same mesh has as a type
+// of the .foliage (an instanced component of it); one whose material stands
+// still has no sway, and no placed mesh becomes foliage.
 @(test)
-a_placed_mesh_that_sways_collides_as_foliage_as_its_entity_did :: proc(t:^testing.T) {
+a_placed_mesh_that_sways_stays_an_entity_with_the_wind_of_its_mesh :: proc(t:^testing.T) {
     directory,_:=os.temp_directory(context.temp_allocator)
     top:=fmt.tprintf("%s/mirai-foliage-placed-%d",directory,os.get_pid())
     os.remove_all(top)
@@ -74,16 +75,14 @@ a_placed_mesh_that_sways_collides_as_foliage_as_its_entity_did :: proc(t:^testin
     project.manifest_write(project.path(root,project.PROJECT_FILE,allocator=context.temp_allocator),&m)
     _=os.write_entire_file(fmt.tprintf("%s/assets/Unreal/Grove.uproject",root),"{}")
     _=os.write_entire_file(fmt.tprintf("%s/Materials/M_Wind.uasset",content),wind_package())
-    Plant :: struct {label,mesh:string,body:fixture.Body_Fixture,collision:foliage.Foliage_Collision}
     hull:=[][3]f32{{0,-5,0},{10,-5,0},{0,5,0},{0,-5,100},{10,5,100}}
-    plants:=[]Plant{
-        {"Tree","SM_Tree",{convexes={hull}},.Hull},
-        {"Reed","SM_Reed",{profile="NoCollision",trace="CTF_UseComplexAsSimple"},.None},
-    }
+    _=os.write_entire_file(fmt.tprintf("%s/Meshes/SM_Tree.uasset",content),plant_package("SM_Tree","/Game/Materials/M_Wind",{convexes={hull}}))
+    _=os.write_entire_file(fmt.tprintf("%s/Meshes/SM_Stone.uasset",content),plant_package("SM_Stone","/Game/Materials/M_Red",{convexes={hull}}))
     l:=fixture.level_begin("/Game/Maps/Grove")
     w:=&l.w
+    Plant :: struct {label,mesh:string,sways:bool}
+    plants:=[]Plant{{"Tree","SM_Tree",true},{"Stone","SM_Stone",false}}
     for p,i in plants {
-        _=os.write_entire_file(fmt.tprintf("%s/Meshes/%s.uasset",content,p.mesh),plant_package(p.mesh,p.body))
         mesh:=fixture.package_object(w,fmt.tprintf("/Game/Meshes/%s",p.mesh),"/Script/Engine","StaticMesh",p.mesh)
         actor:=fixture.actor_add(&l,fixture.engine_class(w,"StaticMeshActor"),fmt.tprintf("StaticMeshActor_%d",i),p.label)
         props:=fixture.bytes_make()
@@ -92,6 +91,17 @@ a_placed_mesh_that_sways_collides_as_foliage_as_its_entity_did :: proc(t:^testin
         fixture.bool_property(&props,w,"bUseDefaultCollision",true)
         fixture.actor_set(&l,actor,fixture.component_add(&l,actor,fixture.engine_class(w,"StaticMeshComponent"),"StaticMeshComponent0",props))
     }
+    // The same tree as foliage: an instanced component of one instance.
+    tree:=fixture.package_object(w,"/Game/Meshes/SM_Tree","/Script/Engine","StaticMesh","SM_Tree")
+    grove:=fixture.actor_add(&l,fixture.engine_class(w,"Actor"),"Actor_2","Grove")
+    props:=fixture.bytes_make()
+    fixture.object_property(&props,w,"StaticMesh",tree)
+    fixture.none(&props,w)
+    fixture.put_u32(&props,0)
+    fixture.put_u32(&props,64);fixture.put_u32(&props,1)
+    for row in ([4][4]f32{{1,0,0,0},{0,1,0,0},{0,0,1,0},{0,900,0,1}}) {for v in row {fixture.put_f32(&props,v)}}
+    fixture.put_u32(&props,4);fixture.put_u32(&props,0)
+    fixture.actor_set(&l,grove,fixture.export_add(w,{class=fixture.engine_class(w,"InstancedStaticMeshComponent"),outer=grove,name="Trees",data=props.data[:]}))
     level:=fmt.tprintf("%s/Maps/Grove.umap",content)
     _=os.write_entire_file(level,fixture.level_bytes(&l))
     provider:=foliage_unreal_default().provider
@@ -99,14 +109,9 @@ a_placed_mesh_that_sways_collides_as_foliage_as_its_entity_did :: proc(t:^testin
     if !testing.expectf(t,error.code==.None,"%s",error.message) {return}
     defer unreal_scene.level_report_destroy(&report)
     types:asset.Types;asset.types_init(&types);defer asset.types_destroy(&types)
-    scene:asset.Scene
-    if !testing.expect_value(t,asset.scene_load(&scene,&types,report.scene_path),asset.Error.None) {return}
-    defer asset.scene_destroy(&scene)
     s:foliage.Source
     defer foliage.source_destroy(&s)
-    meshes:=make(map[base.Asset_Id]string,context.temp_allocator)
     for a in report.imports.assets {
-        if a.kind==asset.KIND_MESH {meshes[a.id]=a.path}
         if a.kind!=foliage.FOLIAGE_KIND {continue}
         file:asset.Asset
         if !testing.expect_value(t,asset.asset_load(&file,a.path),asset.Error.None) {return}
@@ -114,19 +119,19 @@ a_placed_mesh_that_sways_collides_as_foliage_as_its_entity_did :: proc(t:^testin
         _,read:=foliage.source_read(&s,&file,&types)
         testing.expect(t,read,"the .foliage reads")
     }
+    if !testing.expectf(t,len(s.types)==1 && s.types[0].wind>0,"the instanced trees alone are foliage, and sway: %d types",len(s.types)) {return}
+    scene:asset.Scene
+    if !testing.expect_value(t,asset.scene_load(&scene,&types,report.scene_path),asset.Error.None) {return}
+    defer asset.scene_destroy(&scene)
     for p in plants {
-        entity:=false
-        for row in 0..<asset.scene_entity_count(&scene) {entity||=asset.scene_entity(&scene,row).name==p.label}
-        kind:Maybe(foliage.Foliage_Collision)
-        mesh:base.Asset_Id
-        for &type in s.types {if strings.truncate_to_byte(string(type.name[:]),0)==p.label {kind,mesh=type.collision,type.mesh}}
-        testing.expectf(t,!entity && kind==p.collision,"%s: an entity %v, collides as foliage as %v, not %v",p.label,entity,kind,p.collision)
-        if p.collision!=.Hull {continue}
-        // The hulls a collider of its entity took: those its mesh stores.
-        file:asset.Asset
-        if !testing.expect_value(t,asset.asset_load(&file,meshes[mesh]),asset.Error.None) {continue}
-        defer asset.asset_close(&file)
-        view,view_error:=asset.mesh_view(&file,&types)
-        testing.expectf(t,view_error==.None && len(view.colliders)==1 && view.colliders[0].kind==.Hull,"%s: its mesh stores its hull: %v",p.label,view.colliders)
+        id:base.Entity_Id
+        for row in 0..<asset.scene_entity_count(&scene) {if e:=asset.scene_entity(&scene,row);e.name==p.label {id=e.id}}
+        if !testing.expectf(t,id!=0,"%s stays an entity",p.label) {continue}
+        given,swaying:=asset.scene_get(&scene,id,"Foliage_Sway",foliage.Foliage_Sway)
+        if !p.sways {
+            testing.expectf(t,!swaying,"%s stands still: %v",p.label,given)
+            continue
+        }
+        testing.expectf(t,swaying && abs(given.wind-s.types[0].wind)<=1e-6*s.types[0].wind,"%s sways with the wind of its mesh as foliage, %v: %v",p.label,s.types[0].wind,given)
     }
 }

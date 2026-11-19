@@ -59,8 +59,13 @@ volumes_translate :: proc(c:^unreal_scene.Context,actors:[]int) -> int {
 
 mesh_collision :: proc(c:^unreal_scene.Context,a,k:int,e:base.Entity_Id) {
     unreal_scene.zone(c,"physics.collision")
-    body,collides,simulate:=unreal_scene.component_body(c,k)
-    if !collides {return}
+    d:=c.d
+    ref:=d.components[k].ref
+    profile,enabled,simulate:=level.component_collision(d,ref)
+    body,ok:=unreal_scene.mesh_body(c,level.path_of(d,ref,"StaticMesh"))
+    if !ok {return}
+    if use,_:=level.bool_of(d,ref,"bUseDefaultCollision",false);use && body.profile!="" {profile=body.profile}
+    if !level.profile_collides(profile,enabled) {return}
     convexes:=0
     for shape in body.shapes {if shape.kind==.Convex {convexes+=1}}
     if body.trace==.Complex_As_Simple || len(body.shapes)==0 || convexes>0 {

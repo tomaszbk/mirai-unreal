@@ -93,11 +93,9 @@ in the space of an entity at the scene origin.
   and the foliage one, also those baked by PCG and by packed level actors. One type per mesh,
   materials of its slots, cull distance (`InstanceEndCullDistance`), shadows, rays and collision:
   a box of the mesh bounds if the component collides, nothing if not. No generator; instances are
-  manual, where they are. A `StaticMeshComponent` whose materials sway in the wind is a batch of
-  one instance where it stands, not an entity (`mesh_sways`): Mirai sways foliage alone. It keeps
-  what its entity had: never culled, seen by rays, and its collision, by the hulls its mesh
-  stores (`Hull`) or none; one that collides otherwise (its triangles, boxes, spheres or capsules,
-  a body that moves) stays an entity that stands still, and the import says so.
+  manual, where they are. A `StaticMeshComponent` whose materials sway in the wind stays its
+  entity, with its transform and collision, and gets a `Foliage_Sway` of the wind they give
+  (`mesh_sway`): it sways as foliage of that wind does.
 - **Wind** (`wind.odin`). Unreal sways foliage with the `WorldPositionOffset` of its materials,
   Mirai with the wind of each type where a `Wind` blows. `material.offset_read` tells wind (it
   moves with time and a function or parameter that feeds it is named for the wind) from another
@@ -356,7 +354,8 @@ the area the Blueprint simulates; at 1, those of the mesh. `PressureDivergenceBu
   `unreal_foliage_becomes_manual_instances_of_its_cells_with_their_ground`,
   `instanced_components_are_one_type_for_each_mesh_and_materials_with_instances_from_the_origin`,
   `a_reimported_level_keeps_the_ids_of_the_foliage_it_had`,
-  `unreal_foliage_of_actors_adds_only_its_static_mesh_types` and
+  `unreal_foliage_of_actors_adds_only_its_static_mesh_types`,
+  `a_placed_mesh_that_sways_stays_an_entity_with_the_wind_of_its_mesh` and
   `landscape_grass_is_a_generated_type_on_its_layer_over_the_cells_where_it_is_painted`; the
   grass of a material, `a_grass_output_gives_each_grass_type_its_layers_rule_and_varieties` of
   `editor/material`.

@@ -18,10 +18,8 @@ import foliage "plugins:foliage/runtime"
 // level is written to: a type for each foliage type of its
 // InstancedFoliageActors, and for each mesh, materials and settings of the
 // instanced static mesh components its actors show (those PCG and packed
-// level actors bake too) and of their static mesh components that sway in
-// the wind, which Mirai sways as foliage alone; each instance a manual one
-// of the cell it falls in, in the space of an entity at the origin of the
-// scene. Nothing is
+// level actors bake too); each instance a manual one of the cell it falls
+// in, in the space of an entity at the origin of the scene. Nothing is
 // generated: Unreal's instances are the ones its artist or its graphs placed.
 //
 // - A Mirai instance has one scale across: one with different X and Y
@@ -141,8 +139,7 @@ Instanced_Type :: struct {
     cull_distance:f32, // metres; 0 never culled
     wind:f32,          // that its materials sway its mesh with (mesh_wind)
     casts_shadow,ray_visible:bool,
-    collision:foliage.Foliage_Collision,
-    size:[3]f32,       // of the box of its mesh, when it collides as one
+    size:[3]f32,       // of the box of its mesh, when it collides; zero for none
 }
 
 // The instances of instanced components with their types: those of a type
@@ -171,7 +168,8 @@ instanced_add :: proc(s:^foliage.Source,batches:[]Instanced_Batch,origin:[3]f32,
             t.wind=b.type.wind
             t.fade_distance,t.cull_distance=b.type.cull_distance,b.type.cull_distance
             t.casts_shadow,t.ray_visible=b.type.casts_shadow,b.type.ray_visible
-            t.collision,t.size=b.type.collision,b.type.size
+            t.collision=b.type.size=={}?foliage.Foliage_Collision.None:foliage.Foliage_Collision.Box
+            t.size=b.type.size
             t.preset=0
             id=t.id
             ids[key]=id
@@ -287,9 +285,28 @@ foliage_ids_keep :: proc(s:^foliage.Source,previous:^foliage.Source) -> bool {
 Foliage_Unreal :: struct {provider:unreal_scene.Translator_Provider}
 
 foliage_unreal_default :: proc() -> (f:Foliage_Unreal) {
-    f.provider.count=1
+    f.provider.count=2
     f.provider.translators[0]={classes={0="InstancedFoliageActor"},translate=foliages_translate,instanced=true,map_scene=true}
+    f.provider.translators[1]={classes={0="StaticMeshComponent"},component=mesh_sway}
     return
+}
+
+// A mesh placed in the level whose materials sway in the wind stays its
+// entity, with its transform and collision, and sways as foliage of the
+// wind they give (mesh_wind) with a Foliage_Sway.
+mesh_sway :: proc(c:^unreal_scene.Context,a,k:int,e:base.Entity_Id) {
+    unreal_scene.zone(c,"foliage.sway")
+    winds:=winds_kept(c)
+    if !materials_sway(c,winds,unreal_scene.slot_material_paths(c,k)) {return}
+    d:=c.d
+    ref:=d.components[k].ref
+    path:=level.path_of(d,ref,"StaticMesh")
+    _,object:=unreal_scene.object_split(path)
+    sway:=mesh_wind(c,winds,unreal.asset_name(object),path,level.paths_of(d,ref,"OverrideMaterials"))
+    if sway.wind<=0 {return}
+    winds_count(winds,sway,1)
+    shown:=foliage.Foliage_Sway{wind=sway.wind}
+    unreal_scene.component_set(c,e,"Foliage_Sway",&shown)
 }
 
 foliages_translate :: proc(c:^unreal_scene.Context,actors:[]int) -> int {
@@ -298,7 +315,7 @@ foliages_translate :: proc(c:^unreal_scene.Context,actors:[]int) -> int {
     s:foliage.Source
     defer foliage.source_destroy(&s)
     result:Foliage_Source
-    winds:=winds_make()
+    winds:=winds_kept(c)
     translated,instances:=0,0
     if len(actors)>0 {
         read_zone:=unreal_scene.zone_begin(c,"foliage.read")
@@ -321,9 +338,9 @@ foliages_translate :: proc(c:^unreal_scene.Context,actors:[]int) -> int {
                 type_winds:=make([]f32,len(f.types),context.temp_allocator)
                 for t,i in f.types {
                     if t.kind!=.Static_Mesh {continue}
-                    sway:=mesh_wind(c,&winds,unreal.asset_name(t.name),t.mesh,nil)
+                    sway:=mesh_wind(c,winds,unreal.asset_name(t.name),t.mesh,nil)
                     type_winds[i]=sway.wind
-                    winds_count(&winds,sway,t.instance_count)
+                    winds_count(winds,sway,t.instance_count)
                 }
                 unreal_scene.zone_end(wind_zone)
                 add_zone:=unreal_scene.zone_begin(c,"foliage.add")
@@ -347,7 +364,7 @@ foliages_translate :: proc(c:^unreal_scene.Context,actors:[]int) -> int {
     }
     if len(c.instanced)>0 {
         batches_zone:=unreal_scene.zone_begin(c,"foliage.instanced")
-        batches:=instanced_batches(c,&winds)
+        batches:=instanced_batches(c,winds)
         unreal_scene.zone_end(batches_zone)
         add_zone:=unreal_scene.zone_begin(c,"foliage.add")
         instanced_add(&s,batches,origin,&result)
@@ -357,12 +374,13 @@ foliages_translate :: proc(c:^unreal_scene.Context,actors:[]int) -> int {
     grass:Grass_Result
     if c.section==0 {
         grass_zone:=unreal_scene.zone_begin(c,"foliage.grass")
-        grass=grass_translate(c,&s,origin,&winds)
+        grass=grass_translate(c,&s,origin,winds)
         unreal_scene.zone_end(grass_zone)
     }
     unreal_scene.tally(c,"instances of foliage scaled differently along X and Y take the mean of both",result.averaged)
     unreal_scene.tally(c,"instances of foliage with a zero, negative or too large scale, or past the types a .foliage holds, are left out",result.dropped)
     unreal_scene.tally(c,"instances of foliage of actors have no actor in the level, which the editor of Unreal places again, and are left out",result.unplaced)
+    wind_write(c,winds)
     if len(s.types)==0 {return translated}
     name:=section!=""?section:"Foliage"
     unreal_scene.zone(c,"foliage.write")
@@ -384,7 +402,6 @@ foliages_translate :: proc(c:^unreal_scene.Context,actors:[]int) -> int {
     if !made {return translated}
     shown:=foliage.Foliage{source=id}
     unreal_scene.component_set(c,e,"Foliage",&shown)
-    wind_write(c,&winds)
     return translated
 }
 
@@ -408,15 +425,10 @@ previous_keep :: proc(c:^unreal_scene.Context,s:^foliage.Source,name,path:string
     }
 }
 
-IDENTITY :: [4][4]f64{{1,0,0,0},{0,1,0,0},{0,0,1,0},{0,0,0,1}}
-
-// The batches of the instanced components of the scene and of its static
-// mesh components that sway in the wind (c.instanced): each
+// The batches of the instanced components of the scene (c.instanced): each
 // its mesh and the materials its slots override, the cull distances of its
 // instances, its shadows and rays, and the box of its mesh when it collides;
-// its instances where they are in the world. A static mesh component is one
-// instance that is drawn, seen by rays and collides as its entity would:
-// never culled, and by the hulls its mesh stores (unreal_scene.mesh_sways). A material the level keeps
+// its instances where they are in the world. A material the level keeps
 // inside an actor is written now, since no entity takes it at the end of the
 // level, and the instances of each set of custom data (PerInstanceSMCustomData)
 // are a batch that shows the variants of the materials that read it. Each
@@ -442,11 +454,7 @@ instanced_batches :: proc(c:^unreal_scene.Context,winds:^Winds) -> []Instanced_B
         if missing {held+=1}
         instances_zone:=unreal_scene.zone_begin(c,"foliage.instances")
         world,world_error:=level.component_world(d,k)
-        one:=[1][4][4]f64{IDENTITY}
-        instances:=level.Instances{matrices=one[:]}
-        instances_error:unreal.Error
-        single:=d.components[k].class.name=="StaticMeshComponent"
-        if !single {instances,instances_error=level.component_instances(d,k,context.temp_allocator)}
+        instances,instances_error:=level.component_instances(d,k,context.temp_allocator)
         unreal_scene.zone_end(instances_zone)
         if world_error.code!=.None || instances_error.code!=.None {unread+=1;continue}
         if len(instances.matrices)==0 {continue}
@@ -460,11 +468,8 @@ instanced_batches :: proc(c:^unreal_scene.Context,winds:^Winds) -> []Instanced_B
         sway:=mesh_wind(c,winds,t.name,path,level.paths_of(d,ref,"OverrideMaterials"))
         t.wind=sway.wind
         winds_count(winds,sway,len(instances.matrices))
-        if single {
-            t.cull_distance,t.ray_visible=0,true
-            if _,collides,_:=unreal_scene.component_body(c,k);collides {t.collision=.Hull}
-        } else if profile,enabled,_:=level.component_collision(d,ref);level.profile_collides(profile,enabled) {
-            if box:=level.mesh_box(d,path,&boxes);box.ok {t.collision,t.size=.Box,mm.aabb_size(box.box)}
+        if profile,enabled,_:=level.component_collision(d,ref);level.profile_collides(profile,enabled) {
+            if box:=level.mesh_box(d,path,&boxes);box.ok {t.size=mm.aabb_size(box.box)}
         }
         place_zone:=unreal_scene.zone_begin(c,"foliage.place")
         defer unreal_scene.zone_end(place_zone)

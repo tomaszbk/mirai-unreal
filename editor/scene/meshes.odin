@@ -146,43 +146,6 @@ slot_material_paths :: proc(c:^Context,k:int) -> []string {
     return paths
 }
 
-// Whether static mesh component k sways in the wind by the material of one
-// of its slots (material.offset_read), for a translator that takes the
-// instanced components: Mirai sways foliage alone, so that translator takes
-// it as a batch of one instance where it stands. It must collide as foliage
-// can and as its entity would: not at all, or still by the hulls its mesh
-// stores (body_hulls); one that collides otherwise stands still, an entity.
-@(private)
-mesh_sways :: proc(c:^Context,k:int) -> bool {
-    if !c.takes_instanced || !material_sways(c,k) {return false}
-    body,collides,simulates:=component_body(c,k)
-    if collides && (simulates || !body_hulls(body)) {
-        tally(c,"static meshes sway in the wind by their materials but collide by their triangles, by boxes, spheres or capsules, or as bodies that move, which foliage does not: they stand still",1)
-        return false
-    }
-    return true
-}
-
-// Whether a material of a slot of static mesh component k sways in the wind.
-@(private)
-material_sways :: proc(c:^Context,k:int) -> bool {
-    for path in slot_material_paths(c,k) {
-        if path=="" {continue}
-        sways,known:=c.sways[path]
-        if !known {
-            library_lock(c)
-            if m,found:=material.object_find(c.lib,path);found {
-                o,error:=material.offset_read(c.lib,m,nil,{},nil,allocator=context.temp_allocator)
-                sways=error.code==.None && o.kind==.Wind
-            }
-            library_unlock(c)
-            c.sways[strings.clone(path,context.temp_allocator)]=sways
-        }
-        if sways {return true}
-    }
-    return false
-}
-
 // The object path of the material of each slot of the mesh at path, by
 // Unreal's index; "" for a slot without one.
 @(private)

@@ -74,7 +74,7 @@ unreal_foliage_becomes_manual_instances_of_its_cells_with_their_ground :: proc(t
 
 @(test)
 instanced_components_are_one_type_for_each_mesh_and_materials_with_instances_from_the_origin :: proc(t:^testing.T) {
-    rock:=Instanced_Type{name="Rock",mesh={1,1},cull_distance=200,casts_shadow=true,ray_visible=true,collision=.Box,size={2,1,2}}
+    rock:=Instanced_Type{name="Rock",mesh={1,1},cull_distance=200,casts_shadow=true,ray_visible=true,size={2,1,2}}
     mossy:=rock
     mossy.materials[0]={9,9}
     mossy.name="Mossy rock"
