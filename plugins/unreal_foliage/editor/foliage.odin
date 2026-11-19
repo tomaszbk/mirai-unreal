@@ -34,7 +34,7 @@ import foliage "plugins:foliage/runtime"
 
 Foliage_Options :: struct {
     meshes:[]base.Asset_Id, // the .mesh of each foliage type, in its order; zero for none
-    winds:[]f32,            // the wind of each foliage type (mesh_wind), in its order; none: 0
+    winds:[]Mesh_Wind,      // the wind and flutter of each foliage type (mesh_wind), in its order; none: still
 }
 
 Foliage_Source :: struct {
@@ -75,7 +75,7 @@ foliage_add :: proc(s:^foliage.Source,f:^ufoliage.Foliage,options:Foliage_Option
         t:=foliage.source_type_add(s,unreal.asset_name(ut.name),mesh)
         result.types[i]=t.id
         type_from(t,ut)
-        if i<len(options.winds) {t.wind=options.winds[i]}
+        if i<len(options.winds) {t.wind,t.flutter=options.winds[i].wind,options.winds[i].flutter}
     }
     for instance in f.instances {
         if f.types[instance.type].kind!=.Static_Mesh {
@@ -118,7 +118,7 @@ type_from :: proc(t:^foliage.Foliage_Type,ut:ufoliage.Foliage_Type) {
     t.align=ut.align_to_normal?1:0
     t.fade_distance,t.cull_distance=0,0
     if ut.cull[1]>0 {t.fade_distance,t.cull_distance=ut.cull[1],ut.cull[1]}
-    t.wind=0
+    t.wind,t.flutter=0,0
     t.casts_shadow=ut.casts_shadow
     t.ray_visible=ut.ray_visible
     t.collision=.None
@@ -137,7 +137,7 @@ Instanced_Type :: struct {
     mesh:base.Asset_Id,
     materials:[render.MATERIAL_SLOTS]base.Asset_Id, // those its slots override; none: the mesh's
     cull_distance:f32, // metres; 0 never culled
-    wind:f32,          // that its materials sway its mesh with (mesh_wind)
+    wind,flutter:f32,  // that its materials sway its mesh and flutter its leaves with (mesh_wind)
     casts_shadow,ray_visible:bool,
     size:[3]f32,       // of the box of its mesh, when it collides; zero for none
 }
@@ -165,7 +165,7 @@ instanced_add :: proc(s:^foliage.Source,batches:[]Instanced_Batch,origin:[3]f32,
             t.density=0
             t.scale,t.height={1,1},{1,1}
             t.yaw,t.tilt,t.align=0,0,0
-            t.wind=b.type.wind
+            t.wind,t.flutter=b.type.wind,b.type.flutter
             t.fade_distance,t.cull_distance=b.type.cull_distance,b.type.cull_distance
             t.casts_shadow,t.ray_visible=b.type.casts_shadow,b.type.ray_visible
             t.collision=b.type.size=={}?foliage.Foliage_Collision.None:foliage.Foliage_Collision.Box
@@ -305,7 +305,7 @@ mesh_sway :: proc(c:^unreal_scene.Context,a,k:int,e:base.Entity_Id) {
     sway:=mesh_wind(c,winds,unreal.asset_name(object),path,level.paths_of(d,ref,"OverrideMaterials"))
     if sway.wind<=0 {return}
     winds_count(winds,sway,1)
-    shown:=foliage.Foliage_Sway{wind=sway.wind}
+    shown:=foliage.Foliage_Sway{wind=sway.wind,flutter=sway.flutter}
     unreal_scene.component_set(c,e,"Foliage_Sway",&shown)
 }
 
@@ -335,11 +335,11 @@ foliages_translate :: proc(c:^unreal_scene.Context,actors:[]int) -> int {
                 }
                 unreal_scene.zone_end(meshes_zone)
                 wind_zone:=unreal_scene.zone_begin(c,"foliage.wind")
-                type_winds:=make([]f32,len(f.types),context.temp_allocator)
+                type_winds:=make([]Mesh_Wind,len(f.types),context.temp_allocator)
                 for t,i in f.types {
                     if t.kind!=.Static_Mesh {continue}
                     sway:=mesh_wind(c,winds,unreal.asset_name(t.name),t.mesh,nil)
-                    type_winds[i]=sway.wind
+                    type_winds[i]=sway
                     winds_count(winds,sway,t.instance_count)
                 }
                 unreal_scene.zone_end(wind_zone)
@@ -466,7 +466,7 @@ instanced_batches :: proc(c:^unreal_scene.Context,winds:^Winds) -> []Instanced_B
         t.casts_shadow=shown.shadows
         t.ray_visible,_=level.bool_of(d,ref,"bVisibleInRayTracing",true)
         sway:=mesh_wind(c,winds,t.name,path,level.paths_of(d,ref,"OverrideMaterials"))
-        t.wind=sway.wind
+        t.wind,t.flutter=sway.wind,sway.flutter
         winds_count(winds,sway,len(instances.matrices))
         if profile,enabled,_:=level.component_collision(d,ref);level.profile_collides(profile,enabled) {
             if box:=level.mesh_box(d,path,&boxes);box.ok {t.size=mm.aabb_size(box.box)}

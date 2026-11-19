@@ -26,7 +26,7 @@ unreal_foliage_becomes_manual_instances_of_its_cells_with_their_ground :: proc(t
     f:=ufoliage.Foliage{types=types,instances=instances}
     s:foliage.Source
     defer foliage.source_destroy(&s)
-    result,ok:=foliage_source(&s,&f,{meshes={{1,2},{3,4}},winds={1.5,0}})
+    result,ok:=foliage_source(&s,&f,{meshes={{1,2},{3,4}},winds={{wind=1.5},{}}})
     if !testing.expect(t,ok) {return}
     defer delete(result.types)
     testing.expect_value(t,len(s.types),2)
@@ -208,28 +208,34 @@ unreal_foliage_of_actors_adds_only_its_static_mesh_types :: proc(t:^testing.T) {
 
 // A type sways, in a Wind of Mirai's speed, from its least lean to its peak
 // by the swing whose bend best matches, in least squares over the vertices
-// of its mesh, how far its materials sway them. A material that moves its
-// vertices by other than wind sways nothing and is a warning; one whose
-// sway cannot be measured sways by Mirai's default wind.
+// of its mesh, how far its materials sway them slower than a second; what
+// they move faster is the flutter of its leaves, which bends nothing. A
+// material that moves its vertices by other than wind sways nothing and is a
+// warning; one whose sway cannot be measured sways by Mirai's default wind.
 @(test)
 a_type_sways_as_its_materials_sway_its_mesh :: proc(t:^testing.T) {
-    Part :: struct {offset:material.Offset,heights,reach:[]f32}
+    Part :: struct {offset:material.Offset,heights:[]f32,reach:[]material.Offset_Reach}
     Case :: struct {
         name:string,
         parts:[]Part,
-        sine:f64,       // of the swing of the lean the rule gives; -1: Mirai's default wind
+        sine:f64,        // of the swing of the lean the rule gives; -1: Mirai's default wind
+        flutter:f64,     // centimetres its leaves flutter on average
         warned:[]string, // what the warnings of its materials say
     }
     gusts:=material.Offset{kind=.Wind,names={"MF_FoliageWind_Sway","Wind Intensity"},weights={.Vertex_Color},textured=true}
+    wind:=material.Offset{kind=.Wind}
     cases:=[]Case{
-        {"grass",{{gusts,{100,0},{3.2,0}}},0.032,{"vertex colors","texture"}},
-        {"tree",{{material.Offset{kind=.Wind},{100},{3.2}},{{},{50},{0}}},0.0256,nil},
-        {"rock",{{{},{100},{0}}},0,nil},
-        {"flag",{{material.Offset{kind=.Motion,names={"MF_FlagWave"}},{100},{3.2}}},0,{"MF_FlagWave","not wind"}},
-        {"pulse",{{material.Offset{kind=.Shape},{100},{0}}},0,{"without time"}},
-        {"custom",{{material.Offset{kind=.Wind,why="it reads noise"},{100},{-1}}},-1,{"could not be measured"}},
+        {"grass",{{gusts,{100,0},{{3.2,0},{}}}},0.032,0,{"vertex colors","texture"}},
+        {"tree",{{wind,{100},{{3.2,0}}},{{},{50},{{}}}},0.0256,0,nil},
+        // A trunk that sways and leaves that sway with it and flutter 5 cm on top.
+        {"leafy tree",{{wind,{1000,0},{{32,0},{}}},{wind,{1000,800},{{32,5},{25.6,5}}}},0.032,5,nil},
+        {"rock",{{{},{100},{{}}}},0,0,nil},
+        {"flag",{{material.Offset{kind=.Motion,names={"MF_FlagWave"}},{100},{{3.2,0}}}},0,0,{"MF_FlagWave","not wind"}},
+        {"pulse",{{material.Offset{kind=.Shape},{100},{{}}}},0,0,{"without time"}},
+        {"custom",{{material.Offset{kind=.Wind,why="it reads noise"},{100},{{-1,-1}}}},-1,0,{"could not be measured"}},
     }
     per_wind:=f64(foliage.FOLIAGE_SWAY)*0.1*f64(volume.WIND_DEFAULT.speed) // radians of lean per wind at its peak
+    per_flutter:=FLUTTER_MEAN*f64(foliage.FOLIAGE_FLUTTER)*f64(volume.WIND_DEFAULT.speed)*100 // centimetres a leaf flutters on average per flutter
     for c in cases {
         s:Sway
         warnings:=make([dynamic]string,context.temp_allocator)
@@ -242,6 +248,8 @@ a_type_sways_as_its_materials_sway_its_mesh :: proc(t:^testing.T) {
         wind:=sway_wind(s)
         expected:=c.sine<0?f64(foliage.FOLIAGE_TYPE_DEFAULT.wind):math.asin(c.sine/(1-SWAY_LEAST))/per_wind
         testing.expectf(t,abs(f64(wind)-expected)<=1e-5*max(expected,1),"%s: wind %v, not %v",c.name,wind,expected)
+        flutter:=sway_flutter(s)
+        testing.expectf(t,abs(f64(flutter)-c.flutter/per_flutter)<=1e-5,"%s: flutter %v, not %v",c.name,flutter,c.flutter/per_flutter)
         testing.expectf(t,(len(c.warned)==0)==(len(warnings)==0),"%s: warnings %v",c.name,warnings[:])
         for text in c.warned {
             found:=false

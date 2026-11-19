@@ -984,24 +984,27 @@ an_offset_that_collapses_the_surface_hides_it :: proc(t:^testing.T) {
 // the wind, another motion when it is not, and a shape when it does not move;
 // how far it sways each vertex is measured where the vertex is, by what
 // weighs it there (its color, its place in the mesh before skinning), and
-// what it leans the vertex one way all the time is no swing.
+// what it leans the vertex one way all the time is no swing. What moves
+// faster than once a second flutters the vertex instead of swaying it.
 @(test)
 an_offset_is_wind_another_motion_or_a_shape_with_its_reach_at_each_vertex :: proc(t:^testing.T) {
     Case :: struct {
         name,parameter,weight:string, // weight: the expression that weighs it per vertex
         timed,connected:bool,
         lean:f32, // the gust is the sine plus it: the vertex leans one way all the time
+        period:f32, // seconds a turn of the sine takes
         kind:Offset_Kind,
         weights:bit_set[Offset_Weight],
-        reach:f32, // at the top vertex; the one at the pivot does not move
+        reach:Offset_Reach, // at the top vertex; the one at the pivot does not move
     }
     cases:=[]Case{
-        {"M_Grass","Wind Intensity","VertexColor",true,true,0,.Wind,{.Vertex_Color},10},
-        {"M_Tree","Wind Sway","PreSkinnedPosition",true,true,0,.Wind,{},10},
-        {"M_Leaning","Wind Intensity","VertexColor",true,true,2,.Wind,{.Vertex_Color},10},
-        {"M_Flag","Flutter","VertexColor",true,true,0,.Motion,{.Vertex_Color},10},
-        {"M_Bulge","Wind Intensity","VertexColor",false,true,0,.Shape,{},0},
-        {"M_Still","","",false,false,0,.None,{},0},
+        {"M_Grass","Wind Intensity","VertexColor",true,true,0,5,.Wind,{.Vertex_Color},{10,0}},
+        {"M_Tree","Wind Sway","PreSkinnedPosition",true,true,0,5,.Wind,{},{10,0}},
+        {"M_Leaning","Wind Intensity","VertexColor",true,true,2,5,.Wind,{.Vertex_Color},{10,0}},
+        {"M_Rustle","Wind Rustle","VertexColor",true,true,0,0.5,.Wind,{.Vertex_Color},{0,5}},
+        {"M_Flag","Flutter","VertexColor",true,true,0,5,.Motion,{.Vertex_Color},{10,0}},
+        {"M_Bulge","Wind Intensity","VertexColor",false,true,0,5,.Shape,{},{}},
+        {"M_Still","","",false,false,0,5,.None,{},{}},
     }
     // White at the top, a metre above the pivot; black at the pivot.
     vertices:=[]Offset_Vertex{{position={0,0,100},color={1,1,1,1}},{color={0,0,0,1}}}
@@ -1019,6 +1022,7 @@ an_offset_is_wind_another_motion_or_a_shape_with_its_reach_at_each_vertex :: pro
                 time:=expression(&b,"Time","Time",&w)
                 w=fx.writer(&b.p)
                 fx.input_put(&w,"Input","ExpressionInput",{expression=time})
+                fx.float_put(&w,"Period",c.period)
                 sine:=expression(&b,"Sine","Sine",&w)
                 if c.lean>0 {
                     w=fx.writer(&b.p)
@@ -1057,18 +1061,18 @@ an_offset_is_wind_another_motion_or_a_shape_with_its_reach_at_each_vertex :: pro
         library_with(&lib,{name,fx.package_bytes(&b.p,name)})
         defer library_destroy(&lib)
         material,_:=object_find(&lib,name)
-        reach:[2]f32
+        reach:[2]Offset_Reach
         o,error:=offset_read(&lib,material,vertices,bounds,reach[:],allocator=context.temp_allocator)
         if !testing.expect_value(t,error.code,Error_Code.None) {continue}
         testing.expectf(t,o.kind==c.kind,"%s: %v, not %v",c.name,o.kind,c.kind)
         testing.expectf(t,o.weights==c.weights,"%s: weighed by %v, not %v",c.name,o.weights,c.weights)
         testing.expectf(t,o.why=="","%s: measured (%s)",c.name,o.why)
-        // A sine of Unreal turns once a second: in twentieths of a second it reaches both peaks.
-        testing.expectf(t,abs(reach[0]-c.reach)<=c.reach*1e-3,"%s: the top sways %v, not %v",c.name,reach[0],c.reach)
-        testing.expectf(t,reach[1]==0,"%s: the pivot moves %v",c.name,reach[1])
+        // In twentieths of a second a sine reaches both peaks.
+        testing.expectf(t,abs(reach[0].sway-c.reach.sway)<=1e-2 && abs(reach[0].flutter-c.reach.flutter)<=1e-2,"%s: the top sways %v and flutters %v, not %v",c.name,reach[0].sway,reach[0].flutter,c.reach)
+        testing.expectf(t,reach[1]=={},"%s: the pivot moves %v",c.name,reach[1])
         direction:=c.lean>0?[2]f32{1,0}:[2]f32{}
         testing.expectf(t,o.direction==direction,"%s: sways the way %v, not %v",c.name,o.direction,direction)
-        frequency:=f32(c.timed?1:0)
+        frequency:=c.timed && c.reach.sway>0?1/c.period:0
         testing.expectf(t,abs(o.frequency-frequency)<0.05,"%s: sways %v times a second, not %v",c.name,o.frequency,frequency)
         if c.connected {
             found:=false

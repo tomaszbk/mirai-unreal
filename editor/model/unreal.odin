@@ -110,6 +110,7 @@ Context :: struct {
 Slot_Material :: struct {
     row:int,                 // of the model's materials, -1 for none
     vertex_colors:bool, // the material reads the vertex colors: its base color multiplied by them, or its program
+    program:bool,       // it is a program, which reads the colors as data
     uv_sets,uv_sets_past:material.Unreal_UV_Sets, // of its translation
 }
 
@@ -349,6 +350,7 @@ geometry_build :: proc(c:^Context,name:string,materials:[]umesh.Material_Slot,ge
     importer.builder_init(&builder,r,skin!=nil)
     slots:=make([]int,len(geometry.sections),context.temp_allocator)
     tints:=make([]bool,len(geometry.sections),context.temp_allocator)
+    programs:=make([]bool,len(geometry.sections),context.temp_allocator)
     // The Unreal uv set each uv set of the mesh holds in a section, those its
     // material reads; one past the sets of the mesh is its last, as Unreal reads it.
     uvs:=make([][material.UV_SETS]i32,len(geometry.sections),context.temp_allocator)
@@ -360,7 +362,7 @@ geometry_build :: proc(c:^Context,name:string,materials:[]umesh.Material_Slot,ge
             slot:=materials[section.material]
             id,label=u32(section.material+1),slot.name
             made=slot_material(c,slot)
-            row,tints[i]=made.row,made.vertex_colors
+            row,tints[i],programs[i]=made.row,made.vertex_colors,made.program
             if made.uv_sets_past!={} {importer.warn(r,"%s: %s: the material %s reads the UV sets %v besides %v, past the %d a Mirai mesh holds: what reads them is not translated",r.file_name,name,slot.path,made.uv_sets_past,made.uv_sets,material.UV_SETS)}
         }
         uvs[i]=uv_sets_held(made.uv_sets)
@@ -369,6 +371,17 @@ geometry_build :: proc(c:^Context,name:string,materials:[]umesh.Material_Slot,ge
         }
         builder.has_uv1||=uvs[i][1]>=0
         slots[i]=importer.builder_slot(&builder,id,label,row) or_return
+    }
+    // The sections that do not flutter where others do, which keep their
+    // leaves still by green 0 (flutter.odin).
+    still:=make([]bool,len(geometry.sections),context.temp_allocator)
+    if skin==nil && len(geometry.sections)>1 {
+        library_lock(c)
+        flutters:=sections_flutter(c,materials,geometry)
+        library_unlock(c)
+        any:=false
+        for f in flutters {any||=f}
+        for f,i in flutters {still[i]=any && !f && programs[i]}
     }
     corners_zone:=importer.zone_begin(r.options,"import.mesh.corners")
     for section,triangle in geometry.triangle_section {
@@ -387,6 +400,7 @@ geometry_build :: proc(c:^Context,name:string,materials:[]umesh.Material_Slot,ge
                 rgba:=geometry.corner_color[corner]
                 out.color=u32(rgba[0])|u32(rgba[1])<<8|u32(rgba[2])<<16|u32(rgba[3])<<24
             }
+            if still[section] {out.color&=~u32(0xff00)}
             if tangent:=geometry.corner_tangent[corner];tangent.xyz!={} {out.tangent,out.has_tangent=tangent,true}
             if len(morphs)>0 {out.morph=corner_morph[corner]+1}
         }
@@ -473,6 +487,7 @@ slot_material :: proc(c:^Context,slot:umesh.Material_Slot) -> Slot_Material {
     base.profile_end(images_zone)
 
     made.vertex_colors=t.vertex_colors==.Multiply_Base_Color || t.vertex_colors==.Program && t.program.name!=""
+    made.program=t.program.name!=""
     made.uv_sets,made.uv_sets_past=t.uv_sets,t.uv_sets_past
     return made
 }

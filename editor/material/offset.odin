@@ -17,11 +17,13 @@ import "core:strings"
 // CPU at the vertex, with its uv and its color, its textures as the caller
 // reads them (white, their brightest, where it does not) and its object
 // standing on its pivot, over
-// OFFSET_SECONDS and a field of places; what it gives is how far it sways
-// the vertex, the length of its path along the line it sways along (the most
-// of the places), and how many times a second the highest vertex given sways
-// back and forth at the first place. A swing is what the wind moves: what an
-// offset leans a vertex one way all the time is not in it.
+// OFFSET_SECONDS and a field of places; what it gives each vertex is how far
+// it sways and how far it flutters (Offset_Reach, the most of the places),
+// and how many times a second the highest vertex given sways back and forth
+// at the first place. What moves a vertex slower than OFFSET_SLOW is its
+// sway, the length of its path along the line it sways along; what moves it
+// faster about that is its flutter. A swing is what the wind moves:
+// what an offset leans a vertex one way all the time is not in it.
 
 Offset_Kind :: enum u8 {
     None,   // the surface stays where it is
@@ -62,15 +64,23 @@ OFFSET_SECONDS :: 20     // of time over which the reach is measured
 OFFSET_STEPS :: 400      // instants of those seconds: what sways up to ten times a second shows
 OFFSET_PLACES :: 2       // places along each side of the field the reach is measured over
 OFFSET_FIELD :: f32(1e4) // centimetres a side of that field
+OFFSET_SLOW :: 1         // cycles a second: what moves a vertex slower sways it, what moves it faster flutters it
+
+// What the offset of a material moves a vertex by, in centimetres.
+Offset_Reach :: struct {
+    sway:f32,    // the length of its slow path along the line it moves along
+    flutter:f32, // how far it moves faster about that: the root mean square of the distance, times √2, the amplitude of a swing back and forth
+}
 
 // What the offset of material does to a mesh with the vertices given, its
 // pivot at the origin of its space and its box from bounds[0] to bounds[1]:
-// reach, as long as vertices, takes the centimetres it sways each, all -1
-// where that cannot be measured (why) and 0 for an offset that is not motion. names and why live in allocator.
-offset_read :: proc(lib:^Library,material:Object,vertices:[]Offset_Vertex,bounds:[2][3]f32,reach:[]f32,textures:=Offset_Textures{},allocator:=context.allocator) -> (o:Offset,error:Error) {
+// reach, as long as vertices, takes what it moves each, all -1 where that
+// cannot be measured (why) and 0 for an offset that is not motion. names and
+// why live in allocator.
+offset_read :: proc(lib:^Library,material:Object,vertices:[]Offset_Vertex,bounds:[2][3]f32,reach:[]Offset_Reach,textures:=Offset_Textures{},allocator:=context.allocator) -> (o:Offset,error:Error) {
     if len(reach)<len(vertices) {return {},error_make(.Malformed,"reach holds %d vertices of %d",len(reach),len(vertices))}
     reach:=reach[:len(vertices)]
-    slice.fill(reach,0)
+    slice.fill(reach,Offset_Reach{})
     if !object_valid(material) {return {},error_make(.Not_Found,"the material does not exist")}
     chain,chain_error:=chain_read(lib,material,context.temp_allocator)
     if chain_error.code!=.None {return {},chain_error}
@@ -108,7 +118,7 @@ offset_read :: proc(lib:^Library,material:Object,vertices:[]Offset_Vertex,bounds
     if root==NONE {
         // What could not be translated is wind when its names say so.
         o.kind=windy?.Wind:.Motion
-        slice.fill(reach,-1)
+        slice.fill(reach,Offset_Reach{-1,-1})
         o.why=strings.clone(len(e.notes)>0?e.notes[0]:"it could not be translated",allocator)
         return
     }
@@ -127,7 +137,7 @@ offset_read :: proc(lib:^Library,material:Object,vertices:[]Offset_Vertex,bounds
     direction,frequency,why:=offset_reach(&g,root,vertices,bounds,reach,textures)
     o.direction,o.frequency=direction,frequency
     if why!="" {
-        slice.fill(reach,-1)
+        slice.fill(reach,Offset_Reach{-1,-1})
         o.why=strings.clone(why,allocator)
     }
     return
@@ -142,7 +152,7 @@ offset_name_is_wind :: proc(name:string) -> bool {
 // way it moves them on the whole and the frequency of the first; why it
 // cannot run on the CPU.
 @(private)
-offset_reach :: proc(g:^Graph,root:u32,vertices:[]Offset_Vertex,bounds:[2][3]f32,reach:[]f32,textures:Offset_Textures) -> (direction:[2]f32,frequency:f32,why:string) {
+offset_reach :: proc(g:^Graph,root:u32,vertices:[]Offset_Vertex,bounds:[2][3]f32,reach:[]Offset_Reach,textures:Offset_Textures) -> (direction:[2]f32,frequency:f32,why:string) {
     order:=nodes_under(g,{root})
     for n in order {
         #partial switch g.nodes[n].op {
@@ -210,8 +220,12 @@ offset_reach :: proc(g:^Graph,root:u32,vertices:[]Offset_Vertex,bounds:[2][3]f32
                 across+=length
             }
         }
-        for &path in paths {reach[i]=max(reach[i],offset_swing(path[:]))}
-        if i==0 {first=paths[0]}
+        for &path,k in paths {
+            slow:=offset_slow(path[:])
+            reach[i].sway=max(reach[i].sway,offset_swing(slow[:]))
+            reach[i].flutter=max(reach[i].flutter,offset_flutter(path[:],slow[:]))
+            if i==0 && k==0 {first=slow}
+        }
     }
     mean:=math.sqrt(sum.x*sum.x+sum.y*sum.y)
     // Mostly one way: half of how far it moves on average is along its mean.
@@ -232,9 +246,56 @@ offset_axis :: proc(path:[][2]f32) -> (middle,axis:[2]f32,moves:bool) {
         d:=p-middle
         xx+=d.x*d.x;yy+=d.y*d.y;xy+=d.x*d.y
     }
-    if !(xx+yy>0) {return}
+    // What moves less than a hundredth of a millimetre stands still.
+    if !(xx+yy>1e-6*f32(len(path))) {return}
     angle:=0.5*math.atan2(2*xy,xx-yy)
     return middle,{math.cos(angle),math.sin(angle)},true
+}
+
+OFFSET_FLUTTER_LEAST :: f32(0.5) // centimetres the vertices of a section flutter on average, at or below which they do not
+
+// Whether the vertices of a section, by what an offset moves them, flutter.
+offset_flutters :: proc(reach:[]Offset_Reach) -> bool {
+    sum:f32
+    for r in reach {sum+=max(r.flutter,0)}
+    return len(reach)>0 && sum/f32(len(reach))>OFFSET_FLUTTER_LEAST
+}
+
+// A path of OFFSET_STEPS instants as it moves slower than OFFSET_SLOW: the
+// cycles of OFFSET_SECONDS slower than it, by their Fourier series.
+@(private)
+offset_slow :: proc(path:[]([2]f32)) -> (slow:[OFFSET_STEPS][2]f32) {
+    N :: OFFSET_STEPS
+    if len(path)!=N {return}
+    turn:[N][2]f32 // cosine and sine of each nth of a turn
+    for n in 0..<N {turn[n]={math.cos(2*math.PI*f32(n)/N),math.sin(2*math.PI*f32(n)/N)}}
+    for k in 0..<OFFSET_SECONDS*OFFSET_SLOW {
+        re,im:[2]f32
+        for p,n in path {
+            w:=turn[(k*n)%N]
+            re+=p*w.x
+            im-=p*w.y
+        }
+        scale:=f32(k==0?1:2)/N
+        for &q,n in slow {
+            w:=turn[(k*n)%N]
+            q+=(re*w.x-im*w.y)*scale
+        }
+    }
+    return
+}
+
+// How far a path moves about its slow path: the root mean square of the
+// distance, times √2, the amplitude of a swing back and forth.
+@(private)
+offset_flutter :: proc(path,slow:[]([2]f32)) -> f32 {
+    if len(path)==0 {return 0}
+    sum:f32
+    for p,k in path {
+        d:=p-slow[k]
+        sum+=d.x*d.x+d.y*d.y
+    }
+    return math.sqrt(2*sum/f32(len(path)))
 }
 
 // How far what moves along a path goes along the line it moves most along.

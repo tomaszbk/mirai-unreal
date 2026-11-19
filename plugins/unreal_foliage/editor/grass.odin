@@ -28,7 +28,7 @@ import foliage "plugins:foliage/runtime"
 Grass_Look :: struct {
     mesh:base.Asset_Id,
     materials:[render.MATERIAL_SLOTS]base.Asset_Id, // those its slots override; none: the mesh's
-    wind:f32,       // that its materials sway its mesh with (mesh_wind)
+    wind,flutter:f32, // that its materials sway its mesh and flutter its leaves with (mesh_wind)
 }
 
 // A landscape and its grass, as its terrain shows it.
@@ -88,7 +88,7 @@ grass_add :: proc(s:^foliage.Source,landscapes:[]Grass_Landscape,origin:[3]f32) 
                 case .Lock_XY:scaling=.Lock_XY
                 }
                 type_from(&t,{density=v.density,scale=v.scale,scaling=scaling,random_yaw=v.random_rotation,align_to_normal=v.align,cull=v.cull,casts_shadow=v.casts_shadow})
-                t.wind=look.wind
+                t.wind,t.flutter=look.wind,look.flutter
                 t.rule.weight=clamp(v.weights[0],0,1)
                 if g.fit.ok {
                     t.rule.slope=g.fit.slope
@@ -256,7 +256,8 @@ grass_look :: proc(c:^unreal_scene.Context,v:material.Grass_Variety,winds:^Winds
     if !ok {return}
     look.mesh=m.id
     _,object:=unreal_scene.object_split(v.mesh)
-    look.wind=mesh_wind(c,winds,unreal.asset_name(object),v.mesh,v.materials).wind
+    sway:=mesh_wind(c,winds,unreal.asset_name(object),v.mesh,v.materials)
+    look.wind,look.flutter=sway.wind,sway.flutter
     for path,index in v.materials {
         if path=="" {continue}
         row,found:=slice.linear_search(m.slot_ids,u32(index+1))
