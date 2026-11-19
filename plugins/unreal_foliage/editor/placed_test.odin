@@ -13,7 +13,8 @@ import "mirai:project"
 import "mirai:std/base"
 import foliage "plugins:foliage/runtime"
 
-// M_Wind: an offset that sways with time by the parameter Wind Intensity.
+// M_Wind: an offset that sways with time by the parameter Wind Intensity,
+// a turn every five seconds.
 @(private="file")
 wind_package :: proc() -> []u8 {
     p:=fx.package_make()
@@ -25,6 +26,7 @@ wind_package :: proc() -> []u8 {
     time:=expression(&p,wind,"Time","Time",&w)
     w=fx.writer(&p)
     fx.input_put(&w,"Input","ExpressionInput",{expression=time})
+    fx.float_put(&w,"Period",5)
     sine:=expression(&p,wind,"Sine","Sine",&w)
     w=fx.writer(&p)
     fx.name_property_put(&w,"ParameterName","Wind Intensity")
@@ -132,6 +134,6 @@ a_placed_mesh_that_sways_stays_an_entity_with_the_wind_of_its_mesh :: proc(t:^te
             testing.expectf(t,!swaying,"%s stands still: %v",p.label,given)
             continue
         }
-        testing.expectf(t,swaying && abs(given.wind-s.types[0].wind)<=1e-6*s.types[0].wind,"%s sways with the wind of its mesh as foliage, %v: %v",p.label,s.types[0].wind,given)
+        testing.expectf(t,swaying && abs(given.wind-s.types[0].wind)<=1e-6*s.types[0].wind && given.flutter==s.types[0].flutter,"%s sways with the wind and flutter of its mesh as foliage, %v: %v",p.label,s.types[0],given)
     }
 }
