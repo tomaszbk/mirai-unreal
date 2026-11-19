@@ -1,6 +1,7 @@
 package unreal_scene
 
 import "core:fmt"
+import "core:hash"
 import "core:math"
 import "core:math/linalg"
 import "core:mem"
@@ -12,6 +13,7 @@ import material_write "project:plugins/unreal/editor/material/write"
 import unreal_mesh "project:plugins/unreal/editor/mesh"
 import "project:plugins/unreal/editor/level"
 import unreal "project:plugins/unreal/editor/package"
+import texture "project:plugins/unreal/editor/texture"
 import render "mirai:engine/render"
 import "mirai:std/base"
 import mm "mirai:std/math"
@@ -239,7 +241,7 @@ dome_image :: proc(c:^Context,k:int) -> (dome:Sky_Dome,reason:string) {
     if why!="" {return {},why}
     if texture,set,luminance,plain:=material.translated_plain_emission(&t);plain {
         if turn,lat_long:=lat_long_turn(&geometry,set,world);lat_long {
-            return {texture=strings.clone(texture,context.temp_allocator),luminance=luminance,turn=turn,found=true},""
+            return {texture=strings.clone(texture,context.temp_allocator),material=strings.clone(path,context.temp_allocator),component=k,luminance=luminance,turn=turn,found=true},""
         }
     }
     s,graph_error:=material.sky_graph(c.lib,object,{},context.temp_allocator)
@@ -306,12 +308,14 @@ lat_long_turn :: proc(m:^unreal_mesh.Mesh,set:int,world:mm.Transform) -> (turn:f
 
 // The .tex of what the material of dome shows in each direction from the
 // centre of its bounds (material.sky_shade), a latitude-longitude image as
-// the Sky reads it without a turn; zero, with a warning, when it cannot be
-// written. What changes with time is shown at time 0, and the values a
-// Blueprint gave a dynamic instance as the level was built stay as saved:
-// both are warnings.
+// the Sky turned by turn reads it: the background; with lit, also the image
+// the sky light lights by, its lower half toward the sky light's lower
+// hemisphere (the background itself when that leaves it as it is). Zero,
+// with a warning, when it cannot be written. What changes with time is shown
+// at time 0, and the values a Blueprint gave a dynamic instance as the level
+// was built stay as saved: both are warnings.
 @(private)
-dome_sky_write :: proc(c:^Context,dome:^Sky_Dome) -> (id:base.Asset_Id) {
+dome_sky_write :: proc(c:^Context,dome:^Sky_Dome,turn:f32,lit:bool) -> (background,lighting:base.Asset_Id) {
     defer images_trim(c)
     library_lock(c)
     defer library_unlock(c)
@@ -331,21 +335,28 @@ dome_sky_write :: proc(c:^Context,dome:^Sky_Dome) -> (id:base.Asset_Id) {
         width=DOME_TEXTURED_WIDTH
         for width<s.widest && width<DOME_MAX_WIDTH {width*=2}
     }
-    texels:=dome_shade(&geometry,world,&s,width)
-    // Under the horizon, toward the lower hemisphere of the sky light, as a cube of it.
-    below:=c.sky_below
-    height:=width/2
-    for row in height/2..<height {
-        for &texel in texels[row*width:][:width] {texel.rgb+=(below.rgb-texel.rgb)*below.a}
-    }
-    source:=textures.Source{texels=mem.slice_to_bytes(texels),width=width,height=height,layers=1,format=.RGBA32F}
-    owner:=c.d.actors[c.d.components[dome.component].actor].label
+    // The Sky turned by turn reads a direction of the world turned back by it.
+    back:=mm.quat_axis_angle({0,1,0},-turn)
+    turned:=world
+    turned.rotation=back*world.rotation
+    turned.position=mm.quat_rotate(back,world.position)
+    texels:=dome_shade(&geometry,turned,&s,width)
+    source:=textures.Source{texels=mem.slice_to_bytes(texels),width=width,height=width/2,layers=1,format=.RGBA32F}
+    name:=fmt.tprintf("%s_Sky",unreal.asset_name(c.d.actors[c.d.components[dome.component].actor].label))
     write_error:importer.Error
-    id,write_error=material_write.sky_made_write(fmt.tprintf("%s_Sky",unreal.asset_name(owner)),source,&c.outputs,"",context.temp_allocator)
-    if write_error.code!=.None {
+    if background,write_error=material_write.sky_made_write(name,source,&c.outputs,"",context.temp_allocator);write_error.code!=.None {
         warn(c,"%s: its sky could not be written: %s",dome.name,write_error.message)
-        return {}
+        return {},{}
     }
+    lighting=background
+    if below:=c.sky_below;lit && below.a>0 {
+        texture.sky_lower(source,false,below)
+        if lighting,write_error=material_write.sky_made_write(fmt.tprintf("%s_%08x",name,hash.fnv32a(mem.ptr_to_bytes(&below))),source,&c.outputs,"",context.temp_allocator);write_error.code!=.None {
+            warn(c,"%s: the sky it lights by could not be written: %s",dome.name,write_error.message)
+            lighting={}
+        }
+    }
+    if !lit {lighting={}}
     if s.moving {warn(c,"%s: its material changes with time; the image of the Sky is what it shows at time 0",dome.name)}
     if material.object_class(object)=="MaterialInstanceDynamic" && len(s.instance)>0 {
         warn(c,"%s: a Blueprint gave its dynamic material %s as the level was built; the image of the Sky keeps them as saved and does not follow what changes them as the game runs",dome.name,strings.join(s.instance,", ",context.temp_allocator))
@@ -559,25 +570,36 @@ environment_finish :: proc(c:^Context) {
         section_use(c,previous)
         warn(c,"%d directional lights: Mirai lights with one sun, the brightest; the others are turned off",len(c.suns))
     }
-    // A sky light that captures the scene lights by the dome of the level
-    // times its LightColor and Intensity: the Sky is the image of the dome at
-    // that luminance. A cube it names wins over the dome.
+    // The dome of the level is what the Sky shows behind the scene, as the
+    // level draws it. A sky light that captures the scene lights by it times
+    // its LightColor and Intensity, under the horizon toward its lower
+    // hemisphere; a cube it names lights instead; without one no light comes
+    // from the sky.
     if c.dome.found {
-        switch {
-        case !c.sky_lit:warn(c,"%s encloses the level as its sky and is not drawn: without a sky light Unreal's sky gives no light, and Mirai's Sky lights by what it shows",c.dome.name)
-        case c.sky.image!={}:warn(c,"%s encloses the level as its sky and is not drawn: the Sky lights from the cube of the sky light, as Unreal does, and shows it",c.dome.name)
-        case:
-            image:base.Asset_Id
-            if c.dome.texture!="" {image,_=sky_image_write(c,c.dome.texture,{})} else {image=dome_sky_write(c,&c.dome)}
-            if image=={} {
-                warn(c,"%s encloses the level as its sky and is not drawn: its image could not be written",c.dome.name)
-                break
+        lit:=c.sky_lit && c.sky.image=={}
+        // One turn of the Sky turns both of its images: a dome laid at another
+        // turn than the cube's is shaded per direction at the cube's.
+        cube_turn:=c.sky.image!={} ? c.sky_turn : c.dome.turn
+        background,lighting:base.Asset_Id
+        if c.dome.texture!="" && abs(cube_turn-c.dome.turn)<1e-4 {
+            background,_=sky_image_write(c,c.dome.texture,{})
+            if lit {lighting,_=sky_image_write(c,c.dome.texture,c.sky_below)}
+        } else {
+            if c.dome.texture=="" {cube_turn=c.sky.image!={} ? c.sky_turn : 0}
+            background,lighting=dome_sky_write(c,&c.dome,cube_turn,lit)
+        }
+        if background=={} {
+            warn(c,"%s encloses the level as its sky and is not drawn: its image could not be written",c.dome.name)
+        } else {
+            c.sky.background_image=background
+            c.sky.background=c.dome.luminance
+            c.sky_turn=cube_turn
+            if lighting!={} {
+                c.sky.image=lighting
+                c.sky.luminance*=c.dome.luminance
             }
-            c.sky.image=image
-            if c.sky.luminance!={1,1,1} {warn(c,"%s: Mirai's Sky shows what it lights by, so behind the scene the dome shows at %v times what Unreal draws: the LightColor times Intensity of the sky light, by which Unreal lights from it",c.dome.name,c.sky.luminance)}
-            c.sky.luminance*=c.dome.luminance
-            c.sky_turn=c.dome.turn
-            warn(c,"%s encloses the level as its sky and is not drawn: its image is the Sky's, which shows it behind the scene",c.dome.name)
+            if !c.sky_lit {c.sky.luminance={}}
+            warn(c,"%s encloses the level as its sky and is not drawn: it is what the Sky shows behind the scene",c.dome.name)
         }
     }
     if c.sky_captured && c.sky.image=={} {warn(c,"Unreal captures the light of the sky from the scene; Mirai's sky gives it at %.3g times its luminance",max(c.sky.luminance.r,c.sky.luminance.g,c.sky.luminance.b))}
@@ -589,19 +611,20 @@ environment_finish :: proc(c:^Context) {
         }
         c.sky.luminance*=render.SKY_DEFAULT.luminance/render.SUN_DEFAULT.illuminance*sun
     }
-    // Without a sky light no light comes from the sky: the scene has no Sky,
-    // and behind it is black, as Unreal draws it without an atmosphere.
-    if !c.sky_lit {
+    // Without a sky light no light comes from the sky: the scene has no Sky
+    // but for the dome it shows, and behind it is black, as Unreal draws it
+    // without an atmosphere.
+    if !c.sky_lit && c.sky.background_image=={} {
         if c.sky_atmosphere {warn(c,"the level draws an atmosphere without a sky light: Mirai's Sky lights from the air it draws, so the scene has no Sky")}
         return
     }
-    // Behind the scene Unreal draws the sky of its atmosphere, or black; an
-    // atmosphere is Mirai's, lit by the sun.
-    c.sky.use_background=!c.sky_drawn
-    c.sky.background={}
+    // Behind the scene Unreal draws its dome, the sky of its atmosphere, or
+    // black; an atmosphere is Mirai's, lit by the sun.
+    c.sky.use_background=!c.sky_drawn || c.sky.background_image!={}
+    if c.sky.background_image=={} {c.sky.background={}}
     // Unreal lights from the cube its sky light names over its atmosphere; Mirai's
     // atmosphere replaces the image, so the cube wins.
-    c.sky.atmosphere=c.sky_atmosphere && c.sky.image=={}
+    c.sky.atmosphere=c.sky_atmosphere && c.sky.image=={} && c.sky_lit
     if c.sky_atmosphere && !c.sky.atmosphere {warn(c,"the sky lights from an image: Mirai's sky draws an image or the air, so the atmosphere of the level is not drawn")}
     place:=mm.TRANSFORM_IDENTITY
     place.rotation=mm.quat_axis_angle({0,1,0},c.sky_turn)

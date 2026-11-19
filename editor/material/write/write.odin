@@ -477,10 +477,11 @@ names_prefix :: proc(model:^importer.Imported_Model,prefix:string,allocator:mem.
 
 // Writes the sky of the Unreal texture at path as one .tex of the import of
 // outputs, named prefix and the texture: the image of a Sky. A cube turns
-// into one (texture.sky_of_cube), its lower half toward below, and one whose
-// lower half is not Unreal's default, black, is named apart; a plain texture
-// is a latitude-longitude image already, taken as it is. shared, lock and
-// decoder as materials_write.
+// into one (texture.sky_of_cube), a plain texture is a latitude-longitude
+// image already; the lower half of either goes toward below by its alpha
+// (texture.sky_lower). One whose lower half is not as it is by default
+// (black for a cube, as Unreal's sky light makes it; the texture's own for a
+// plain one) is named apart. shared, lock and decoder as materials_write.
 sky_write :: proc(lib:^material.Library,path:string,below:[4]f32,outputs:^importer.Outputs,prefix:string,options:importer.Import_Options={},allocator:=context.allocator,shared:^Builder=nil,lock:^sync.Mutex=nil,decoder:^kraken.Decoder=nil) -> (id:base.Asset_Id,error:importer.Error) {
     arena:mem.Dynamic_Arena
     mem.dynamic_arena_init(&arena,allocator,allocator,block_size=1<<20,out_band_size=1<<20)
@@ -519,11 +520,12 @@ sky_write :: proc(lib:^material.Library,path:string,below:[4]f32,outputs:^import
             clone_error:mem.Allocator_Error
             if sky.texels,clone_error=slice.clone(source.texels,scratch);clone_error!=nil {return {},importer.error_make(.Write,"texture %s: out of memory",path)}
             sky.allocator=scratch
+            texture.sky_lower(sky,cube.usage==.Color,below)
         case:
             return {},importer.error_make(.Unsupported,"texture %s holds %d images: a sky is one",path,source.layers)
         }
         name:=strings.concatenate({unreal.asset_name(path[strings.last_index_any(path,"./")+1:]),"_Sky"},scratch)
-        if source.cube && below!={0,0,0,1} {
+        if source.cube ? below!={0,0,0,1} : below.a>0 {
             lower:=below
             name=fmt.aprintf("%s_%08x",name,hash.fnv32a(mem.ptr_to_bytes(&lower)),allocator=scratch)
         }

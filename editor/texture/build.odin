@@ -230,6 +230,18 @@ cube_long_lat :: proc(from:textures.Source,read,stored:^textures.Transfer,alloca
     return
 }
 
+// Below the horizon of a longitude-latitude sky, each texel toward below.rgb
+// by below.a, as sky_of_cube makes the lower half of a cube; srgb as there.
+sky_lower :: proc(sky:textures.Source,srgb:bool,below:[4]f32) {
+    if below.a<=0 {return}
+    transfer:=textures.transfer_make(srgb && !textures.source_hdr(sky.format))
+    for at in sky.height/2*sky.width..<sky.height*sky.width {
+        value:=textures.texel_read(sky.texels,sky.format,at,&transfer)
+        for i in 0..<3 {value[i]+=(below[i]-value[i])*below.a}
+        textures.texel_write(sky.texels,sky.format,at,value,&transfer)
+    }
+}
+
 // The sky Mirai draws from the first cube of faces in Mirai's order and axes
 // (texture_build_input): a longitude-latitude image twice as wide as tall,
 // four texels across for each of a face, with the zenith on its top row and
