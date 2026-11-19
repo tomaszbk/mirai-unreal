@@ -472,67 +472,121 @@ sphere_direction :: proc(row,column:int) -> [3]f32 {
     return {math.sin(theta)*math.cos(phi),math.cos(theta),math.sin(theta)*math.sin(phi)}
 }
 
-// M_Sky: unlit, the color of T_Sky times 3; M_Clouds: unlit, T_Sky times
-// T_Clouds, more than one texture as it is.
+// M_Sky: unlit, the color of T_Sky times 3.
 @(private="file")
-sky_package :: proc(name:string,clouds:bool) -> []u8 {
+sky_package :: proc(name:string) -> []u8 {
     p:=fx.package_make()
     m:=fx.export(&p,fx.class(&p,"/Script/Engine","Material"),0,name,nil)
-    sample :: proc(p:^fx.Package,m:i32,texture:string) -> i32 {
-        w:=fx.writer(p)
-        fx.object_put(&w,"Texture",fx.external(p,strings.concatenate({"/Game/Textures/",texture},context.temp_allocator),"/Script/Engine","Texture2D",texture))
-        return fx.export(p,fx.class(p,"/Script/Engine","MaterialExpressionTextureSample"),m,texture,fx.finish(&w))
-    }
-    image:=sample(&p,m,"T_Sky")
-    other:i32
-    if clouds {
-        other=sample(&p,m,"T_Clouds")
-    } else {
-        constant:=fx.writer(&p)
-        fx.float_put(&constant,"R",3)
-        other=fx.export(&p,fx.class(&p,"/Script/Engine","MaterialExpressionConstant"),m,"Three",fx.finish(&constant))
-    }
+    sample:=fx.writer(&p)
+    fx.object_put(&sample,"Texture",fx.external(&p,"/Game/Textures/T_Sky","/Script/Engine","Texture2D","T_Sky"))
+    image:=fx.export(&p,fx.class(&p,"/Script/Engine","MaterialExpressionTextureSample"),m,"T_Sky",fx.finish(&sample))
+    constant:=fx.writer(&p)
+    fx.float_put(&constant,"R",3)
+    three:=fx.export(&p,fx.class(&p,"/Script/Engine","MaterialExpressionConstant"),m,"Three",fx.finish(&constant))
     product:=fx.writer(&p)
     fx.input_put(&product,"A","ExpressionInput",{expression=image,mask={true,true,true,false}})
-    fx.input_put(&product,"B","ExpressionInput",{expression=other,mask=clouds?[4]bool{true,true,true,false}:[4]bool{}})
+    fx.input_put(&product,"B","ExpressionInput",{expression=three})
     multiply:=fx.export(&p,fx.class(&p,"/Script/Engine","MaterialExpressionMultiply"),m,"Product",fx.finish(&product))
+    return unlit_finish(&p,name,multiply)
+}
+
+// The colors of M_Gradient at the horizon and at the zenith.
+@(private="file")
+HORIZON :: [3]f32{1,0.5,0.25}
+@(private="file")
+ZENITH :: [3]f32{0.1,0.2,0.8}
+
+// M_Gradient: unlit, from HORIZON to ZENITH by how far up the point is seen
+// from the centre of its object, as an art-directed sky dome does; M_Coded:
+// unlit, what HLSL computes.
+@(private="file")
+gradient_package :: proc(name:string,coded:bool) -> []u8 {
+    p:=fx.package_make()
+    m:=fx.export(&p,fx.class(&p,"/Script/Engine","Material"),0,name,nil)
+    node :: proc(p:^fx.Package,m:i32,class,name:string,w:^fx.Writer) -> i32 {
+        return fx.export(p,fx.class(p,"/Script/Engine",strings.concatenate({"MaterialExpression",class},context.temp_allocator)),m,name,fx.finish(w))
+    }
+    if coded {
+        w:=fx.writer(&p)
+        fx.string_put(&w,"Code","return MaterialFloat3(1, 1, 1);")
+        fx.enum_put(&w,"OutputType","ECustomMaterialOutputType","CMOT_Float3")
+        return unlit_finish(&p,name,node(&p,m,"Custom","Code",&w))
+    }
     w:=fx.writer(&p)
+    position:=node(&p,m,"WorldPosition","Position",&w)
+    w=fx.writer(&p)
+    centre:=node(&p,m,"ObjectPositionWS","Centre",&w)
+    w=fx.writer(&p)
+    fx.input_put(&w,"A","ExpressionInput",{expression=position})
+    fx.input_put(&w,"B","ExpressionInput",{expression=centre})
+    away:=node(&p,m,"Subtract","Away",&w)
+    w=fx.writer(&p)
+    fx.input_put(&w,"VectorInput","ExpressionInput",{expression=away})
+    seen:=node(&p,m,"Normalize","Seen",&w)
+    w=fx.writer(&p)
+    fx.input_put(&w,"Input","ExpressionInput",{expression=seen})
+    fx.bool_put(&w,"B",true)
+    up:=node(&p,m,"ComponentMask","Up",&w)
+    parameter :: proc(p:^fx.Package,m:i32,name:string,value:[3]f32) -> i32 {
+        w:=fx.writer(p)
+        fx.name_property_put(&w,"ParameterName",name)
+        fx.color_put(&w,"DefaultValue",{value.r,value.g,value.b,1})
+        return fx.export(p,fx.class(p,"/Script/Engine","MaterialExpressionVectorParameter"),m,name,fx.finish(&w))
+    }
+    horizon,zenith:=parameter(&p,m,"Horizon",HORIZON),parameter(&p,m,"Zenith",ZENITH)
+    w=fx.writer(&p)
+    fx.input_put(&w,"A","ExpressionInput",{expression=horizon,mask={true,true,true,false}})
+    fx.input_put(&w,"B","ExpressionInput",{expression=zenith,mask={true,true,true,false}})
+    fx.input_put(&w,"Alpha","ExpressionInput",{expression=up})
+    return unlit_finish(&p,name,node(&p,m,"LinearInterpolate","Sky",&w))
+}
+
+// The unlit material of package p (its first export) emitting emission.
+@(private="file")
+unlit_finish :: proc(p:^fx.Package,name:string,emission:i32) -> []u8 {
+    w:=fx.writer(p)
     fx.enum_put(&w,"ShadingModel","EMaterialShadingModel","MSM_Unlit")
-    fx.input_put(&w,"EmissiveColor","ColorMaterialInput",{expression=multiply,mask={true,true,true,false}})
+    fx.input_put(&w,"EmissiveColor","ColorMaterialInput",{expression=emission,mask={true,true,true,false}})
     p.exports[0].data=fx.finish(&w)
-    return fx.package_bytes(&p,strings.concatenate({"/Game/Materials/",name},context.temp_allocator))
+    return fx.package_bytes(p,strings.concatenate({"/Game/Materials/",name},context.temp_allocator))
 }
 
 // A dome of the level casts no shadow, is unlit and holds the rest of the
 // level: it is the sky, which the Sky of the scene is, and is not drawn. When
 // its material is one texture as it is, laid over the sphere by latitude and
 // longitude, and a sky light captures it, its image is the Sky's at the
-// luminance of its material, turned about up as the dome; a dome that lays
-// it otherwise, one whose material is more, and one without a sky light are
-// a warning. A mesh that casts no shadow and holds nothing is drawn, without
-// shadows.
+// luminance of its material, turned about up as the dome; any other material
+// that runs on the CPU gives the Sky what it shows in each direction from the
+// centre of the dome. The LightColor times Intensity of the sky light
+// multiplies the image, as Unreal lights by it. A material only a program
+// computes and a dome without a sky light are a warning; a level without a
+// dome keeps Mirai's sky at the light of its sky light. A mesh that casts no
+// shadow and holds nothing is drawn, without shadows.
 @(test)
 a_dome_that_encloses_the_level_is_its_sky_and_is_not_drawn :: proc(t:^testing.T) {
     f:=folders_make("dome")
     defer folders_remove(f)
     os.make_directory_all(fmt.tprintf("%s/Content/Textures",f.unreal))
-    _=os.write_entire_file(fmt.tprintf("%s/Content/Meshes/SM_Dome.uasset",f.unreal),sphere_package("SM_Dome","/Game/Materials/M_Sky"))
-    _=os.write_entire_file(fmt.tprintf("%s/Content/Meshes/SM_Cloudy.uasset",f.unreal),sphere_package("SM_Cloudy","/Game/Materials/M_Clouds"))
+    for mesh in ([3][2]string{{"SM_Dome","M_Sky"},{"SM_Gradient","M_Gradient"},{"SM_Coded","M_Coded"}}) {
+        _=os.write_entire_file(fmt.tprintf("%s/Content/Meshes/%s.uasset",f.unreal,mesh[0]),sphere_package(mesh[0],fmt.tprintf("/Game/Materials/%s",mesh[1])))
+    }
     _=os.write_entire_file(fmt.tprintf("%s/Content/Meshes/SM_Cube.uasset",f.unreal),box_package("SM_Cube","/Game/Materials/M_Sky"))
     _=os.write_entire_file(fmt.tprintf("%s/Content/Meshes/SM_Box.uasset",f.unreal),box_package("SM_Box","/Game/Materials/M_Red"))
-    _=os.write_entire_file(fmt.tprintf("%s/Content/Materials/M_Sky.uasset",f.unreal),sky_package("M_Sky",false))
-    _=os.write_entire_file(fmt.tprintf("%s/Content/Materials/M_Clouds.uasset",f.unreal),sky_package("M_Clouds",true))
-    for texture in ([2]string{"T_Sky","T_Clouds"}) {
-        pixels:=make([]u8,8*4*4,context.temp_allocator)
-        for &v,i in pixels {v=u8(i*7)}
-        _=os.write_entire_file(fmt.tprintf("%s/Content/Textures/%s.uasset",f.unreal,texture),fx.texture_package(fmt.tprintf("/Game/Textures/%s",texture),texture,pixels,8,4))
-    }
-    Case :: struct {dome:string,lit:bool,taken:bool,warning:string}
+    _=os.write_entire_file(fmt.tprintf("%s/Content/Materials/M_Sky.uasset",f.unreal),sky_package("M_Sky"))
+    _=os.write_entire_file(fmt.tprintf("%s/Content/Materials/M_Gradient.uasset",f.unreal),gradient_package("M_Gradient",false))
+    _=os.write_entire_file(fmt.tprintf("%s/Content/Materials/M_Coded.uasset",f.unreal),gradient_package("M_Coded",true))
+    pixels:=make([]u8,8*4*4,context.temp_allocator)
+    for &v,i in pixels {v=u8(i*7)}
+    _=os.write_entire_file(fmt.tprintf("%s/Content/Textures/T_Sky.uasset",f.unreal),fx.texture_package("/Game/Textures/T_Sky","T_Sky",pixels,8,4))
+    Image :: enum {None,Texture,Shaded}
+    Case :: struct {dome:string,lit:bool,intensity:f32,image:Image,warning:string}
     cases:=[]Case{
-        {dome="SM_Dome",lit=true,taken=true,warning="its image is the Sky's"},
-        {dome="SM_Cube",lit=true,warning="by latitude and longitude"},
-        {dome="SM_Cloudy",lit=true,warning="more than one texture"},
+        {dome="SM_Dome",lit=true,intensity=1,image=.Texture,warning="its image is the Sky's"},
+        {dome="SM_Cube",lit=true,intensity=1,image=.Shaded,warning="its image is the Sky's"},
+        {dome="SM_Gradient",lit=true,intensity=2,image=.Shaded,warning="its image is the Sky's"},
+        {dome="SM_Coded",lit=true,intensity=1,warning="only a program computes"},
         {dome="SM_Dome",warning="without a sky light"},
+        {lit=true,intensity=2},
     }
     yaw:=f32(30)
     for c,n in cases {
@@ -540,6 +594,7 @@ a_dome_that_encloses_the_level_is_its_sky_and_is_not_drawn :: proc(t:^testing.T)
         w:=&l.w
         mesh_class:=fixture.engine_class(w,"StaticMeshComponent")
         for label,i in ([3]string{"Dome","Crate","Glow"}) {
+            if i==0 && c.dome=="" {continue}
             mesh_name:=i==0?c.dome:i==1?"SM_Box":"SM_Cube"
             mesh:=fixture.package_object(w,fmt.tprintf("/Game/Meshes/%s",mesh_name),"/Script/Engine","StaticMesh",mesh_name)
             actor:=fixture.actor_add(&l,fixture.engine_class(w,"StaticMeshActor"),fmt.tprintf("StaticMeshActor_%d",i),label)
@@ -555,11 +610,14 @@ a_dome_that_encloses_the_level_is_its_sky_and_is_not_drawn :: proc(t:^testing.T)
         }
         if c.lit {
             sky:=fixture.actor_add(&l,fixture.engine_class(w,"SkyLight"),"SkyLight_0","Sky light")
-            fixture.actor_set(&l,sky,fixture.component_add(&l,sky,fixture.engine_class(w,"SkyLightComponent"),"SkyLightComponent0",fixture.bytes_make()))
+            props:=fixture.bytes_make()
+            fixture.float_property(&props,w,"Intensity",c.intensity)
+            fixture.actor_set(&l,sky,fixture.component_add(&l,sky,fixture.engine_class(w,"SkyLightComponent"),"SkyLightComponent0",props))
         }
         _=os.write_entire_file(f.map_path,fixture.level_bytes(&l))
 
-        report,error:=level_import(f.map_path,{root=f.mirai},engine_content="-")
+        // Textures as they are, so the values of a shaded image can be read.
+        report,error:=level_import(f.map_path,{root=f.mirai,textures=.Uncompressed},engine_content="-")
         if !testing.expectf(t,error.code==.None,"case %d: %v: %s",n,error.code,error.message) {return}
         defer level_report_destroy(&report)
         types:asset.Types;asset.types_init(&types);defer asset.types_destroy(&types)
@@ -572,21 +630,48 @@ a_dome_that_encloses_the_level_is_its_sky_and_is_not_drawn :: proc(t:^testing.T)
             testing.expectf(t,e.name!="Dome" || !shown,"case %d: the dome is not drawn",n)
             if e.name=="Crate" || e.name=="Glow" {testing.expectf(t,shown && !renderer.shadows,"case %d: %s is drawn without shadows",n,e.name)}
         }
-        testing.expectf(t,has_warning(&report,"Dome","encloses the level","not drawn",c.warning),"case %d: the dome is a warning: %v",n,report.imports.warnings)
+        if c.dome!="" {
+            testing.expectf(t,has_warning(&report,"Dome","encloses the level","not drawn",c.warning),"case %d: the dome is a warning: %v",n,report.imports.warnings)
+        } else {
+            testing.expectf(t,!has_warning(&report,"encloses"),"case %d: no dome",n)
+        }
         testing.expectf(t,!has_warning(&report,"Glow","encloses"),"case %d: a lit or enclosed mesh is drawn",n)
         e,_,has_entity:=entity_named(&scene,"Sky")
         sky,has_sky:=asset.scene_get(&scene,e,"Sky",render.Sky)
         testing.expectf(t,has_sky==c.lit,"case %d: a Sky only with a sky light",n)
-        testing.expectf(t,(sky.image!={})==c.taken,"case %d: the image of the dome is the Sky's: %v",n,sky.image)
-        if !c.taken || !has_entity {continue}
-        testing.expectf(t,sky.luminance==[3]f32{3,3,3},"case %d: at the luminance of its material: %v",n,sky.luminance)
+        testing.expectf(t,(sky.image!={})==(c.image!=.None),"case %d: the image of the dome is the Sky's: %v",n,sky.image)
+        if c.dome=="" {testing.expectf(t,sky.use_background && sky.luminance.r>c.intensity,"case %d: Mirai's sky at the light of the sky light: %v",n,sky)}
+        if c.image==.None || !has_entity {continue}
+        testing.expectf(t,!sky.use_background && !sky.atmosphere,"case %d: the Sky shows its image",n)
         image:=""
         for a in report.imports.assets {if a.id==sky.image && a.kind==asset.KIND_TEXTURE {image=a.path}}
         file:asset.Asset
         if !testing.expectf(t,image!="" && asset.asset_load(&file,image,context.temp_allocator)==.None,"case %d: the image is a .tex of the import",n) {continue}
         defer asset.asset_close(&file)
         view,view_error:=asset.texture_view(&file,&types)
-        testing.expectf(t,view_error==.None && view.info.width==8 && view.info.height==4,"case %d: the texture as it is",n)
+        if !testing.expectf(t,view_error==.None,"case %d: the image reads",n) {continue}
+        width,height:=int(view.info.width),int(view.info.height)
+        testing.expectf(t,width==2*height,"case %d: the whole sky, twice as wide as tall: %dx%d",n,width,height)
+        if c.image==.Shaded {
+            testing.expectf(t,sky.luminance==[3]f32{c.intensity,c.intensity,c.intensity},"case %d: at the LightColor times Intensity of the sky light: %v",n,sky.luminance)
+            testing.expectf(t,(c.intensity!=1)==has_warning(&report,"Dome","LightColor times Intensity"),"case %d: a sky light that is not 1 is a warning",n)
+            if c.dome!="SM_Gradient" {continue}
+            // Read along the rows nearest the zenith and the horizon.
+            texels:=([^]f16)(raw_data(asset.texture_mip(view,0)))[:width*height*4]
+            row_mean :: proc(texels:[]f16,width,row:int) -> (mean:[3]f32) {
+                for x in 0..<width {for k in 0..<3 {mean[k]+=f32(texels[(row*width+x)*4+k])}}
+                return mean/f32(width)
+            }
+            zenith,horizon:=row_mean(texels,width,0),row_mean(texels,width,height/2-1)
+            expected_zenith,expected_horizon:=ZENITH,HORIZON
+            for k in 0..<3 {
+                testing.expectf(t,abs(zenith[k]-expected_zenith[k])<0.02,"case %d: the zenith is the material's: %v",n,zenith)
+                testing.expectf(t,abs(horizon[k]-expected_horizon[k])<0.02,"case %d: the horizon is the material's: %v",n,horizon)
+            }
+            continue
+        }
+        testing.expectf(t,sky.luminance==[3]f32{3,3,3},"case %d: at the luminance of its material: %v",n,sky.luminance)
+        testing.expectf(t,width==8 && height==4,"case %d: the texture as it is",n)
         // Where the dome, turned by its yaw about Unreal's up, shows the u of a
         // point, the Sky turned by its entity reads the same u.
         place,_:=asset.scene_get(&scene,e,"Transform",core.Transform)

@@ -393,6 +393,7 @@ dome_shade :: proc(m:^unreal_mesh.Mesh,world:mm.Transform,s:^material.Sky_Graph,
     // columns of directions they may cross.
     triangles:=len(m.corner_vertex)/3
     bands:=make([][dynamic]i32,height,context.temp_allocator)
+    for &band in bands {band.allocator=context.temp_allocator}
     spans:=make([][2]f32,triangles,context.temp_allocator)
     for triangle in 0..<triangles {
         v:[3][3]f32
