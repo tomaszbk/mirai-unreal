@@ -96,6 +96,16 @@ sky_light_add :: proc(c:^Context,a,k:int) -> bool {
     if scale:=post_indirect(c);scale!=1 && light_mobility(c,k)!=.Movable {
         warn(c,"%s: in Unreal the IndirectLightingIntensity %.3g of the post process multiplies the bounce of this sky, which does not move; Mirai's sky has no such multiplier, so it is not taken",label,scale)
     }
+    // Under the horizon what it lights from goes toward LowerHemisphereColor
+    // by its alpha, captured or from a cube, unless bLowerHemisphereIsBlack is off.
+    below:=[4]f32{0,0,0,1}
+    if f,error:=level.property(d,ref,"LowerHemisphereColor");error.code==.None && f.property!=nil {
+        if v,value_error:=unreal.property_value(f.pkg,f.property);value_error.code==.None && v.kind==.Real_Vector && v.vector_count==4 {
+            below={f32(v.vector[0]),f32(v.vector[1]),f32(v.vector[2]),f32(v.vector[3])}
+        }
+    }
+    if black,_:=level.bool_of(d,ref,"bLowerHemisphereIsBlack",true);!black {below.a=0}
+    c.sky_below=below
     source,_:=level.enum_of(d,ref,"SourceType","SLS_CapturedScene")
     if source!="SLS_SpecifiedCubemap" {
         c.sky_captured=true
@@ -106,13 +116,6 @@ sky_light_add :: proc(c:^Context,a,k:int) -> bool {
         warn(c,"%s: it lights from a cubemap it does not name; the sky is Mirai's gradient at %.3g times its luminance",label,intensity)
         return true
     }
-    below:=[4]f32{0,0,0,1}
-    if f,error:=level.property(d,ref,"LowerHemisphereColor");error.code==.None && f.property!=nil {
-        if v,value_error:=unreal.property_value(f.pkg,f.property);value_error.code==.None && v.kind==.Real_Vector && v.vector_count==4 {
-            below={f32(v.vector[0]),f32(v.vector[1]),f32(v.vector[2]),f32(v.vector[3])}
-        }
-    }
-    if black,_:=level.bool_of(d,ref,"bLowerHemisphereIsBlack",true);!black {below.a=0}
     if c.sky.image,_=sky_image_write(c,cubemap,below);c.sky.image=={} {
         warn(c,"%s: the sky is Mirai's gradient at %.3g times its luminance",label,intensity)
         return true
@@ -329,7 +332,13 @@ dome_sky_write :: proc(c:^Context,dome:^Sky_Dome) -> (id:base.Asset_Id) {
         for width<s.widest && width<DOME_MAX_WIDTH {width*=2}
     }
     texels:=dome_shade(&geometry,world,&s,width)
-    source:=textures.Source{texels=mem.slice_to_bytes(texels),width=width,height=width/2,layers=1,format=.RGBA32F}
+    // Under the horizon, toward the lower hemisphere of the sky light, as a cube of it.
+    below:=c.sky_below
+    height:=width/2
+    for row in height/2..<height {
+        for &texel in texels[row*width:][:width] {texel.rgb+=(below.rgb-texel.rgb)*below.a}
+    }
+    source:=textures.Source{texels=mem.slice_to_bytes(texels),width=width,height=height,layers=1,format=.RGBA32F}
     owner:=c.d.actors[c.d.components[dome.component].actor].label
     write_error:importer.Error
     id,write_error=material_write.sky_made_write(fmt.tprintf("%s_Sky",unreal.asset_name(owner)),source,&c.outputs,"",context.temp_allocator)

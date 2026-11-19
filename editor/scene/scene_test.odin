@@ -557,8 +557,9 @@ unlit_finish :: proc(p:^fx.Package,name:string,emission:i32) -> []u8 {
 // longitude, and a sky light captures it, its image is the Sky's at the
 // luminance of its material, turned about up as the dome; any other material
 // that runs on the CPU gives the Sky what it shows in each direction from the
-// centre of the dome. The LightColor times Intensity of the sky light
-// multiplies the image, as Unreal lights by it. A material only a program
+// centre of the dome, under the horizon toward the lower hemisphere of the
+// sky light. The LightColor times Intensity of the sky light multiplies the
+// image, as Unreal lights by it. A material only a program
 // computes and a dome without a sky light are a warning; a level without a
 // dome keeps Mirai's sky at the light of its sky light. A mesh that casts no
 // shadow and holds nothing is drawn, without shadows.
@@ -662,7 +663,8 @@ a_dome_that_encloses_the_level_is_its_sky_and_is_not_drawn :: proc(t:^testing.T)
                 for x in 0..<width {for k in 0..<3 {mean[k]+=f32(texels[(row*width+x)*4+k])}}
                 return mean/f32(width)
             }
-            zenith,horizon:=row_mean(texels,width,0),row_mean(texels,width,height/2-1)
+            zenith,horizon,under:=row_mean(texels,width,0),row_mean(texels,width,height/2-1),row_mean(texels,width,height/2)
+            testing.expectf(t,under=={},"case %d: under the horizon, the black lower hemisphere of the sky light: %v",n,under)
             expected_zenith,expected_horizon:=ZENITH,HORIZON
             for k in 0..<3 {
                 testing.expectf(t,abs(zenith[k]-expected_zenith[k])<0.02,"case %d: the zenith is the material's: %v",n,zenith)

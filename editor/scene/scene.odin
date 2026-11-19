@@ -222,6 +222,7 @@ Context :: struct {
     sky_captured:bool,        // by a sky light that captures the scene
     dome:Sky_Dome,            // the dome whose image the Sky may take (dome_add)
     sky_turn:f32,             // of the image of the sky about up, radians
+    sky_below:[4]f32,         // what the sky light lights from under the horizon toward, by its alpha
     sky_drawn:bool,           // the level draws a sky behind the scene: an atmosphere, the engine's sky sphere or a dome
     sky_atmosphere:bool,      // by an atmosphere (SkyAtmosphere, or AtmosphericFog of UE4)
     actor_boxes:[]mm.Aabb,    // what each actor shows, once a sky dome is looked for (sky_dome)
