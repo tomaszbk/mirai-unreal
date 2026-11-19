@@ -29,4 +29,8 @@ bridges, `fluids`, is not in the engine: it installs from the catalog too
 
 ## License
 
-Licensed under either of [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE), at your option.
+Licensed under either of [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE), at your option,
+except `editor/kraken`, which is derived from ooz and licensed under
+[GPL-3.0-or-later](editor/kraken/LICENSE): a build that includes the plugin and is distributed
+falls under its terms. A build of the engine with its private compressor
+(`ext/mirai-compression`) decodes Oodle streams with it; one without it, with `editor/kraken`.
