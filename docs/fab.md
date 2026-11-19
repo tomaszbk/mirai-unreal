@@ -20,7 +20,7 @@ imported as it lands.
 4. **Download.** `unreal.fab.download` brings into `folder`:
    - of the Unreal format, the `picks` (files or folders under `Content`) with the packages they
      read, or the whole build without picks; each package goes to its path under `/Game` inside
-     the folder, as a map that is brought does. Then the maps and the packages of meshes picked are
+     the folder, as Unreal lays them out. Then the maps and the packages of meshes picked are
      imported (of a whole build its maps, or its meshes when it has none);
    - of another format, the `file` of a `format`, unpacked when it is a zip, and its models
      imported.

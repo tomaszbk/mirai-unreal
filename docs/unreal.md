@@ -645,17 +645,16 @@ entity, the imported meshes and the time.
   `SM_Rock.uasset` writes `Rock.mesh` in `Rock/` (`model_folder`), and a material `MI_Rock`,
   `Rock.mat`; two packages of the same name take `Rock (2)/`. What is looked up inside a package
   keeps using the Unreal name.
-- **Sources.** The map is a source in the assets, and the packages of `/Game` it reads
+- **Sources.** The map is read where it is, and the packages of `/Game` it reads
   (`level_packages`: what its imports and soft references name and theirs, and the World Partition
-  packages of its actors and objects, never its build data) sit at their paths under `/Game` with
-  it: `level_bring` copies them there from outside. They are the inputs of its import
-  (`importer.output_input`), so a changed package or a clone without the imported folder makes the
-  build import the map again.
-- **Files.** One import owns everything the map makes, in the folder of its import (`<map>/`
-  beside it, or what its sidecar says): the scene, and as parts named `<package>/<name>` (under
-  `<package>/`) what each package the level names gives as the `model` format reads it (meshes,
-  slot materials, textures, clips; no prefab: the scene places the meshes), the materials
-  components override and the sky, and at the root what the level stores and plugins write.
+  packages of its actors and objects, never its build data) where its Content folder holds them.
+  They are the inputs of its package (`importer.output_input`), so a changed package makes the
+  refresh ingest the map again; nothing of them is copied into the project.
+- **Files.** One import owns everything the map makes, its documents in `<map>/` under the folder
+  of the project they go to (`Import_Options.documents`): the scene, and as parts named
+  `<package>/<name>` (under `<package>/`) what each package the level names gives as the `model`
+  format reads it (meshes, slot materials, textures, clips; no prefab: the scene places the
+  meshes), the materials components override and the sky, and at the root what the level stores and plugins write.
   A single `material.Library` and a single `write.Builder` serve the whole level: each package is
   opened and each texture decoded once, while memory allows. The packages of meshes and overridden
   materials are read ahead ([read-ahead](#read-ahead)). Every material of the level reads the

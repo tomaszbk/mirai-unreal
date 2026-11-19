@@ -209,7 +209,7 @@ landscape_translate :: proc(c:^unreal_scene.Context,l:^landscape.Landscape,index
     }
     defer delete(bytes)
     detail:=fmt.tprintf("%dx%d samples every %.3g m, %d layers",l.samples.x,l.samples.y,l.spacing,s.layer_count)
-    if !unreal_scene.asset_write(c,id,terrain.TERRAIN_KIND,label,path,bytes,detail) {return false}
+    if !unreal_scene.asset_write(c,id,label,path,bytes,detail) {return false}
     e,made:=unreal_scene.entity_make(c,0,unreal_scene.actor_key(c,l.actor),label,result.transform)
     if !made {return false}
     owner:=terrain.Terrain{source=id,revision=1,solid=true}

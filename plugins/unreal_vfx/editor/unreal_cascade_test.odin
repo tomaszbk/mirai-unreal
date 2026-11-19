@@ -112,7 +112,9 @@ cascade_import :: proc(t:^testing.T,top:string,lifetime:[]f32) -> (report:unreal
     map_path:=fmt.tprintf("%s/assets/Unreal/Content/Maps/Cave.umap",root)
     _=os.write_entire_file(map_path,fixture.level_bytes(&l))
     provider:=vfx_unreal_default().provider
-    imported,error:=unreal_scene.level_import(map_path,{root=root},provider.translators[:provider.count],"-")
+    imports:=fixture.store_open(root)
+    defer fixture.store_close(imports)
+    imported,error:=unreal_scene.level_import(map_path,fixture.into(root,imports),provider.translators[:provider.count],"-")
     if !testing.expectf(t,error.code==.None,"%s",error.message) {return}
     for a in imported.imports.assets {if a.kind==effect.PARTICLE_KIND {written=a}}
     types:asset.Types;asset.types_init(&types);defer asset.types_destroy(&types)

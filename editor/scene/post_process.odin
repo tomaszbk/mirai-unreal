@@ -313,7 +313,7 @@ grade_from :: proc(c:^Context,s:^Post_Settings) -> (layer:render.Post_Process_La
         warn(c,"the color grade could not be written (%v)",error)
         return
     }
-    if !asset_write(c,id,asset.KIND_MATERIAL,"Grade",path,bytes,"ColorGrade") {return}
+    if !asset_write(c,id,"Grade",path,bytes,"ColorGrade") {return}
     append(&c.grades,Grade_Material{parameters,id})
     return {material=id,enabled=true},any
 }

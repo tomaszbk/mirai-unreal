@@ -17,6 +17,7 @@ import fx "project:plugins/unreal/editor/material/fixture"
 import "mirai:project"
 import "mirai:std/base"
 import "mirai:std/serial"
+import "mirai:store"
 
 @(private="file")
 temp_folder :: proc(name:string) -> string {
@@ -90,17 +91,21 @@ mat_read :: proc(t:^testing.T,types:^asset.Types,path:string,file:^asset.Asset) 
     return view,testing.expect_value(t,error,asset.Error.None)
 }
 
-// materials_write as the one write of an import of source, in the project at root.
+// materials_write as the one write of an import of source, into the project
+// at root: its package in a store of root, its documents in its assets.
 @(private="file")
 import_materials :: proc(lib:^material.Library,translated:[]material.Translated_Material,source,shaders,root:string) -> (report:importer.Import_Report,error:importer.Error) {
     bytes,_:=os.read_entire_file(source,context.temp_allocator)
+    s,opened:=store.open(fmt.tprintf("%s/.mirai/store",root))
+    if opened!=.None {return {},importer.error_make(.Write,"the store of %s could not be opened: %v",root,opened)}
+    defer store.close(&s)
     o:importer.Outputs
-    if error=importer.outputs_begin(&o,source,"",u64(len(bytes)),base.hash64(bytes),importer.import_version(1),{root=root});error.code!=.None {return}
+    if error=importer.outputs_begin(&o,source,"",u64(len(bytes)),base.hash64(bytes),importer.import_version(1),{root=root,store=&s,documents=fmt.tprintf("%s/assets",root)});error.code!=.None {return}
     if _,error=materials_write(lib,translated,&o,"",shaders,allocator=context.temp_allocator);error.code!=.None {
-        importer.outputs_end(&o,true)
+        _,_=importer.outputs_end(&o,true)
         return
     }
-    return importer.outputs_end(&o,false),{}
+    return importer.outputs_end(&o,false)
 }
 
 @(private="file")

@@ -70,7 +70,9 @@ the_height_fog_of_an_unreal_level_fills_its_box_with_its_density_and_glow :: pro
         level:=fmt.tprintf("%s/assets/Unreal/Content/Maps/Mist.umap",root)
         _=os.write_entire_file(level,fixture.level_bytes(&l))
         provider:=fog_unreal_default().provider
-        report,error:=unreal_scene.level_import(level,{root=root},provider.translators[:provider.count],"-")
+        imports:=fixture.store_open(root)
+        defer fixture.store_close(imports)
+        report,error:=unreal_scene.level_import(level,fixture.into(root,imports),provider.translators[:provider.count],"-")
         if !testing.expectf(t,error.code==.None,"%s",error.message) {return}
         defer unreal_scene.level_report_destroy(&report)
         types:asset.Types;asset.types_init(&types);defer asset.types_destroy(&types)
@@ -173,7 +175,9 @@ under_a_sky_atmosphere_the_height_fog_glows_with_the_light_of_its_sky :: proc(t:
         level:=fmt.tprintf("%s/assets/Unreal/Content/Maps/Cave.umap",root)
         _=os.write_entire_file(level,fixture.level_bytes(&l))
         provider:=fog_unreal_default().provider
-        report,error:=unreal_scene.level_import(level,{root=root},provider.translators[:provider.count],"-")
+        imports:=fixture.store_open(root)
+        defer fixture.store_close(imports)
+        report,error:=unreal_scene.level_import(level,fixture.into(root,imports),provider.translators[:provider.count],"-")
         if !testing.expectf(t,error.code==.None,"%s",error.message) {return}
         defer unreal_scene.level_report_destroy(&report)
         lobe,taken:=false,!test_case.volumetric

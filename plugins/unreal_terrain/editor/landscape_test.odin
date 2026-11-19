@@ -7,6 +7,7 @@ import "core:testing"
 import "mirai:asset"
 import importer "mirai:cook/import"
 import "project:plugins/unreal/editor/fixture"
+import files "project:plugins/unreal/editor/fixture/files"
 import "project:plugins/unreal/editor/kraken"
 import "project:plugins/unreal/editor/level"
 import unreal "project:plugins/unreal/editor/package"
@@ -142,7 +143,9 @@ the_landscape_of_an_unreal_level_is_a_terrain_of_its_scene :: proc(t:^testing.T)
     _=os.write_entire_file(source,"map")
     ids:[2]base.Asset_Id
     for pass in 0..<2 {
-        report,error:=unreal_scene.document_import(&d,source,100,7,{root=root},provider.translators[:provider.count])
+        imports:=files.store_open(root)
+        defer files.store_close(imports)
+        report,error:=unreal_scene.document_import(&d,source,100,7,files.into(root,imports),provider.translators[:provider.count])
         if !testing.expectf(t,error.code==.None,"%s",error.message) {return}
         defer unreal_scene.level_report_destroy(&report)
         written:importer.Written

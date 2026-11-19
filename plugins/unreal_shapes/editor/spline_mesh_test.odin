@@ -178,7 +178,9 @@ the_spline_meshes_of_an_unreal_level_bend_their_meshes :: proc(t:^testing.T) {
     _=os.write_entire_file(level_path,fixture.level_bytes(&l))
 
     provider:=shapes_unreal_default().provider
-    report,error:=unreal_scene.level_import(level_path,{root=root},provider.translators[:provider.count],"-")
+    imports:=fixture.store_open(root)
+    defer fixture.store_close(imports)
+    report,error:=unreal_scene.level_import(level_path,fixture.into(root,imports),provider.translators[:provider.count],"-")
     if !testing.expectf(t,error.code==.None,"%s",error.message) {return}
     defer unreal_scene.level_report_destroy(&report)
     types:asset.Types;asset.types_init(&types);defer asset.types_destroy(&types)

@@ -41,25 +41,31 @@ The plugin's storages (`unreal.odin`, `api.odin`) are providers the editor reads
 library:
 
 - `Unreal_Format` is an `Import_Format_Provider` for the `.uasset` format (`model.FORMAT`): a
-  package in the assets is imported like the engine's models, into `<name without prefix>/` beside
-  it, with its mesh, materials, textures and prefab, or its clips and skeleton; the packages its
-  materials read are the inputs of its import. Its `prepare` gives it the `reads` of the library's
-  `Translator_Provider`s (`model.Options.reads`).
+  package is ingested where it is, like the engine's models, as a package of the machine store
+  pinned in the project; its mesh and textures are objects of its build, and its materials,
+  skeleton, clips and prefab documents of the project in `<name without prefix>/` under the folder
+  it is added to. The packages its materials read are the inputs of its package. Its `prepare`
+  gives it the `reads` of the library's `Translator_Provider`s (`model.Options.reads`).
 - `Unreal_Maps` is an `Import_Source_Provider` that claims a `.umap` by its extension and
-  signature. A map from outside the assets comes in with `bring` (`scene.level_bring`): the map and
-  the packages of `/Game` it reads (`scene.level_packages`, never its build data) are copied into
-  the folder of the browser, each at its path under `/Game`. `prepare` collects the translators and
-  `reads` of the `Translator_Provider`s of the library's plugins, and `run` calls
-  `scene.level_import`: one import that owns everything it writes, in `<map>/` beside the map.
-  The build rebuilds what it keeps in the imported folder from the map and those packages, its
-  inputs.
+  signature and imports it whole where it is, in the assets of a project or anywhere on disk:
+  nothing is copied into the project. `prepare` collects the translators and `reads` of the
+  `Translator_Provider`s of the library's plugins, and `run` calls `scene.level_import`: one
+  import that owns everything it writes, whose package the project pins and whose documents (the
+  scene, its sections, materials, what plugins write) go to `<map>/` under the folder it is added
+  to. The packages of `/Game` it reads (`scene.level_packages`, never its build data) are the
+  inputs of its package: a changed one makes the refresh of a build ingest the map again.
 - `Unreal_Api` registers `unreal.inspect` ([diagnostic](unreal.md#diagnostics-inspect)) and the
   `unreal.fab.*` methods; `Unreal_Fab` holds the Fab panel and its jobs ([Fab](fab.md)).
 - Importing again gives the same ids. An import that writes Surface programs publishes the
   project's programs so its materials render.
-- `mirai import` and the engine CLI know nothing about Unreal: a map or a `.uasset` is imported in
-  the editor, with `unreal` in the project's plugins. Without the bridge for an actor class, the
-  map leaves it as a warning saying which plugin to enable.
+- `mirai import <map or package> --project P` and the editor import the same way, with `unreal`
+  in the project's plugins: the import program takes the providers from the project's editor
+  library. Without the bridge for an actor class, the map leaves it as a warning saying which
+  plugin to enable.
+- A map's package is recorded as read by `scene.LEVEL_IMPORTER` and its build is named under the
+  key of its identity and `scene.LEVEL_VERSION`; the refresh of the engine finds a whole source's
+  build only by the build this machine chose for its manifest, so a peer without the map and its
+  packages reports the package as missing.
 
 ## Invariants
 
@@ -73,7 +79,8 @@ library:
   (`Limits`), rejects a damaged package with `Error{code,offset,field}` and a version it does not
   know, and never reads or writes outside its slices. What it cannot translate is a warning with a
   count, not an invented value.
-- **The same bytes give the same assets.** The ids of an import are those its sidecar keeps;
+- **The same bytes give the same assets.** The ids of an import are those the manifest of its
+  package keeps;
   those of the entities of a scene come from the actor and component path, not from a numbering;
   reimporting keeps what the previous import wrote.
 - **Without Unreal installed.** What a package names from `/Engine` is read if an installation is

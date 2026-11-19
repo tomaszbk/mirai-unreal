@@ -57,7 +57,7 @@ niagara_texture :: proc(w:^Niagara_Writer,di:^Niagara_Di) -> (baked:Niagara_Text
         unreal_scene.warn(c,"the texture %s could not be baked (%v)",name,bytes_error)
         return
     }
-    if !unreal_scene.asset_write(c,id,gridfile.GRID_KIND,name,path,bytes,fmt.tprintf("%dx%d texels",cells.x,cells.y)) {return}
+    if !unreal_scene.asset_write(c,id,name,path,bytes,fmt.tprintf("%dx%d texels",cells.x,cells.y)) {return}
     return {id,strings.clone(name,context.temp_allocator),cells},true
 }
 

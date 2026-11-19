@@ -35,7 +35,9 @@ a_blocking_volume_of_an_unreal_level_is_a_static_box :: proc(t:^testing.T) {
     level:=fmt.tprintf("%s/assets/Unreal/Content/Maps/Walls.umap",root)
     _=os.write_entire_file(level,fixture.level_bytes(&l))
     provider:=physics_unreal_default().provider
-    report,error:=unreal_scene.level_import(level,{root=root},provider.translators[:provider.count],"-")
+    imports:=fixture.store_open(root)
+    defer fixture.store_close(imports)
+    report,error:=unreal_scene.level_import(level,fixture.into(root,imports),provider.translators[:provider.count],"-")
     if !testing.expectf(t,error.code==.None,"%s",error.message) {return}
     defer unreal_scene.level_report_destroy(&report)
     types:asset.Types;asset.types_init(&types);defer asset.types_destroy(&types)
