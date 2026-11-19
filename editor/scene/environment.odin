@@ -3,8 +3,10 @@ package unreal_scene
 import "core:fmt"
 import "core:math"
 import "core:math/linalg"
+import "core:mem"
 import "core:strings"
 import importer "mirai:cook/import"
+import "mirai:cook/textures"
 import material "project:plugins/unreal/editor/material"
 import material_write "project:plugins/unreal/editor/material/write"
 import unreal_mesh "project:plugins/unreal/editor/mesh"
@@ -160,11 +162,15 @@ sky_dome :: proc(c:^Context,a,k:int) -> bool {
     return shown>0
 }
 
-// A dome of the level that may give the Sky its image (dome_add).
+// A dome of the level that may give the Sky its image (dome_add): one
+// texture it lays by latitude and longitude, or what its material shows by
+// direction.
 Sky_Dome :: struct {
     name:string,      // its actor and component
-    texture:string,   // the object path of the texture its material shows
-    luminance:[3]f32, // what its material multiplies the texture by, nits
+    texture:string,   // the object path of the texture its material shows; "": its material is shaded per direction
+    material:string,  // the object path of that material
+    actor,component:int, // of the level
+    luminance:[3]f32, // what its material multiplies the texture by, nits; 1 for a material shaded per direction
     turn:f32,         // of the Sky about up for its image to lie as on the dome, radians
     found:bool,
 }
@@ -175,12 +181,22 @@ Sky_Dome :: struct {
 // Corners whose direction is closer to a pole than this sine say nothing by
 // their u.
 @(private) DOME_POLE_SINE :: 0.05
+// Texels across the image of a dome whose material samples no texture: what
+// gradients and glows need. One that samples textures is as wide as the
+// widest, within DOME_TEXTURED_WIDTH and DOME_MAX_WIDTH.
+@(private) DOME_SMOOTH_WIDTH :: 512
+@(private) DOME_TEXTURED_WIDTH :: 1024
+@(private) DOME_MAX_WIDTH :: 2048
+// Directions shaded along each side of a texel of the image of a dome, averaged.
+@(private) DOME_SAMPLES :: 2
 
 // The dome k of actor a, which is not drawn: the Sky stands for it. Its image
-// is the Sky's when its material shows one texture as it is
-// (translated_plain_emission) and its mesh lays that texture over the sphere
-// by latitude and longitude, as the Sky lays its image, turned about up at
-// most; environment_finish takes the first such dome. Any other is a warning.
+// is the Sky's: the texture its material shows as it is
+// (translated_plain_emission) when its mesh lays it over the sphere by
+// latitude and longitude, as the Sky lays its image, turned about up at
+// most; else what its material shows in each direction from its centre,
+// when that runs on the CPU (material.sky_graph). environment_finish takes
+// the first such dome. Any other is a warning.
 @(private)
 dome_add :: proc(c:^Context,a,k:int) {
     d:=c.d
@@ -190,7 +206,7 @@ dome_add :: proc(c:^Context,a,k:int) {
     case reason!="":warn(c,"%s encloses the level as its sky and is not drawn: %s, so the Sky of the scene is Mirai's sky",name,reason)
     case c.dome.found:warn(c,"%s encloses the level as its sky and is not drawn: the image of the Sky is that of %s",name,c.dome.name)
     case:
-        dome.name=name
+        dome.name,dome.actor=name,a
         c.dome=dome
     }
 }
@@ -200,9 +216,8 @@ dome_add :: proc(c:^Context,a,k:int) {
 dome_image :: proc(c:^Context,k:int) -> (dome:Sky_Dome,reason:string) {
     d:=c.d
     ref:=d.components[k].ref
-    mesh_path:=level.path_of(d,ref,"StaticMesh")
     overrides:=level.paths_of(d,ref,"OverrideMaterials")
-    own:=mesh_slot_paths(c,mesh_path,false)
+    own:=mesh_slot_paths(c,level.path_of(d,ref,"StaticMesh"),false)
     path:=""
     for i in 0..<max(len(own),len(overrides)) {
         slot:=i<len(overrides) && overrides[i]!="" ? overrides[i] : (i<len(own) ? own[i] : "")
@@ -217,20 +232,36 @@ dome_image :: proc(c:^Context,k:int) -> (dome:Sky_Dome,reason:string) {
     t,error:=material.translate(c.lib,object,{reads=c.texture_reads[:],writers=c.writers},context.temp_allocator)
     if error.code!=.None {return {},"its material could not be translated"}
     defer material.translated_destroy(&t)
-    texture,set,luminance,plain:=material.translated_plain_emission(&t)
-    if !plain {return {},"its material is more than one texture as it is"}
-    mesh_object,mesh_found:=material.object_find(c.lib,mesh_path)
-    if !mesh_found {return {},"its mesh could not be read"}
+    geometry,world,why:=dome_mesh(c,k)
+    if why!="" {return {},why}
+    if texture,set,luminance,plain:=material.translated_plain_emission(&t);plain {
+        if turn,lat_long:=lat_long_turn(&geometry,set,world);lat_long {
+            return {texture=strings.clone(texture,context.temp_allocator),luminance=luminance,turn=turn,found=true},""
+        }
+    }
+    s,graph_error:=material.sky_graph(c.lib,object,{},context.temp_allocator)
+    if graph_error.code!=.None {return {},"its material could not be translated"}
+    if s.why!="" {return {},s.why}
+    return {material=strings.clone(path,context.temp_allocator),component=k,luminance={1,1,1},found=true},""
+}
+
+// The mesh of the dome k, decoded, and its place; why it cannot be read.
+// The library is taken.
+@(private)
+dome_mesh :: proc(c:^Context,k:int) -> (geometry:unreal_mesh.Mesh,world:mm.Transform,why:string) {
+    d:=c.d
+    mesh_object,mesh_found:=material.object_find(c.lib,level.path_of(d,d.components[k].ref,"StaticMesh"))
+    if !mesh_found {return {},{},"its mesh could not be read"}
     source,read_error:=unreal_mesh.mesh_read(&mesh_object.pkg.p,mesh_object.export,.Lod0,context.temp_allocator)
-    if read_error.code!=.None {return {},"its mesh could not be read"}
+    if read_error.code!=.None {return {},{},"its mesh could not be read"}
     textures,_:=decoder(c)
-    geometry,decode_error:=unreal_mesh.mesh_decode(&mesh_object.pkg.p,&source,textures,context.temp_allocator,context.temp_allocator)
-    if decode_error.code!=.None {return {},"its mesh could not be read"}
-    world,world_error:=level.component_world(d,k)
-    if world_error.code!=.None {return {},"its place could not be read"}
-    turn,lat_long:=lat_long_turn(&geometry,set,world)
-    if !lat_long {return {},"its mesh does not lay its texture over the sphere by latitude and longitude"}
-    return {texture=strings.clone(texture,context.temp_allocator),luminance=luminance,turn=turn,found=true},""
+    decode_error:unreal.Error
+    geometry,decode_error=unreal_mesh.mesh_decode(&mesh_object.pkg.p,&source,textures,context.temp_allocator,context.temp_allocator)
+    if decode_error.code!=.None {return {},{},"its mesh could not be read"}
+    world_error:unreal.Error
+    world,world_error=level.component_world(d,k)
+    if world_error.code!=.None {return {},{},"its place could not be read"}
+    return
 }
 
 // The turn about up of a Sky whose image lies over the sphere as the uv set
@@ -268,6 +299,214 @@ lat_long_turn :: proc(m:^unreal_mesh.Mesh,set:int,world:mm.Transform) -> (turn:f
         if abs(gap-math.round(gap))>DOME_UV_TOLERANCE {return}
     }
     return f32(turned),true
+}
+
+// The .tex of what the material of dome shows in each direction from the
+// centre of its bounds (material.sky_shade), a latitude-longitude image as
+// the Sky reads it without a turn; zero, with a warning, when it cannot be
+// written. What changes with time is shown at time 0, and the values a
+// Blueprint gave a dynamic instance as the level was built stay as saved:
+// both are warnings.
+@(private)
+dome_sky_write :: proc(c:^Context,dome:^Sky_Dome) -> (id:base.Asset_Id) {
+    defer images_trim(c)
+    library_lock(c)
+    defer library_unlock(c)
+    object,found:=material.object_find(c.lib,dome.material)
+    geometry,world,why:=dome_mesh(c,dome.component)
+    if !found || why!="" {
+        warn(c,"%s: its sky could not be read again",dome.name)
+        return
+    }
+    s,error:=material.sky_graph(c.lib,object,{dome_pixels,c},context.temp_allocator)
+    if error.code!=.None || s.why!="" {
+        warn(c,"%s: its sky could not be shaded",dome.name)
+        return
+    }
+    width:=DOME_SMOOTH_WIDTH
+    if s.widest>0 {
+        width=DOME_TEXTURED_WIDTH
+        for width<s.widest && width<DOME_MAX_WIDTH {width*=2}
+    }
+    texels:=dome_shade(&geometry,world,&s,width)
+    source:=textures.Source{texels=mem.slice_to_bytes(texels),width=width,height=width/2,layers=1,format=.RGBA32F}
+    owner:=c.d.actors[dome.actor].label
+    write_error:importer.Error
+    id,write_error=material_write.sky_made_write(fmt.tprintf("%s_Sky",unreal.asset_name(owner)),source,&c.outputs,"",context.temp_allocator)
+    if write_error.code!=.None {
+        warn(c,"%s: its sky could not be written: %s",dome.name,write_error.message)
+        return {}
+    }
+    if s.moving {warn(c,"%s: its material changes with time; the image of the Sky is what it shows at time 0",dome.name)}
+    if material.object_class(object)=="MaterialInstanceDynamic" && len(s.instance)>0 {
+        warn(c,"%s: a Blueprint gave its dynamic material %s as the level was built; the image of the Sky keeps them as saved and does not follow what changes them as the game runs",dome.name,strings.join(s.instance,", ",context.temp_allocator))
+    }
+    return
+}
+
+// The texels of a texture the material of a dome samples, from the textures
+// of the level (with its library taken).
+@(private)
+dome_pixels :: proc(data:rawptr,path:string) -> ^material.Pixels {
+    c:=(^Context)(data)
+    textures,ready:=decoder(c)
+    if !ready {return nil}
+    return material_write.source_pixels(&c.images,path,textures)
+}
+
+// What s shows in each direction from the centre of the bounds of mesh m
+// placed at world: a latitude-longitude image width texels across, rows from
+// up, of linear RGBA. Each texel averages DOME_SAMPLES² directions; one whose
+// directions all miss the mesh (below an open dome) takes the nearest texel
+// of its column that one meets.
+@(private)
+dome_shade :: proc(m:^unreal_mesh.Mesh,world:mm.Transform,s:^material.Sky_Graph,width:int) -> [][4]f32 {
+    height:=width/2
+    columns,rows:=width*DOME_SAMPLES,height*DOME_SAMPLES
+    // Unreal's x, y and z in centimetres are Mirai's -z, x and y in metres.
+    placed :: proc(world:mm.Transform,p:[3]f32) -> [3]f32 {return mm.transform_point(world,[3]f32{p.y,p.z,-p.x}/100)}
+    unreal_of :: proc(p:[3]f32) -> [3]f32 {return [3]f32{-p.z,p.x,p.y}*100}
+    centre:=placed(world,(m.bounds_min+m.bounds_max)/2)
+    corners:=make([][3]f32,len(m.positions),context.temp_allocator)
+    radius:f32
+    for p,i in m.positions {
+        corners[i]=placed(world,p)-centre
+        radius=max(radius,linalg.length(corners[i]))
+    }
+    view:=material.Sky_View{eye=unreal_of(centre),radius=radius*100,pivot=unreal_of(world.position),bounds={m.bounds_min,m.bounds_max}}
+    // Unreal's local axes in the world, each as long as the scale along it.
+    for axis in 0..<3 {
+        local:[3]f32
+        local[axis]=1
+        mirai:=[3]f32{local.y,local.z,-local.x}*world.scale
+        view.axes[axis]=unreal_of(mm.quat_rotate(world.rotation,mirai))/100
+    }
+    direction :: proc(column,row,columns,rows:int) -> [3]f32 {
+        theta:=(f32(row)+0.5)/f32(rows)*math.PI
+        phi:=((f32(column)+0.5)/f32(columns)-0.5)*2*math.PI
+        return {math.sin(theta)*math.cos(phi),math.cos(theta),math.sin(theta)*math.sin(phi)}
+    }
+    texel_of :: proc(d:[3]f32,columns,rows:int) -> [2]f32 {
+        return {(math.atan2(d.z,d.x)/(2*math.PI)+0.5)*f32(columns),math.acos(clamp(d.y,-1,1))/math.PI*f32(rows)}
+    }
+    // Each triangle by the rows of texels its directions may cross, and the
+    // columns of directions they may cross.
+    triangles:=len(m.corner_vertex)/3
+    bands:=make([][dynamic]i32,height,context.temp_allocator)
+    spans:=make([][2]f32,triangles,context.temp_allocator)
+    for triangle in 0..<triangles {
+        v:[3][3]f32
+        for k in 0..<3 {v[k]=corners[m.corner_vertex[3*triangle+k]]}
+        at:[3][2]f32
+        for k in 0..<3 {at[k]=texel_of(linalg.normalize0(v[k]),columns,rows)}
+        low,high:=min(at[0].y,at[1].y,at[2].y),max(at[0].y,at[1].y,at[2].y)
+        left,right:=min(at[0].x,at[1].x,at[2].x),max(at[0].x,at[1].x,at[2].x)
+        // Across the seam behind, its columns wrap.
+        if right-left>f32(columns)/2 {
+            for &p in at {if p.x<f32(columns)/2 {p.x+=f32(columns)}}
+            left,right=min(at[0].x,at[1].x,at[2].x),max(at[0].x,at[1].x,at[2].x)
+        }
+        // Its edges bow toward a pole between the corners; around one it spans every column.
+        pad:=(high-low)*0.25+2
+        low,high=low-pad,high+pad
+        across:=(right-left)*0.25+2
+        left,right=left-across,right+across
+        for pole in ([2][3]f32{{0,1,0},{0,-1,0}}) {
+            if _,_,hit:=ray_triangle(pole,v[0],v[1],v[2]);hit {
+                left,right=0,f32(columns)
+                if pole.y>0 {low=0} else {high=f32(rows)}
+            }
+        }
+        if right-left>f32(columns) {left,right=0,f32(columns)}
+        spans[triangle]={left,right}
+        for band in max(int(low)/DOME_SAMPLES,0)..=min(int(high)/DOME_SAMPLES,height-1) {append(&bands[band],i32(triangle))}
+    }
+    out:=make([][4]f32,width*height,context.temp_allocator)
+    met:=make([]bool,width*height,context.temp_allocator)
+    Hit :: struct {triangle:i32,b:[2]f32,t:f32}
+    hits:=make([]Hit,columns*DOME_SAMPLES,context.temp_allocator)
+    points:=make([dynamic]material.Sky_Point,0,len(hits),context.temp_allocator)
+    shaded:=make([][3]f32,len(hits),context.temp_allocator)
+    for band in 0..<height {
+        for &h in hits {h={triangle=-1,t=max(f32)}}
+        for triangle in bands[band] {
+            v:[3][3]f32
+            for k in 0..<3 {v[k]=corners[m.corner_vertex[3*int(triangle)+k]]}
+            span:=spans[triangle]
+            for row in 0..<DOME_SAMPLES {
+                for at in int(math.floor(span.x))..<int(math.ceil(span.y)) {
+                    column:=((at%columns)+columns)%columns
+                    h:=&hits[row*columns+column]
+                    t,b,hit:=ray_triangle(direction(column,band*DOME_SAMPLES+row,columns,rows),v[0],v[1],v[2])
+                    if hit && t<h.t {h^={triangle,b,t}}
+                }
+            }
+        }
+        clear(&points)
+        for h in hits {
+            if h.triangle<0 {continue}
+            weights:=[3]f32{1-h.b.x-h.b.y,h.b.x,h.b.y}
+            point:material.Sky_Point
+            normal:[3]f32
+            point.color={1,1,1,1}
+            if len(m.corner_color)>0 {point.color={}}
+            for k in 0..<3 {
+                corner:=3*int(h.triangle)+k
+                w:=weights[k]
+                point.position+=(corners[m.corner_vertex[corner]]+centre)*w
+                if corner<len(m.corner_normal) {normal+=m.corner_normal[corner]*w}
+                for set in 0..<min(m.uv_count,material.UNREAL_UV_SETS) {
+                    if corner<len(m.corner_uvs[set]) {point.uvs[set]+=m.corner_uvs[set][corner]*w}
+                }
+                if corner<len(m.corner_color) {
+                    rgba:=m.corner_color[corner]
+                    point.color+=[4]f32{f32(rgba.r),f32(rgba.g),f32(rgba.b),f32(rgba.a)}/255*w
+                }
+            }
+            point.position=unreal_of(point.position)
+            point.normal=linalg.normalize0(unreal_of(mm.quat_rotate(world.rotation,[3]f32{normal.y,normal.z,-normal.x})))
+            append(&points,point)
+        }
+        material.sky_shade(s,view,points[:],shaded)
+        next:=0
+        for h,i in hits {
+            if h.triangle<0 {continue}
+            texel:=band*width+(i%columns)/DOME_SAMPLES
+            out[texel]+=[4]f32{shaded[next].r,shaded[next].g,shaded[next].b,1}
+            met[texel]=true
+            next+=1
+        }
+    }
+    for &texel in out {if texel.a>0 {texel=[4]f32{texel.r/texel.a,texel.g/texel.a,texel.b/texel.a,1}}}
+    for column in 0..<width {
+        for row in 0..<height {
+            if met[row*width+column] {continue}
+            for gap in 1..<height {
+                if above:=row-gap;above>=0 && met[above*width+column] {out[row*width+column]=out[above*width+column];break}
+                if below:=row+gap;below<height && met[below*width+column] {out[row*width+column]=out[below*width+column];break}
+            }
+        }
+    }
+    return out
+}
+
+// Where the ray from the origin along d meets the triangle a, b, c: its
+// distance along d and the weights of b and c there.
+@(private)
+ray_triangle :: proc(d,a,b,c:[3]f32) -> (t:f32,weights:[2]f32,hit:bool) {
+    ab,ac:=b-a,c-a
+    p:=linalg.cross(d,ac)
+    det:=linalg.dot(ab,p)
+    if abs(det)<1e-12 {return}
+    inverse:=1/det
+    s:=-a
+    u:=linalg.dot(s,p)*inverse
+    if u<0 || u>1 {return}
+    q:=linalg.cross(s,ab)
+    v:=linalg.dot(d,q)*inverse
+    if v<0 || u+v>1 {return}
+    t=linalg.dot(ac,q)*inverse
+    return t,{u,v},t>0
 }
 
 // The .tex of the sky of the Unreal texture at path (material_write.sky_write),
@@ -310,19 +549,23 @@ environment_finish :: proc(c:^Context) {
         section_use(c,previous)
         warn(c,"%d directional lights: Mirai lights with one sun, the brightest; the others are turned off",len(c.suns))
     }
-    // A sky light that captures the scene lights by the dome of the level,
-    // which is what Mirai's Sky shows; a cube it names wins over the dome.
+    // A sky light that captures the scene lights by the dome of the level
+    // times its LightColor and Intensity: the Sky is the image of the dome at
+    // that luminance. A cube it names wins over the dome.
     if c.dome.found {
         switch {
         case !c.sky_lit:warn(c,"%s encloses the level as its sky and is not drawn: without a sky light Unreal's sky gives no light, and Mirai's Sky lights by what it shows",c.dome.name)
         case c.sky.image!={}:warn(c,"%s encloses the level as its sky and is not drawn: the Sky lights from the cube of the sky light, as Unreal does, and shows it",c.dome.name)
         case:
-            if c.sky.image,_=sky_image_write(c,c.dome.texture,{});c.sky.image=={} {
+            image:base.Asset_Id
+            if c.dome.texture!="" {image,_=sky_image_write(c,c.dome.texture,{})} else {image=dome_sky_write(c,&c.dome)}
+            if image=={} {
                 warn(c,"%s encloses the level as its sky and is not drawn: its image could not be written",c.dome.name)
                 break
             }
-            if c.sky.luminance!={1,1,1} {warn(c,"%s: Unreal lights by %v times what its sky light captures of the dome; Mirai's Sky lights by what it shows, the image of the dome at %v nits",c.dome.name,c.sky.luminance,c.dome.luminance)}
-            c.sky.luminance=c.dome.luminance
+            c.sky.image=image
+            if c.sky.luminance!={1,1,1} {warn(c,"%s: Mirai's Sky shows what it lights by, so behind the scene the dome shows at %v times what Unreal draws: the LightColor times Intensity of the sky light, by which Unreal lights from it",c.dome.name,c.sky.luminance)}
+            c.sky.luminance*=c.dome.luminance
             c.sky_turn=c.dome.turn
             warn(c,"%s encloses the level as its sky and is not drawn: its image is the Sky's, which shows it behind the scene",c.dome.name)
         }

@@ -134,6 +134,7 @@ Evaluator :: struct {
     writing:bool,           // evaluating what a material writes to a virtual texture
     uv_sets:Unreal_UV_Sets,      // the Unreal uv sets read, in the uv sets of the mesh
     uv_sets_past:Unreal_UV_Sets, // those read past the UV_SETS of the mesh: not translated
+    seen_from_eye:bool,          // the graph is seen from one point (a dome from its centre): the view is that of the camera, not the surface head on
 }
 
 @(private) MAX_EVALUATION_DEPTH :: 400
@@ -619,9 +620,11 @@ expression_build :: proc(e:^Evaluator,o:Object,output:i32,scope:i32) -> Value {
     // The view, like Fresnel, at normal incidence: Mirai's surfaces reflect by
     // the view themselves, so what fakes it by the view sees the surface head on.
     case "CameraVectorWS","ReflectionVectorWS":
+        if e.seen_from_eye && kind=="CameraVectorWS" {return nodes(context_value(g,.Camera_Vector,3))}
         note(e,"%s is taken at normal incidence: the surface seen head on",object_name(o))
         return nodes(context_value(g,.Pixel_Normal,3))
     case "CameraPositionWS":
+        if e.seen_from_eye {return nodes(world_place(e,.Camera_Position))}
         // The eye of that view: along the normal, as far as the view sees the point.
         note(e,"%s is taken at normal incidence: the surface seen head on",object_name(o))
         return nodes(binary(g,.Add,world_place(e,.World_Position),binary(g,.Mul,context_value(g,.Pixel_Normal,3),context_value(g,.Pixel_Depth,1))))

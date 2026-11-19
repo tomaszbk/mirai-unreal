@@ -631,9 +631,16 @@ actor_translate :: proc(c:^Context,a:int,native:level.Class) -> (translated,sile
     d:=c.d
     actor:=d.actors[a]
     if actor_silent(c,a,native) {return false,true}
+    // The sky sphere of Unreal's engine is a dome, whatever it encloses.
     if actor.class.pkg=="/Engine/EngineSky/BP_Sky_Sphere" {
-        importer.output_warn(&c.outputs,"%s: the sky sphere of Unreal's engine is not drawn: the Sky of the scene is Mirai's sky",actor.label)
         c.sky_drawn=true
+        for k in actor.first_component..<actor.first_component+actor.component_count {
+            if d.components[k].class.name=="StaticMeshComponent" {
+                dome_add(c,a,k)
+                return false,true
+            }
+        }
+        importer.output_warn(&c.outputs,"%s: the sky sphere of Unreal's engine is not drawn: the Sky of the scene is Mirai's sky",actor.label)
         return false,true
     }
     switch native.name {

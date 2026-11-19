@@ -530,10 +530,28 @@ sky_write :: proc(lib:^material.Library,path:string,below:[4]f32,outputs:^import
         image={name=name,made=sky,srgb=cube.usage==.Color,keep_precision=cube.keep_precision}
         model.warnings=notes
     }
+    return image_output(outputs,&model,image,prefix,scratch)
+}
+
+// Writes the image of a sky made on import, a latitude-longitude image of
+// linear values (sky, which it does not own), as one .tex of the import of
+// outputs named prefix and name.
+sky_made_write :: proc(name:string,sky:textures.Source,outputs:^importer.Outputs,prefix:string,allocator:=context.allocator) -> (id:base.Asset_Id,error:importer.Error) {
+    arena:mem.Dynamic_Arena
+    mem.dynamic_arena_init(&arena,allocator,allocator,block_size=1<<20,out_band_size=1<<20)
+    defer mem.dynamic_arena_destroy(&arena)
+    scratch:=base.dynamic_arena_allocator(&arena)
+    model:importer.Imported_Model
+    return image_output(outputs,&model,{name=strings.clone(name,scratch),made=sky},prefix,scratch)
+}
+
+// The model of one image, written as the import of outputs: the id of its .tex.
+@(private)
+image_output :: proc(outputs:^importer.Outputs,model:^importer.Imported_Model,image:importer.Imported_Image,prefix:string,scratch:mem.Allocator) -> (id:base.Asset_Id,error:importer.Error) {
     model.images=slice.clone([]importer.Imported_Image{image},scratch)
-    names_prefix(&model,prefix,scratch)
+    names_prefix(model,prefix,scratch)
     report:importer.Import_Report
-    report,error=importer.output_model(outputs,&model,scratch)
+    report,error=importer.output_model(outputs,model,scratch)
     if error.code==.None && len(report.image_ids)>0 {id=report.image_ids[0]}
     return
 }
