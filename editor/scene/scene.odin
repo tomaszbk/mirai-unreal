@@ -1,5 +1,6 @@
 package unreal_scene
 
+import "base:runtime"
 import "core:fmt"
 import "core:mem"
 import "core:os"
@@ -23,6 +24,7 @@ import "mirai:project"
 import "mirai:std/base"
 import mm "mirai:std/math"
 import "mirai:std/serial"
+import "mirai:store"
 
 // An uncooked Unreal map (.umap) as a scene of a project: each actor that
 // shows something is an entity with its label, and what its components show
@@ -43,7 +45,7 @@ import "mirai:std/serial"
 // entity keeps its id: it is the hash of the path of its actor (and its
 // component) in the map, which Unreal keeps while labels change.
 
-LEVEL_VERSION :: 3 // of what the same map gives
+LEVEL_VERSION :: 4 // of what the same map gives
 LEVEL_IMPORTER :: "Unreal maps" // what imports a map, as its package records it and the editor names it
 
 TRANSLATOR_CLASSES :: 4
@@ -299,6 +301,24 @@ level_import :: proc(path:string,options:importer.Import_Options,translators:[]T
     return
 }
 
+@(private)
+catalog_folder :: proc(d:^level.Document) -> string {
+    if len(d.levels)==0 {return ""}
+    name:=d.library.packages[int(d.levels[0].ref.pkg)].name
+    parent_end:=strings.last_index_byte(name,'/')
+    if parent_end<=0 {return ""}
+    mount_end:=0
+    for mount in d.library.mounts {
+        prefix:=mount.package_prefix
+        if len(prefix)<=parent_end && len(prefix)>mount_end &&
+            name[len(prefix)]=='/' && strings.has_prefix(name,prefix) {
+            mount_end=len(prefix)
+        }
+    }
+    if mount_end==0 || parent_end==mount_end {return ""}
+    return name[mount_end+1:parent_end]
+}
+
 // The scene of a level read already, as level_import writes it: source is
 // the map it names, of size and hash, whose packages d reads through the
 // mounts of its library; inputs, the files of those packages.
@@ -348,8 +368,15 @@ document_import :: proc(d:^level.Document,source:string,size,hash:u64,options:im
     material_write.builder_init(&c.images,c.lib,c.report.allocator,&c.library_lock,MEMORY_FLOOR)
     defer material_write.builder_destroy(&c.images)
     defer if c.decoder_ready {kraken.decoder_destroy(&c.decoder)}
-    c.format_options={engine_content=engine,library=&materials,images=&c.images,lock=&c.library_lock,reads=reads}
-
+    programs:=make(map[store.Hash]string,runtime.heap_allocator())
+    defer {
+        for _,source in programs {delete(source,programs.allocator)}
+        delete(programs)
+    }
+    c.format_options={
+        engine_content=engine,library=&materials,images=&c.images,lock=&c.library_lock,
+        program_sources=&programs,reads=reads,
+    }
     c.formats[0]=uasset.format(&c.format_options)
     // The packages the level imports find their documents in one scan of the assets.
     registry:asset.Registry
@@ -364,6 +391,13 @@ document_import :: proc(d:^level.Document,source:string,size,hash:u64,options:im
     outputs_zone:=importer.zone_begin(options,"level.outputs")
     if begin_error:=importer.outputs_begin(&c.outputs,source,asset.safe_name(stem),size,hash,importer.import_version(LEVEL_VERSION),c.options,LEVEL_IMPORTER,allocator);begin_error.code!=.None {
         return {},fail(caller,begin_error.code,"%s",begin_error.message)
+    }
+    if catalog:=catalog_folder(d);catalog!="" {
+        if catalog_error:=importer.output_catalog_path(&c.outputs,catalog);catalog_error.code!=.None {
+            message:=fail(caller,catalog_error.code,"%s",catalog_error.message)
+            importer.outputs_end(&c.outputs,true)
+            return {},message
+        }
     }
     for file in inputs {importer.output_input(&c.outputs,file)}
     scene_id,scene_path,root_error:=importer.output_root(&c.outputs,asset.KIND_SCENE,stem,".scene")

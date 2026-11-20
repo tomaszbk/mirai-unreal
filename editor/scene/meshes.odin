@@ -4,6 +4,7 @@ import "core:fmt"
 import "core:os"
 import "core:slice"
 import "core:strings"
+import "core:sync"
 import "mirai:asset"
 import importer "mirai:cook/import"
 import uasset "project:plugins/unreal/editor/model"
@@ -594,7 +595,10 @@ landscape_grass :: proc(c:^Context,path:string) -> []material.Landscape_Grass {
 materials_write :: proc(c:^Context,file:string,translated:[]material.Translated_Material) -> (ids:[]base.Asset_Id,ok:bool) {
     write_zone:=importer.zone_begin(c.options,"level.materials")
     textures,_:=decoder(c)
-    report,error:=material_write.materials_write(c.lib,translated,&c.outputs,package_prefix(c,file),c.shaders,c.options,context.temp_allocator,&c.images,&c.library_lock,textures)
+    report,error:=material_write.materials_write(
+        c.lib,translated,&c.outputs,package_prefix(c,file),c.options,context.temp_allocator,
+        &c.images,&c.library_lock,textures,
+    )
     base.profile_end(write_zone)
     defer images_trim(c)
     if error.code!=.None {
@@ -628,6 +632,21 @@ package_prefix :: proc(c:^Context,file:string) -> string {
 // package. The scene places the meshes itself: the package gives no prefab.
 // The report gives their ids by row, in the temp allocator.
 model_parts_write :: proc(c:^Context,model:^importer.Imported_Model,file:string) -> (report:importer.Import_Report,error:importer.Error) {
+    // The readers name the code by its hash. Now give it its store address.
+    for &m in model.materials {
+        hash,generated:=asset.generated_program_address(base.text_get(m.info.program[:]))
+        if !generated {continue}
+        sync.mutex_lock(&c.library_lock)
+        source:=c.format_options.program_sources^[hash]
+        sync.mutex_unlock(&c.library_lock)
+        if source=="" {
+            return {},importer.error_make(.Malformed,"%s: no generated Surface source for %s",
+                file,m.name)
+        }
+        if error:=material_write.program_store(&c.outputs,source,&m.info);error.code!=.None {
+            return {},error
+        }
+    }
     material_write.names_prefix(model,package_prefix(c,file),context.temp_allocator)
     model.nodes=nil
     return importer.output_model(&c.outputs,model,context.temp_allocator)

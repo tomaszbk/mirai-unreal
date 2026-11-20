@@ -696,6 +696,9 @@ entity, the imported meshes and the time.
   `.umap`, named by the objects that contain it and goes to the root of the import, together with
   the level's others in a single import at the end, after the translators: it reads by UV the
   textures they added (`texture_read_add`, the render target a Niagara component gives its system).
+  Surface source generated while importing a level is an object of the map's build. Its
+  materials name it by address so a peer with the build can compile it for its renderer.
+  The package's catalog folder follows the level's path under its Unreal content mount.
   Writes of one package in an import number their materials after the previous ones
   (`material_index`): the importer pairs by index a material it does not recognize by name.
   Instanced components (`InstancedStaticMeshComponent`, the hierarchical one and the foliage one,

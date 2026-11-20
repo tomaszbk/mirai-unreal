@@ -17,6 +17,7 @@ import utexture "project:plugins/unreal/editor/texture"
 import upackage "project:plugins/unreal/editor/package"
 import "mirai:std/base"
 import mm "mirai:std/math"
+import "mirai:store"
 
 // Uncooked Unreal packages (.uasset), read without Unreal: each StaticMesh of
 // the package is a mesh with a node, from the source model that
@@ -53,6 +54,7 @@ Options :: struct {
     // each import, with the mounts of the package.
     library:^material.Library,
     images:^material_write.Builder, // over library
+    program_sources:^map[store.Hash]string, // source by hash, collected under lock
     // Held while library and images are used, when imports that share them
     // read in parallel; nil when nothing else uses them at once.
     lock:^sync.Mutex,
@@ -99,7 +101,8 @@ Context :: struct {
     materials:map[string]Slot_Material, // by the object path of the material
     library:^material.Library,          // the packages the translations read
     images:^material_write.Builder,     // the images of the materials, shared by them
-    lock:^sync.Mutex,                   // of library and images, when they are shared
+    lock:^sync.Mutex,                   // of shared material data
+    program_sources:^map[store.Hash]string, // written to the build by the level
     decoder:^kraken.Decoder,            // of this read, made when first needed (decoder_need)
     decoder_made:^bool,
     reads:[]material.Texture_Read,      // of the options
@@ -143,7 +146,10 @@ read :: proc(r:^importer.Reader,bytes:[]u8) -> bool {
     if open_error.code!=.None {return failure(r,open_error,"the package")}
     defer upackage.package_destroy(&p)
     own:material.Library
-    c:=Context{r=r,p=&p,library=options.library,reads=options.reads,writers=options.writers}
+    c:=Context{
+        r=r,p=&p,library=options.library,reads=options.reads,writers=options.writers,
+        program_sources=options.program_sources,
+    }
     if c.library!=nil {
         c.lock=options.lock
     } else {
@@ -471,19 +477,33 @@ slot_material :: proc(c:^Context,slot:umesh.Material_Slot) -> Slot_Material {
         return made
     }
     if !material.translated_is_standard(&t) {
-        shaders:string
-        if r.options.root!="" {shaders,_=filepath.join({r.options.root,"shaders"},context.temp_allocator)}
-        written:=false
-        if shaders!="" {
-            program,program_error:=material_write.program_write(&t,shaders)
-            written=program_error.code==.None
-            if program!="" {append(&r.programs,importer.own(r,program))}
-
-        }
-        if !written {
-            importer.warn(r,"%s: the material %s needs the Surface program %s, which is written into the shaders of a project; it keeps its standard values",r.file_name,t.name,t.program.name)
-            t.program={}
-            t.info.program={}
+        if sources:=c.program_sources;sources!=nil {
+            source:=t.program.source
+            hash:=store.address_of_bytes(transmute([]u8)source)
+            if hash not_in sources^ && !program_source_add(sources,hash,source) {
+                importer.fail(r,.Write,"%s: could not keep the source of %s",
+                    r.file_name,t.program.name)
+                return {row=-1}
+            }
+            name:=asset.generated_program_id(hash,context.temp_allocator)
+            base.text_set(t.info.program[:],name)
+        } else {
+            shaders:string
+            if r.options.root!="" {
+                shaders,_=filepath.join({r.options.root,"shaders"},context.temp_allocator)
+            }
+            written:=false
+            if shaders!="" {
+                program,program_error:=material_write.program_write(&t,shaders)
+                written=program_error.code==.None
+                if program!="" {append(&r.programs,importer.own(r,program))}
+            }
+            if !written {
+                importer.warn(r,"%s: material %s needs a project to write Surface program %s; it keeps its standard values",
+                    r.file_name,t.name,t.program.name)
+                t.program={}
+                t.info.program={}
+            }
         }
     }
     images_zone:=importer.zone_begin(r.options,"material.images")
@@ -494,6 +514,16 @@ slot_material :: proc(c:^Context,slot:umesh.Material_Slot) -> Slot_Material {
     made.program=t.program.name!=""
     made.uv_sets,made.uv_sets_past=t.uv_sets,t.uv_sets_past
     return made
+}
+
+@(private="file")
+program_source_add :: proc(sources:^map[store.Hash]string,hash:store.Hash,source:string) -> bool {
+    text:=strings.clone(source,sources.allocator)
+    if text!="" {
+        if _,error:=map_insert(sources,hash,text);error==nil {return true}
+    }
+    delete(text,sources.allocator)
+    return false
 }
 
 @(private="file")

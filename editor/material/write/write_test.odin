@@ -94,14 +94,17 @@ mat_read :: proc(t:^testing.T,types:^asset.Types,path:string,file:^asset.Asset) 
 // materials_write as the one write of an import of source, into the project
 // at root: its package in a store of root, its documents in its assets.
 @(private="file")
-import_materials :: proc(lib:^material.Library,translated:[]material.Translated_Material,source,shaders,root:string) -> (report:importer.Import_Report,error:importer.Error) {
+import_materials :: proc(
+    lib:^material.Library,translated:[]material.Translated_Material,source,root:string,
+) -> (report:importer.Import_Report,error:importer.Error) {
     bytes,_:=os.read_entire_file(source,context.temp_allocator)
     s,opened:=store.open(fmt.tprintf("%s/.mirai/store",root))
     if opened!=.None {return {},importer.error_make(.Write,"the store of %s could not be opened: %v",root,opened)}
     defer store.close(&s)
     o:importer.Outputs
     if error=importer.outputs_begin(&o,source,"",u64(len(bytes)),base.hash64(bytes),importer.import_version(1),{root=root,store=&s,documents=fmt.tprintf("%s/assets",root)});error.code!=.None {return}
-    if _,error=materials_write(lib,translated,&o,"",shaders,allocator=context.temp_allocator);error.code!=.None {
+    _,error=materials_write(lib,translated,&o,"",allocator=context.temp_allocator)
+    if error.code!=.None {
         _,_=importer.outputs_end(&o,true)
         return
     }
@@ -115,8 +118,8 @@ written_find :: proc(report:^importer.Import_Report,name:string,kind:asset.Fourc
 }
 
 // Materials are written as .mat with their images as .tex; a texture read
-// as it is is one .tex for every material that reads it, and a program goes
-// to the shaders of the project with its parameters in the .mat. Importing
+// as it is is one .tex for every material that reads it. Generated source is
+// stored by address and its parameters are in the material. Importing
 // again keeps a parameter value changed after the import.
 @(test)
 translated_materials_are_written_with_their_images_and_programs :: proc(t:^testing.T) {
@@ -145,8 +148,7 @@ translated_materials_are_written_with_their_images_and_programs :: proc(t:^testi
     }
     defer for &tr in translated {material.translated_destroy(&tr)}
     testing.expect(t,material.translated_is_standard(&translated[0]) && !material.translated_is_standard(&translated[1]))
-    shaders,_:=filepath.join({folder,"shaders"},context.temp_allocator)
-    report,error:=import_materials(&lib,translated[:],source,shaders,folder)
+    report,error:=import_materials(&lib,translated[:],source,folder)
     if !testing.expect_value(t,error.code,importer.Error_Code.None) {return}
     defer importer.report_destroy(&report)
     albedo:=written_find(&report,"Albedo",asset.KIND_TEXTURE)
@@ -168,10 +170,21 @@ translated_materials_are_written_with_their_images_and_programs :: proc(t:^testi
     flow,flow_ok:=mat_read(t,&types,written_find(&report,"Flow",asset.KIND_MATERIAL).path,&flow_file)
     if !flow_ok {return}
     program:=base.text_get(flow.info.program[:])
-    testing.expect_value(t,program,translated[1].program.name)
-    program_path,_:=filepath.join({shaders,strings.concatenate({program,".slang"},context.temp_allocator)},context.temp_allocator)
-    written_source,read_error:=serial.file_read(program_path,context.temp_allocator)
-    testing.expect(t,read_error==.None && string(written_source)==translated[1].program.source)
+    address,generated:=asset.generated_program_address(program)
+    if !testing.expect(t,generated) {return}
+    if testing.expect_value(t,len(report.programs),1) {
+        testing.expect_value(t,report.programs[0],program)
+    }
+    s,opened:=store.open(fmt.tprintf("%s/.mirai/store",folder),context.temp_allocator)
+    if !testing.expect_value(t,opened,store.Error.None) {return}
+    defer store.close(&s)
+    object,read_error:=store.object_open(&s,address)
+    if !testing.expect_value(t,read_error,store.Error.None) {return}
+    defer store.object_close(&object)
+    written_source:=make([]u8,int(store.object_size(&object)),context.temp_allocator)
+    testing.expect_value(t,store.object_read(&object,0,written_source),store.Error.None)
+    testing.expect_value(t,string(written_source),translated[1].program.source)
+    testing.expect(t,!os.exists(fmt.tprintf("%s/shaders",folder)))
     if !testing.expect_value(t,len(flow.parameters),2) {return}
     testing.expect(t,flow.parameters[0].kind==.Texture && flow.parameters[0].texture==albedo.id)
     testing.expect_value(t,flow.parameters[1].value[0],f64(f32(0.2)))
@@ -191,7 +204,7 @@ translated_materials_are_written_with_their_images_and_programs :: proc(t:^testi
     asset.asset_close(&flow_file)
     asset.asset_close(&still_file)
     testing.expect_value(t,asset.material_save(flow_path,&types,desc),asset.Error.None)
-    again,again_error:=import_materials(&lib,translated[:],source,shaders,folder)
+    again,again_error:=import_materials(&lib,translated[:],source,folder)
     if !testing.expect_value(t,again_error.code,importer.Error_Code.None) {return}
     defer importer.report_destroy(&again)
     reread,reread_ok:=mat_read(t,&types,flow_path,&flow_file)

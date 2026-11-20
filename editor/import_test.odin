@@ -209,6 +209,7 @@ unreal_level_folders :: proc(name:string,inside:=true) -> (top,mirai,level:strin
 an_unreal_map_imports_as_a_scene_of_its_project :: proc(t:^testing.T) {
     top,mirai,level:=unreal_level_folders("level",inside=false)
     defer os.remove_all(top)
+    moving_quad(top)
     s,opened:=store_open(t,top)
     if !opened {return}
     defer store.close(&s)
@@ -236,11 +237,20 @@ an_unreal_map_imports_as_a_scene_of_its_project :: proc(t:^testing.T) {
         p,package_error:=asset.package_get(&s,report.manifest,context.temp_allocator)
         if !testing.expect_value(t,package_error,asset.Error.None) {return}
         testing.expect_value(t,p.origin.importer,unreal_scene.LEVEL_IMPORTER)
+        testing.expect_value(t,p.catalog_path,"Maps")
         testing.expect(t,slice.contains(p.inputs[:],"../Meshes/SM_Fixture.uasset"),"the packages it reads are inputs of its package")
         digits:[64]u8
         named,_:=store.ref_get(&s,asset.REF_IMPORTS_FAST if !report.final else asset.REF_IMPORTS,store.hex(report.key,&digits))
         testing.expect_value(t,named,report.build)
+        build,build_error:=asset.build_get(&s,report.build,context.temp_allocator)
+        if !testing.expect_value(t,build_error,asset.Error.None) {return}
+        if testing.expect_value(t,len(build.programs),1) {
+            program:=asset.generated_program_id(build.programs[0],context.temp_allocator)
+            testing.expect(t,slice.contains(report.programs[:],program))
+            testing.expect(t,asset.object_whole(&s,build.programs[0]))
+        }
     }
+    testing.expect(t,!os.exists(fmt.tprintf("%s/shaders",mirai)))
     testing.expect(t,!os.exists(fmt.tprintf("%s/assets/Maps",mirai)) && !os.exists(fmt.tprintf("%s/assets/levels/Maps",mirai)),"the map is not copied into the project")
 }
 

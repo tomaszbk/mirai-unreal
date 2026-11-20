@@ -453,6 +453,16 @@ program_write :: proc(t:^material.Translated_Material,shaders:string) -> (path:s
     return
 }
 
+// Binds a generated Surface from the build being written.
+program_store :: proc(
+    outputs:^importer.Outputs,source:string,info:^asset.Material_Info,
+) -> importer.Error {
+    address,error:=importer.output_program(outputs,source)
+    if error.code!=.None {return error}
+    base.text_set(info.program[:],asset.generated_program_id(address,context.temp_allocator))
+    return {}
+}
+
 // The memory a builder holds in textures and images, in bytes.
 builder_bytes :: proc(b:^Builder) -> int {
     total:=0
@@ -565,7 +575,11 @@ image_output :: proc(outputs:^importer.Outputs,model:^importer.Imported_Model,im
 // them. shared, a builder over lib, keeps the textures it decodes for the
 // next; lock, when given, is held while lib and the builder are used. The
 // report gives the ids by row, in allocator.
-materials_write :: proc(lib:^material.Library,translated:[]material.Translated_Material,outputs:^importer.Outputs,prefix,shaders:string,options:importer.Import_Options={},allocator:=context.allocator,shared:^Builder=nil,lock:^sync.Mutex=nil,decoder:^kraken.Decoder=nil) -> (report:importer.Import_Report,error:importer.Error) {
+materials_write :: proc(
+    lib:^material.Library,translated:[]material.Translated_Material,outputs:^importer.Outputs,
+    prefix:string,options:importer.Import_Options={},allocator:=context.allocator,
+    shared:^Builder=nil,lock:^sync.Mutex=nil,decoder:^kraken.Decoder=nil,
+) -> (report:importer.Import_Report,error:importer.Error) {
     arena:mem.Dynamic_Arena
     mem.dynamic_arena_init(&arena,allocator,allocator,block_size=1<<20,out_band_size=1<<20)
     defer mem.dynamic_arena_destroy(&arena)
@@ -580,7 +594,6 @@ materials_write :: proc(lib:^material.Library,translated:[]material.Translated_M
 
     model:importer.Imported_Model
     built:=make([]Built_Material,len(translated),scratch)
-    programs:=make([dynamic]string,scratch)
     // The images of the builder stay where they are while the materials are written.
     if lock!=nil {sync.mutex_lock(lock)}
     lib.worker=options.worker
@@ -589,9 +602,11 @@ materials_write :: proc(lib:^material.Library,translated:[]material.Translated_M
     builder_room(b)
     for &t,i in translated {
         built[i]=material_build(b,&t,decoder)
-        program,program_error:=program_write(&t,shaders)
-        if program_error.code!=.None {return {},program_error}
-        if program!="" {append(&programs,strings.clone(program,scratch))}
+        if t.program.name!="" {
+            if error:=program_store(outputs,t.program.source,&built[i].info);error.code!=.None {
+                return {},error
+            }
+        }
     }
     // The images these materials name: a shared builder holds those of others too.
     images:=make([dynamic]importer.Imported_Image,scratch)
@@ -625,7 +640,6 @@ materials_write :: proc(lib:^material.Library,translated:[]material.Translated_M
         for n in t.notes {append(&warnings,fmt.aprintf("material %s: %s",t.name,n,allocator=scratch))}
     }
     model.warnings=warnings[:]
-    model.programs=programs[:]
     names_prefix(&model,prefix,scratch)
     if held==nil {return importer.output_model(outputs,&model,allocator)}
     // The images are written from the builder without its lock: what it holds stays.
