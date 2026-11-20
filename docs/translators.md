@@ -291,8 +291,8 @@ which uses `shaders/unreal_noise.slang`.
 - A particle of Mirai glows by its emission and is not a light: a Cascade light module, a Niagara
   light renderer and a lightweight `LightAttributes` are warnings of the emitter.
 - **Compiled Niagara.** An emitter whose scripts store the HLSL Niagara generated is a Vfx program
-  written in the project's `shaders/`, which the import publishes: `niagara_program.odin` builds the
-  frame and `niagara.slang` is its prelude (Unreal space, random numbers, ids). The system scripts
+  kept in the map's build and bound by address. `niagara_program.odin` builds the frame and
+  `niagara.slang` is its prelude (Unreal space, random numbers, ids). The system scripts
   give each emitter's state and its births (`//! births`); each data interface is a body over the
   Vfx resources (`niagara_interfaces.odin`, `niagara_grids.odin`, `niagara_particles.odin`,
   `niagara_channels.odin`). A data interface is the symbol the HLSL calls it by: its name with the

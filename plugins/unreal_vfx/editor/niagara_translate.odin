@@ -1,14 +1,13 @@
 package unreal_vfx_editor
 
 import "core:fmt"
-import "core:os"
-import "core:path/filepath"
 import "core:strings"
+import "mirai:asset"
+import importer "mirai:cook/import"
 import "project:plugins/unreal/editor/level"
 import unreal "project:plugins/unreal/editor/package"
 import unreal_scene "project:plugins/unreal/editor/scene"
 import "mirai:std/base"
-import "mirai:std/serial"
 
 // The emitters of a system whose scripts keep the HLSL of their compilation
 // are translated together: the attributes of each and the attributes of the
@@ -136,7 +135,7 @@ niagara_source :: proc(c:^unreal_scene.Context,emitter:level.Ref,f:level.Found,v
 
 // The programs of the emitters of a system that keep their compilation:
 // their parts and attributes first, the layouts of the grids of the system,
-// then each program, written into the shaders of the project.
+// then each program, stored with the map's build.
 @(private)
 niagara_system_translate :: proc(c:^unreal_scene.Context,system:level.Ref,emitters:[]Unreal_Emitter,user:^Niagara_Values,system_name,label:string) {
     sys:Niagara_System
@@ -234,29 +233,18 @@ niagara_writer :: proc(c:^unreal_scene.Context,sys:^Niagara_System,e:^Unreal_Emi
     return w
 }
 
-// The program of an emitter, written into the shaders of the project; its
-// grids and the emitters it reads go with the emitter.
+// The program of an emitter goes into the build, and its bindings go with the emitter.
 @(private)
 niagara_emitter_program :: proc(c:^unreal_scene.Context,sys:^Niagara_System,e:^Unreal_Emitter,system_name,label:string) {
     w:=niagara_writer(c,sys,e,system_name)
     if !niagara_program(&w,e.source) {return}
-    if c.shaders=="" {
-        unreal_scene.warn(c,"%s, %s: the import has no shaders folder of a project to write its program into",label,e.name)
+    address,error:=importer.output_program(&c.outputs,strings.to_string(w.out))
+    if error.code!=.None {
+        unreal_scene.warn(c,"%s, %s: its Vfx program could not be stored: %s",
+            label,e.name,error.message)
         return
     }
-    if os.make_directory_all(c.shaders)!=nil && !os.is_dir(c.shaders) {return}
-    path,_:=filepath.join({c.shaders,strings.concatenate({w.name,".slang"},context.temp_allocator)},context.temp_allocator)
-    source:=strings.to_string(w.out)
-    if existing,read_error:=serial.file_read(path,context.temp_allocator);read_error!=.None || string(existing)!=source {
-        if serial.file_write_atomic(path,transmute([]u8)source)!=.None {
-            unreal_scene.warn(c,"%s, %s: its program could not be written to %s",label,e.name,path)
-            return
-        }
-    }
-    // The editor publishes the programs an import wrote.
-    report:=&c.outputs.report
-    append(&report.programs,strings.clone(w.name,report.allocator))
-    base.text_set(e.info.program[:],w.name)
+    base.text_set(e.info.program[:],asset.generated_program_id(address,context.temp_allocator))
     // The program says when a particle dies: the effect keeps room for what its births and the
     // lifetime of its modules need, and a lifetime its clock never sees end.
     births:=f32(0)

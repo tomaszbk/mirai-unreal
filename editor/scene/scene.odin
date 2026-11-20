@@ -45,7 +45,7 @@ import "mirai:store"
 // entity keeps its id: it is the hash of the path of its actor (and its
 // component) in the map, which Unreal keeps while labels change.
 
-LEVEL_VERSION :: 4 // of what the same map gives
+LEVEL_VERSION :: 5 // of what the same map gives
 LEVEL_IMPORTER :: "Unreal maps" // what imports a map, as its package records it and the editor names it
 
 TRANSLATOR_CLASSES :: 4
@@ -197,7 +197,7 @@ Context :: struct {
     types:^asset.Types,
     options:importer.Import_Options, // root is the project
     report:^Level_Report,
-    assets,shaders:string,       // the assets and shaders folders of the project
+    assets:string,               // the assets folder of the project
     source:string,               // the file of the map
     outputs:importer.Outputs,
     formats:[1]importer.Format,
@@ -361,7 +361,6 @@ document_import :: proc(d:^level.Document,source:string,size,hash:u64,options:im
     c.assets=project.folder_path(root,.Assets,scratch)
     stem:=filepath.stem(source)
     c.source=source
-    c.shaders=project.folder_path(root,.Shaders,scratch)
     engine:=""
     for mount in mounts {if mount.package_prefix=="/Engine" {engine=mount.directory}}
     if engine=="" {warn(&c,"%s: %s",stem,unreal.ENGINE_UNSET)}
