@@ -18,16 +18,49 @@ import fog "plugins:fog/runtime"
 // reaches 838 m under the fog: a fog in the box of what the level shows, two
 // actors at its corners, with Unreal's density at the height of the actor,
 // its base, thinning over it by its falloff per metre in powers of e and
-// holding under it; it glows with its inscattering color, the one it saved or
-// the default of UE4. Without a sun nothing of the scene lights it, with or
-// without its volumetric fog, and it stops FogDensity in powers of two. Its second fog is
-// another in the same box, from the actor raised by its offset; of two
-// height fogs, the first alone, as Unreal draws.
+// holding under it. Without volumetric fog it glows with its inscattering
+// color (the one it saved or the default of UE4), and without a sun nothing
+// of the scene lights it. With `bEnableVolumetricFog` enabled it takes the
+// volumetric albedo, scattering distribution, emissive and extinction scale
+// (`volumetric_rate`). Its second fog is another in the same box, from the
+// actor raised by its offset; of two height fogs, the first alone, as Unreal
+// draws.
 @(test)
 the_height_fog_of_an_unreal_level_fills_its_box_with_its_density_and_glow :: proc(t:^testing.T) {
-    Case :: struct {volumetric:bool,inscattering:[4]f32,glow:[3]f32}
+    Case :: struct {
+        volumetric:bool,
+        inscattering:[4]f32,
+        albedo:[3]f32,
+        emissive:[3]f32,
+        distribution:f32,
+        extinction_scale:f32,
+        glow:[3]f32,
+        color:[3]f32,
+        anisotropy:f32,
+    }
     cases:=[]Case{
-        {volumetric=true,inscattering={0.171,0,1,1},glow={0.171,0,1}},
+        {
+            volumetric=true,
+            inscattering={0.171,0,1,1},
+            albedo={1,1,1},
+            emissive={0,0,0},
+            distribution=0.2,
+            extinction_scale=1.5,
+            glow={0,0,0},
+            color={1,1,1},
+            anisotropy=0.2,
+        },
+        {
+            volumetric=true,
+            inscattering={0.171,0,1,1},
+            albedo={0.8,0.6,0.4},
+            emissive={0.1,0.05,0},
+            distribution=0.5,
+            extinction_scale=1,
+            glow=volumetric_glow({0.1,0.05,0},volumetric_rate(0.028094999492168427,1)),
+            color={0.8,0.6,0.4},
+            anisotropy=0.5,
+        },
         {glow={0.447,0.638,1}},
     }
     directory,_:=os.temp_directory(context.temp_allocator)
@@ -54,7 +87,13 @@ the_height_fog_of_an_unreal_level_fills_its_box_with_its_density_and_glow :: pro
         fixture.vector_property(&props,&l.w,"RelativeLocation",{-420,-269.994140625,1352})
         fixture.float_property(&props,&l.w,"FogDensity",0.028094999492168427)
         if test_case.inscattering!={} {fixture.linear_color_property(&props,&l.w,"FogInscatteringColor",test_case.inscattering)}
-        if test_case.volumetric {fixture.bool_property(&props,&l.w,"bEnableVolumetricFog",true)}
+        if test_case.volumetric {
+            fixture.bool_property(&props,&l.w,"bEnableVolumetricFog",true)
+            fixture.linear_color_property(&props,&l.w,"VolumetricFogAlbedo",{test_case.albedo.r,test_case.albedo.g,test_case.albedo.b,1})
+            fixture.linear_color_property(&props,&l.w,"VolumetricFogEmissive",{test_case.emissive.r,test_case.emissive.g,test_case.emissive.b,1})
+            fixture.float_property(&props,&l.w,"VolumetricFogScatteringDistribution",test_case.distribution)
+            fixture.float_property(&props,&l.w,"VolumetricFogExtinctionScale",test_case.extinction_scale)
+        }
         second:=fixture.bytes_make()
         fixture.float_property(&second,&l.w,"FogDensity",0.2)
         fixture.float_property(&second,&l.w,"FogHeightFalloff",0.1)
@@ -87,12 +126,13 @@ the_height_fog_of_an_unreal_level_fills_its_box_with_its_density_and_glow :: pro
             if !ok {continue}
             place,bounded:=asset.scene_get(&scene,e.id,"Volume",evolume.Volume)
             testing.expectf(t,bounded && place.shape==.Box && abs(place.extents.x-1024)<1e-2 && abs(place.extents.y-1024)<1e-2 && abs(place.extents.z-1024)<1e-2,"case %d: the box of the level: %v",n,place)
-            testing.expectf(t,volume.glow==test_case.glow && volume.color=={} && volume.anisotropy==0,"case %d: glow %v, color %v, anisotropy %v",n,volume.glow,volume.color,volume.anisotropy)
+            expected_glow:=([3]f32{}) if (test_case.volumetric && e.name!="Mist") else test_case.glow
+            testing.expectf(t,volume.glow==expected_glow && volume.color==test_case.color && abs(volume.anisotropy-test_case.anisotropy)<1e-6,"case %d (%s): glow %v (expected %v), color %v, anisotropy %v",n,e.name,volume.glow,expected_glow,volume.color,volume.anisotropy)
             if e.name=="Mist" {
                 found=true
                 transform,_:=asset.scene_get(&scene,e.id,"Transform",core.Transform)
                 testing.expectf(t,abs(transform.position.y-199.66)<1e-2,"case %d: the box is centred at %v",n,transform.position)
-                expected:=f32(0.028094999492168427/10*math.LN2)
+                expected:=f32(volumetric_rate(0.028094999492168427,f64(test_case.extinction_scale)) if test_case.volumetric else 0.028094999492168427/10*math.LN2)
                 testing.expectf(t,abs(volume.density-expected)<1e-6*expected,"case %d: density %v, not %v",n,volume.density,expected)
                 testing.expectf(t,abs(volume.base-base)<1e-2,"case %d: base %v m over the bottom, not %v",n,volume.base,base)
                 testing.expect(t,abs(volume.falloff-f32(0.02*math.LN2))<1e-6)
@@ -101,7 +141,7 @@ the_height_fog_of_an_unreal_level_fills_its_box_with_its_density_and_glow :: pro
             added=true
             testing.expectf(t,e.name=="Mist second fog","only the first height fog and its second: %s",e.name)
             testing.expect(t,volume.zone.mode==.Add,"the second fog adds to the first")
-            expected:=f32(0.2/10*math.LN2)
+            expected:=f32(volumetric_rate(0.2,f64(test_case.extinction_scale)) if test_case.volumetric else 0.2/10*math.LN2)
             testing.expectf(t,abs(volume.density-expected)<1e-6*expected,"case %d: second density %v, not %v",n,volume.density,expected)
             testing.expectf(t,abs(volume.base-(base+3))<1e-2,"case %d: second base %v",n,volume.base)
             testing.expect(t,abs(volume.falloff-f32(0.01*math.LN2))<1e-6)
@@ -183,9 +223,9 @@ under_a_sky_atmosphere_the_height_fog_glows_with_the_light_of_its_sky :: proc(t:
         lobe,taken:=false,!test_case.volumetric
         for w in report.imports.warnings {
             lobe||=strings.contains(w,"glow around its sun") && strings.contains(w,"with shadows")
-            taken||=strings.contains(w,"volumetric fog, with the albedo")
+            taken||=strings.contains(w,"Unreal limits volumetric fog") && strings.contains(w,"albedo")
         }
-        has_lobe:=test_case.directional!={}
+        has_lobe:=!test_case.volumetric && test_case.directional!={}
         testing.expectf(t,lobe==has_lobe,"case %d: what remains of the glow around the sun is a warning",n)
         testing.expectf(t,taken,"case %d: the warning of its volumetric fog says what was taken",n)
         types:asset.Types;asset.types_init(&types);defer asset.types_destroy(&types)
@@ -205,6 +245,10 @@ under_a_sky_atmosphere_the_height_fog_glows_with_the_light_of_its_sky :: proc(t:
             volume,ok:=asset.scene_get(&scene,e.id,"Fog_Volume",fog.Fog_Volume)
             if !ok || e.name!="Mist" {continue}
             found=true
+            if test_case.volumetric {
+                testing.expectf(t,volume.color=={1,1,1} && abs(volume.anisotropy-0.2)<1e-6 && volume.glow=={},"case %d: volumetric fog uses albedo/anisotropy/emissive: %v %v %v",n,volume.color,volume.anisotropy,volume.glow)
+                continue
+            }
             sky:=volume.glow-inscattering
             for c in 0..<3 {testing.expectf(t,abs(sky[c]-test_case.sky[c])<=0.05*max(test_case.sky[c],0.01),"case %d: the sky adds %v to the glow, not %v",n,sky,test_case.sky)}
             if !has_lobe {

@@ -182,29 +182,24 @@ under it it holds (Unreal's grows without end, a warning). Its `SecondFogData` i
 the same box with its base raised by the offset. Unreal draws only
 the first of a scene, and the others are a warning.
 
-- Its inscattering luminance, which Unreal shows where the fog is thick whatever lights it, is the
-  `glow`; a package from before the luminance takes the color it saved, with its old default.
-- Under a `SkyAtmosphere` the `glow` also has the light Unreal adds from the sky of the atmosphere,
-  unshadowed: its distant sky light (the air lit by the brightest sun of the atmosphere, marched
-  with Unreal's transmittance and multiple-scattering tables and its directions over the sphere)
-  times `HeightFogContribution` and `SkyAtmosphereAmbientContributionColorScale`
-  (`unreal_scene.fog_sky`, worked out on import).
-- The density is `FogDensity` in powers of two, the height fog Unreal draws at every quality and
-  to the horizon; its volumetric fog, drawn only near the eye and at high scalability, is not
-  taken.
-- The lobe it adds around the sun without shadows (`DirectionalInscatteringLuminance` times the
-  luminance of the sun, plus the sun through the atmosphere over 4π, times the power
-  `DirectionalInscatteringExponent` of the cosine) is the sun Mirai's fog scatters, with shadows
-  (`lobe_scatter`): the `anisotropy` whose phase gathers its light toward the sun as the lobe
-  does (same peak over the whole), and the `color` with which thick fog seen toward the sun shows
-  the lobe's luminance under the `Sun` as imported (its illuminance, its `scattering` and the
-  phase at 0°), each channel held in [0, 1]. No sun, no lobe or a sun that scatters nothing: a
-  black `color`.
+- When `bEnableVolumetricFog` is set, the fog translates directly to Mirai's volumetric medium:
+  `VolumetricFogAlbedo` becomes `color` (clamped to `[0, 1]`),
+  `VolumetricFogScatteringDistribution` becomes `anisotropy`, `FogDensity` (including
+  `SecondFogData`) is scaled by Unreal's volumetric match factor and `VolumetricFogExtinctionScale`
+  (`density * 0.05 * scale` per metre), and `VolumetricFogEmissive` (`* 0.01` nits/m) becomes
+  `glow` divided by base density so emission per metre matches at the base (`SecondFogData` does
+  not double-count emissive). The distance limit where Unreal falls back to height fog is reported
+  as a warning.
+- Without `bEnableVolumetricFog`, its inscattering luminance (`FogInscatteringLuminance`, or
+  `FogInscatteringColor` in older packages) is the `glow`; under a `SkyAtmosphere` it also adds
+  the distant sky light (`unreal_scene.fog_sky`), `FogDensity` is converted in powers of two, and
+  the sun lobe (`DirectionalInscatteringLuminance` + `DirectionalInscatteringExponent`) maps to
+  shadowed sun scattering via `lobe_scatter`.
 - What Mirai does not draw is a warning: the distance where Unreal's volumetric fog ends and its
-  glow starts, with its albedo and scattering distribution and what the import took instead;
-  that Mirai's scattered sun is shadowed, starts at the eye and also scatters the light around
-  by its `color`; its cubemap colors and what depends on the eye (`StartDistance`,
-  `EndDistance`, `FogCutoffDistance`, `FogMaxOpacity`).
+  height-fog fallback starts; for non-volumetric height fog, that Mirai's scattered sun is
+  shadowed, starts at the eye and also scatters the light around by its `color`; its cubemap
+  colors and what depends on the eye (`StartDistance`, `EndDistance`, `FogCutoffDistance`,
+  `FogMaxOpacity`).
 
 ## Lens (`unreal_lens`)
 
