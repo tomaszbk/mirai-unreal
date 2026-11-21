@@ -176,7 +176,13 @@ particles_place :: proc(c:^unreal_scene.Context,a,k:int,niagara:bool,e:base.Enti
     keyed:=make(map[string]base.Entity_Id,allocator=context.temp_allocator)
     for i in 0..<written.count {
         if len(written.grids[i])==0 && len(written.bindings[i])==0 {continue}
-        bound:vfx.Particle_Bindings
+        bind_add :: proc(c:^unreal_scene.Context,parent:base.Entity_Id,key,resource:string,target:base.Entity_Id,index:^int) -> bool {
+            b:=vfx.Particle_Binding{emitter=core.Entity(parent),entity=core.Entity(target)}
+            base.text_set(b.resource[:],resource)
+            be,made:=unreal_scene.entity_make(c,parent,fmt.tprintf("%s/bind_%d",key,index^),resource,mm.TRANSFORM_IDENTITY)
+            index^+=1
+            return made && unreal_scene.component_set(c,be,"Particle_Binding",&b)
+        }
         sources:=0
         for grid in written.grids[i] {
             child,known:=keyed[grid.key]
@@ -197,11 +203,7 @@ particles_place :: proc(c:^unreal_scene.Context,a,k:int,niagara:bool,e:base.Enti
                     unreal_scene.texture_read_add(c,{texture=target,include="vfx_world_texture.slang",function="vfx_world_texture_uv",name=unique})
                 }
             }
-            if sources<len(bound.sources) {
-                base.text_set(bound.sources[sources].resource[:],grid.resource)
-                bound.sources[sources].entity=core.Entity(child)
-                sources+=1
-            }
+            if !bind_add(c,targets[i],key,grid.resource,child,&sources) {return false}
         }
         for binding in written.bindings[i] {
             if binding.level {
@@ -209,24 +211,19 @@ particles_place :: proc(c:^unreal_scene.Context,a,k:int,niagara:bool,e:base.Enti
                 // with its number (Statue_2).
                 named:=niagara_mesh_actor(d,ref)
                 for actor,other in d.actors {
-                    if named=="" || sources>=len(bound.sources) || object_numbered_name(d,actor.ref)!=named {continue}
+                    if named=="" || object_numbered_name(d,actor.ref)!=named {continue}
                     if entity,placed:=unreal_scene.actor_entity(c,other);placed {
-                        base.text_set(bound.sources[sources].resource[:],binding.resource)
-                        bound.sources[sources].entity=core.Entity(entity)
-                        sources+=1
+                        if !bind_add(c,targets[i],key,binding.resource,entity,&sources) {return false}
                     }
                 }
                 if named=="" {unreal_scene.warn(c,"%s: %s reads the mesh of no actor of the level",label,binding.resource)}
                 continue
             }
             for j in 0..<written.count {
-                if written.names[j]!=binding.emitter || sources>=len(bound.sources) {continue}
-                base.text_set(bound.sources[sources].resource[:],binding.resource)
-                bound.sources[sources].entity=core.Entity(targets[j])
-                sources+=1
+                if written.names[j]!=binding.emitter {continue}
+                if !bind_add(c,targets[i],key,binding.resource,targets[j],&sources) {return false}
             }
         }
-        if !unreal_scene.component_set(c,targets[i],"Particle_Bindings",&bound) {return false}
     }
     return true
 }

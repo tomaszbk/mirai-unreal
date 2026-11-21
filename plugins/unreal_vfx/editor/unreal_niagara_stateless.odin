@@ -173,7 +173,7 @@ niagara_stateless_module :: proc(c:^unreal_scene.Context,e:^Unreal_Emitter,modul
         case .Mesh:
             scale:=module_dist(u,d,module,"MeshScaleDistribution",{1,1,1,1},3)
             info.size={max(axes_mean(scale.min),0),max(axes_mean(scale.max),0)}
-        case .Ribbon:
+        case .Ribbon,.Beam:
             if write,_:=level.bool_of(d,module,"bWriteRibbonWidth",false);write {
                 width:=module_dist(u,d,module,"RibbonWidthDistribution",{10,10,10,10},1)
                 info.size={max(width.min.x,0),max(width.max.x,0)}*CENTIMETRE
