@@ -56,7 +56,7 @@ Read_State :: enum u8 {Waiting,Started,Passed,Taken}
 Read :: struct {
     file:string,
     materials:[dynamic]string, // object paths
-    c:^Context,                // whose lib and images the materials are built into, holding its library_lock
+    c:^Context,                // whose lib and images the materials are built into, holding its library_lock; its textures built once (Context.built)
     index:int,                 // in Reads.order
     cost:int,
     state:Read_State,
@@ -102,7 +102,7 @@ reads_begin :: proc(c:^Context,natives:[]level.Class,owners:[]int,sections:[][dy
         info,error:=os.stat(file,context.temp_allocator)
         if error!=nil {return}
         read:=new(Read,context.temp_allocator)
-        read^={file=strings.clone(file,context.temp_allocator),index=len(c.reads.order),cost=int(info.size)*READ_COST,formats=c.formats[:],options=c.options,cook=c.reads.cook}
+        read^={file=strings.clone(file,context.temp_allocator),c=c,index=len(c.reads.order),cost=int(info.size)*READ_COST,formats=c.formats[:],options=c.options,cook=c.reads.cook}
         c.reads.by_file[read.file]=read
         append(&c.reads.order,read)
     }
@@ -115,7 +115,7 @@ reads_begin :: proc(c:^Context,natives:[]level.Class,owners:[]int,sections:[][dy
             c.reads.materials[strings.clone(path,context.temp_allocator)]=true
             if read==nil {
                 read=new(Read,context.temp_allocator)
-                read^={c=c,index=len(c.reads.order),options=c.options}
+                read^={c=c,index=len(c.reads.order),options=c.options,cook=c.reads.cook}
                 read.materials.allocator=context.temp_allocator
                 append(&c.reads.order,read)
             }
@@ -202,7 +202,7 @@ read_run :: proc(read:^Read,worker:int) {
         read.error={error.code,strings.clone(error.message,allocator)}
         return
     }
-    if read.cook {importer.model_cook(&model,options)}
+    if read.cook {material_write.built_cook(&read.c.built,&model,options)}
     read.model=model
 }
 
@@ -227,13 +227,16 @@ materials_run :: proc(read:^Read,worker:int) {
     decoder,decoder_error:=kraken.decoder_make(heap)
     if decoder_error!=nil {return}
     defer kraken.decoder_destroy(&decoder)
+    options:=read.options
+    options.worker=ref
     for path in read.materials {
         sync.mutex_lock(&c.library_lock)
         c.lib.worker=ref
         if object,found:=material.object_find(c.lib,path);found {
             if t,error:=material.translate(c.lib,object,{reads=c.format_options.reads,writers=c.writers},context.temp_allocator);error.code==.None {
                 material_write.builder_room(&c.images)
-                material_write.material_build(&c.images,&t,&decoder)
+                m:=material_write.material_build(&c.images,&t,&decoder)
+                if read.cook {material_write.material_cook(&c.images,&m,&c.built,options)}
                 material.translated_destroy(&t)
             }
         }

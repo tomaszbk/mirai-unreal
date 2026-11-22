@@ -379,7 +379,7 @@ image_build :: proc(b:^Builder,t:^material.Translated_Material,image:material.Ma
         if fit {
             pixels:=make([]^material.Pixels,len(g.textures),context.temp_allocator)
             for &ref,i in g.textures {pixels[i]=source_pixels(b,ref.path,decoder)}
-            data,width,height,fitted:=material.image_bake(g,image,encodings,pixels,true,b.allocator)
+            data,width,height,fitted:=material.image_bake(g,image,encodings,pixels,true,b.allocator,b.lib.worker)
             done.scale=fitted
             done.key=fmt.aprintf("baked:%016x:%dx%d:%s",base.hash64(data),width,height,label,allocator=b.allocator)
             done.key=image_add(b,{key=done.key,name=name,made=textures.rgba8(data,width,height),srgb=color})
@@ -440,6 +440,48 @@ material_cutoff :: proc(m:^Built_Material,kind:asset.Material_Map_Kind) -> f32 {
     if m.info.alpha_mode!=.Mask {return -1}
     masked:=m.images[.Mask]!="" ? asset.Material_Map_Kind.Mask : .Base_Color
     return m.info.alpha_cutoff if kind==masked else -1
+}
+
+// The row in images of the image of key, added to them the first time; name
+// "" is the image's own. cutoff, when not negative, is the alpha cutoff the
+// image takes.
+@(private)
+row_of :: proc(b:^Builder,images:^[dynamic]importer.Imported_Image,rows_of:^map[string]int,key,name:string,cutoff:f32) -> int {
+    if key=="" {return -1}
+    row,seen:=rows_of[key]
+    if !seen {
+        image:=b.images[b.keys[key]]
+        append(images,importer.Imported_Image{name=name!=""?name:image.name,data=image.data,make=image.make,made=image.made,srgb=image.srgb,normal_map=image.normal_map,keep_precision=image.keep_precision})
+        row=len(images)-1
+        rows_of[key]=row
+    }
+    if cutoff>=0 {images[row].alpha_cutoff=cutoff}
+    return row
+}
+
+// Builds ahead the textures of the images of m that built does not hold, as
+// materials_write builds them for m alone, and keeps them in it. Called
+// holding the lock of b, which it lets go meanwhile.
+material_cook :: proc(b:^Builder,m:^Built_Material,built:^Built_Textures,options:importer.Import_Options) {
+    images:=make([dynamic]importer.Imported_Image,context.temp_allocator)
+    rows_of:=make(map[string]int,context.temp_allocator)
+    for key,kind in m.images {row_of(b,&images,&rows_of,key,m.image_names[kind],material_cutoff(m,kind))}
+    for key in m.parameter_images {row_of(b,&images,&rows_of,key,"",-1)}
+    if len(images)==0 {return}
+    model:=importer.Imported_Model{images=images[:]}
+    worker:=b.lib.worker
+    if b.lock!=nil {
+        b.outside+=1
+        sync.mutex_unlock(b.lock)
+    }
+    built_cook(built,&model,options)
+    importer.model_cooked_destroy(&model)
+    if b.lock!=nil {
+        sync.mutex_lock(b.lock)
+        b.outside-=1
+        b.lib.worker=worker
+        sync.cond_broadcast(&b.decoded)
+    }
 }
 
 // The program of a translation as a file of the shaders of a project,
@@ -573,12 +615,13 @@ image_output :: proc(outputs:^importer.Outputs,model:^importer.Imported_Model,im
 // programs go to shaders, the shaders folder of the project. Importing the
 // same source again updates the same files and keeps what was changed in
 // them. shared, a builder over lib, keeps the textures it decodes for the
-// next; lock, when given, is held while lib and the builder are used. The
+// next; lock, when given, is held while lib and the builder are used. With
+// once, the textures are built ahead, each once for the import. The
 // report gives the ids by row, in allocator.
 materials_write :: proc(
     lib:^material.Library,translated:[]material.Translated_Material,outputs:^importer.Outputs,
     prefix:string,options:importer.Import_Options={},allocator:=context.allocator,
-    shared:^Builder=nil,lock:^sync.Mutex=nil,decoder:^kraken.Decoder=nil,
+    shared:^Builder=nil,lock:^sync.Mutex=nil,decoder:^kraken.Decoder=nil,once:^Built_Textures=nil,
 ) -> (report:importer.Import_Report,error:importer.Error) {
     arena:mem.Dynamic_Arena
     mem.dynamic_arena_init(&arena,allocator,allocator,block_size=1<<20,out_band_size=1<<20)
@@ -611,18 +654,6 @@ materials_write :: proc(
     // The images these materials name: a shared builder holds those of others too.
     images:=make([dynamic]importer.Imported_Image,scratch)
     rows_of:=make(map[string]int,scratch)
-    row_of :: proc(b:^Builder,images:^[dynamic]importer.Imported_Image,rows_of:^map[string]int,key,name:string,cutoff:f32) -> int {
-        if key=="" {return -1}
-        row,seen:=rows_of[key]
-        if !seen {
-            image:=b.images[b.keys[key]]
-            append(images,importer.Imported_Image{name=name!=""?name:image.name,data=image.data,make=image.make,made=image.made,srgb=image.srgb,normal_map=image.normal_map,keep_precision=image.keep_precision})
-            row=len(images)-1
-            rows_of[key]=row
-        }
-        if cutoff>=0 {images[row].alpha_cutoff=cutoff}
-        return row
-    }
     materials:=make([]importer.Imported_Material,len(built),scratch)
     for &m,i in built {
         rows:[asset.Material_Map_Kind]int
@@ -641,15 +672,20 @@ materials_write :: proc(
     }
     model.warnings=warnings[:]
     names_prefix(&model,prefix,scratch)
-    if held==nil {return importer.output_model(outputs,&model,allocator)}
-    // The images are written from the builder without its lock: what it holds stays.
-    b.outside+=1
-    sync.mutex_unlock(held)
-    held=nil
+    // The images are built and written from the builder without its lock: what it holds stays.
+    if held!=nil {
+        b.outside+=1
+        sync.mutex_unlock(held)
+        held=nil
+    }
+    if once!=nil {built_cook(once,&model,options)}
     report,error=importer.output_model(outputs,&model,allocator)
-    sync.mutex_lock(lock)
-    b.outside-=1
-    sync.cond_broadcast(&b.decoded)
-    sync.mutex_unlock(lock)
+    importer.model_cooked_destroy(&model)
+    if lock!=nil {
+        sync.mutex_lock(lock)
+        b.outside-=1
+        sync.cond_broadcast(&b.decoded)
+        sync.mutex_unlock(lock)
+    }
     return
 }

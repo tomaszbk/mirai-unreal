@@ -184,6 +184,7 @@ Context :: struct {
     d:^level.Document,           // the level and the packages of its archetypes
     lib:^material.Library,       // the packages of meshes, materials and textures, shared by the whole level
     images:material_write.Builder, // the textures decoded for the materials of the level, while the memory is over MEMORY_FLOOR
+    built:material_write.Built_Textures, // the textures built for the packages of the level, while the memory is over MEMORY_FLOOR
     scene:^asset.Scene,          // that of c.section
     partition:level.Partition,
     sections:[]Section,          // the scene of the map, then one for each cell of the partition
@@ -374,6 +375,8 @@ document_import :: proc(d:^level.Document,source:string,size,hash:u64,options:im
     if engine=="" {warn(&c,"%s: %s",stem,unreal.ENGINE_UNSET)}
     material_write.builder_init(&c.images,c.lib,c.report.allocator,&c.library_lock,MEMORY_FLOOR)
     defer material_write.builder_destroy(&c.images)
+    material_write.built_init(&c.built,options.worker.system.allocator if options.worker.system!=nil else runtime.heap_allocator())
+    defer material_write.built_destroy(&c.built)
     defer if c.decoder_ready {kraken.decoder_destroy(&c.decoder)}
     programs:=make(map[store.Hash]string,runtime.heap_allocator())
     defer {
@@ -1101,6 +1104,7 @@ warnings_unique :: proc(report:^importer.Import_Report) {
 @(private)
 images_trim :: proc(c:^Context,bytes:=0) {
     if !memory_short(bytes) {return}
+    material_write.built_trim(&c.built)
     library_lock(c)
     defer library_unlock(c)
     if material_write.builder_bytes(&c.images)==0 {return}

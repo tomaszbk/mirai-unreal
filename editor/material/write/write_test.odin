@@ -11,6 +11,7 @@ import "core:testing"
 import "core:thread"
 import "mirai:asset"
 import importer "mirai:cook/import"
+import "mirai:cook/textures"
 import "project:plugins/unreal/editor/kraken"
 import material "project:plugins/unreal/editor/material"
 import fx "project:plugins/unreal/editor/material/fixture"
@@ -455,4 +456,34 @@ a_builder_lets_go_of_its_images_under_its_floor_when_nobody_is_outside :: proc(t
         testing.expectf(t,(len(b.sources)==0)==(floor==1),"floor %v",floor)
         sync.mutex_unlock(&lock)
     }
+}
+
+// An image built for one model is a copy for the next model that has it,
+// with the same options, and is not built again.
+@(test)
+an_import_builds_each_texture_once :: proc(t:^testing.T) {
+    texels:=make([]u8,16*16*4,context.temp_allocator)
+    for &v,i in texels {v=u8(i*7)}
+    image:=importer.Imported_Image{name="T",made=textures.rgba8(texels,16,16),srgb=true}
+    once:Built_Textures
+    built_init(&once,context.allocator)
+    defer built_destroy(&once)
+    first:=importer.Imported_Model{images=slice.clone([]importer.Imported_Image{image},context.temp_allocator)}
+    importer.model_cook(&first,{})
+    defer importer.model_cooked_destroy(&first)
+    if !testing.expect(t,first.images[0].cooked!=nil && first.images[0].cooked.error==.None) {return}
+    built_keep(&once,&first,{})
+    // Another cutoff is another texture.
+    cut:=image
+    cut.alpha_cutoff=0.5
+    second:=importer.Imported_Model{images=slice.clone([]importer.Imported_Image{image,cut},context.temp_allocator)}
+    defer importer.model_cooked_destroy(&second)
+    built_take(&once,&second,{})
+    taken:=second.images[0].cooked
+    if !testing.expect(t,taken!=nil && second.images[1].cooked==nil) {return}
+    importer.model_cook(&second,{})
+    testing.expect(t,second.images[0].cooked==taken,"the copy is taken as built")
+    a,b:=first.images[0].cooked.built,taken.built
+    testing.expect(t,len(a.mips)==len(b.mips) && a.format==b.format && a.width==b.width)
+    for level,i in a.mips {testing.expect(t,slice.equal(level,b.mips[i]))}
 }

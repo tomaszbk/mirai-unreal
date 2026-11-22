@@ -438,6 +438,7 @@ mesh_import :: proc(c:^Context,path:string) -> (m:Mesh_Import,ok:bool) {
     }
     if row<0 && len(model.meshes)==1 {row=0}
     report:importer.Import_Report
+    if error.code==.None && c.reads.cook {material_write.built_cook(&c.built,&model,c.options)}
     if error.code==.None {
         import_zone:=importer.zone_begin(c.options,"level.mesh_import")
         report,error=model_parts_write(c,&model,file)
@@ -597,7 +598,7 @@ materials_write :: proc(c:^Context,file:string,translated:[]material.Translated_
     textures,_:=decoder(c)
     report,error:=material_write.materials_write(
         c.lib,translated,&c.outputs,package_prefix(c,file),c.options,context.temp_allocator,
-        &c.images,&c.library_lock,textures,
+        &c.images,&c.library_lock,textures,&c.built if c.reads.cook else nil,
     )
     base.profile_end(write_zone)
     defer images_trim(c)

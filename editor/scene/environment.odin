@@ -16,6 +16,7 @@ import unreal "project:plugins/unreal/editor/package"
 import texture "project:plugins/unreal/editor/texture"
 import render "mirai:engine/render"
 import "mirai:std/base"
+import "mirai:std/jobs"
 import mm "mirai:std/math"
 
 // Cameras, the light of the sky and the sun: what of Unreal's has a
@@ -340,7 +341,7 @@ dome_sky_write :: proc(c:^Context,dome:^Sky_Dome,turn:f32,lit:bool) -> (backgrou
     turned:=world
     turned.rotation=back*world.rotation
     turned.position=mm.quat_rotate(back,world.position)
-    texels:=dome_shade(&geometry,turned,&s,width)
+    texels:=dome_shade(&geometry,turned,&s,width,c.options.worker)
     source:=textures.Source{texels=mem.slice_to_bytes(texels),width=width,height=width/2,layers=1,format=.RGBA32F}
     name:=fmt.tprintf("%s_Sky",unreal.asset_name(c.d.actors[c.d.components[dome.component].actor].label))
     write_error:importer.Error
@@ -378,9 +379,10 @@ dome_pixels :: proc(data:rawptr,path:string) -> ^material.Pixels {
 // placed at world: a latitude-longitude image width texels across, rows from
 // up, of linear RGBA. Each texel averages DOME_SAMPLES² directions; one whose
 // directions all miss the mesh (below an open dome) takes the nearest texel
-// of its column that one meets.
+// of its column that one meets. With a worker of a job system, its rows are
+// shaded on the jobs.
 @(private)
-dome_shade :: proc(m:^unreal_mesh.Mesh,world:mm.Transform,s:^material.Sky_Graph,width:int) -> [][4]f32 {
+dome_shade :: proc(m:^unreal_mesh.Mesh,world:mm.Transform,s:^material.Sky_Graph,width:int,worker:=jobs.Worker_Ref{}) -> [][4]f32 {
     height:=width/2
     columns,rows:=width*DOME_SAMPLES,height*DOME_SAMPLES
     // Unreal's x, y and z in centimetres are Mirai's -z, x and y in metres.
@@ -445,58 +447,74 @@ dome_shade :: proc(m:^unreal_mesh.Mesh,world:mm.Transform,s:^material.Sky_Graph,
     out:=make([][4]f32,width*height,context.temp_allocator)
     met:=make([]bool,width*height,context.temp_allocator)
     Hit :: struct {triangle:i32,b:[2]f32,t:f32}
-    hits:=make([]Hit,columns*DOME_SAMPLES,context.temp_allocator)
-    points:=make([dynamic]material.Sky_Point,0,len(hits),context.temp_allocator)
-    shaded:=make([][3]f32,len(hits),context.temp_allocator)
-    for band in 0..<height {
-        for &h in hits {h={triangle=-1,t=max(f32)}}
-        for triangle in bands[band] {
-            v:[3][3]f32
-            for k in 0..<3 {v[k]=corners[m.corner_vertex[3*int(triangle)+k]]}
-            span:=spans[triangle]
-            for row in 0..<DOME_SAMPLES {
-                for at in int(math.floor(span.x))..<int(math.ceil(span.y)) {
-                    column:=((at%columns)+columns)%columns
-                    h:=&hits[row*columns+column]
-                    t,b,hit:=ray_triangle(direction(column,band*DOME_SAMPLES+row,columns,rows),v[0],v[1],v[2])
-                    if hit && t<h.t {h^={triangle,b,t}}
+    // What the rows of texels read; each writes its own texels of out and met.
+    Rows :: struct {
+        m:^unreal_mesh.Mesh,world:mm.Transform,s:^material.Sky_Graph,view:material.Sky_View,
+        corners:[][3]f32,centre:[3]f32,bands:[][dynamic]i32,spans:[][2]f32,
+        width,columns,rows:int,out:[][4]f32,met:[]bool,
+    }
+    shade :: proc(r:^Rows,first,last:int,worker:int) {
+        m,world,columns,rows,width:=r.m,r.world,r.columns,r.rows,r.width
+        corners,centre:=r.corners,r.centre
+        hits:=make([]Hit,columns*DOME_SAMPLES,context.temp_allocator)
+        points:=make([dynamic]material.Sky_Point,0,len(hits),context.temp_allocator)
+        shaded:=make([][3]f32,len(hits),context.temp_allocator)
+        for band in first..<last {
+            for &h in hits {h={triangle=-1,t=max(f32)}}
+            for triangle in r.bands[band] {
+                v:[3][3]f32
+                for k in 0..<3 {v[k]=corners[m.corner_vertex[3*int(triangle)+k]]}
+                span:=r.spans[triangle]
+                for row in 0..<DOME_SAMPLES {
+                    for at in int(math.floor(span.x))..<int(math.ceil(span.y)) {
+                        column:=((at%columns)+columns)%columns
+                        h:=&hits[row*columns+column]
+                        t,b,hit:=ray_triangle(direction(column,band*DOME_SAMPLES+row,columns,rows),v[0],v[1],v[2])
+                        if hit && t<h.t {h^={triangle,b,t}}
+                    }
                 }
             }
-        }
-        clear(&points)
-        for h in hits {
-            if h.triangle<0 {continue}
-            weights:=[3]f32{1-h.b.x-h.b.y,h.b.x,h.b.y}
-            point:material.Sky_Point
-            normal:[3]f32
-            point.color={1,1,1,1}
-            if len(m.corner_color)>0 {point.color={}}
-            for k in 0..<3 {
-                corner:=3*int(h.triangle)+k
-                w:=weights[k]
-                point.position+=(corners[m.corner_vertex[corner]]+centre)*w
-                if corner<len(m.corner_normal) {normal+=m.corner_normal[corner]*w}
-                for set in 0..<min(m.uv_count,material.UNREAL_UV_SETS) {
-                    if corner<len(m.corner_uvs[set]) {point.uvs[set]+=m.corner_uvs[set][corner]*w}
+            clear(&points)
+            for h in hits {
+                if h.triangle<0 {continue}
+                weights:=[3]f32{1-h.b.x-h.b.y,h.b.x,h.b.y}
+                point:material.Sky_Point
+                normal:[3]f32
+                point.color={1,1,1,1}
+                if len(m.corner_color)>0 {point.color={}}
+                for k in 0..<3 {
+                    corner:=3*int(h.triangle)+k
+                    w:=weights[k]
+                    point.position+=(corners[m.corner_vertex[corner]]+centre)*w
+                    if corner<len(m.corner_normal) {normal+=m.corner_normal[corner]*w}
+                    for set in 0..<min(m.uv_count,material.UNREAL_UV_SETS) {
+                        if corner<len(m.corner_uvs[set]) {point.uvs[set]+=m.corner_uvs[set][corner]*w}
+                    }
+                    if corner<len(m.corner_color) {
+                        rgba:=m.corner_color[corner]
+                        point.color+=[4]f32{f32(rgba.r),f32(rgba.g),f32(rgba.b),f32(rgba.a)}/255*w
+                    }
                 }
-                if corner<len(m.corner_color) {
-                    rgba:=m.corner_color[corner]
-                    point.color+=[4]f32{f32(rgba.r),f32(rgba.g),f32(rgba.b),f32(rgba.a)}/255*w
-                }
+                point.position=unreal_of(point.position)
+                point.normal=linalg.normalize0(unreal_of(mm.quat_rotate(world.rotation,[3]f32{normal.y,normal.z,-normal.x})))
+                append(&points,point)
             }
-            point.position=unreal_of(point.position)
-            point.normal=linalg.normalize0(unreal_of(mm.quat_rotate(world.rotation,[3]f32{normal.y,normal.z,-normal.x})))
-            append(&points,point)
+            material.sky_shade(r.s,r.view,points[:],shaded)
+            next:=0
+            for h,i in hits {
+                if h.triangle<0 {continue}
+                texel:=band*width+(i%columns)/DOME_SAMPLES
+                r.out[texel]+=[4]f32{shaded[next].r,shaded[next].g,shaded[next].b,1}
+                r.met[texel]=true
+                next+=1
+            }
         }
-        material.sky_shade(s,view,points[:],shaded)
-        next:=0
-        for h,i in hits {
-            if h.triangle<0 {continue}
-            texel:=band*width+(i%columns)/DOME_SAMPLES
-            out[texel]+=[4]f32{shaded[next].r,shaded[next].g,shaded[next].b,1}
-            met[texel]=true
-            next+=1
-        }
+    }
+    work:=Rows{m,world,s,view,corners,centre,bands,spans,width,columns,rows,out,met}
+    if worker.system!=nil {
+        jobs.parallel_for(worker.system,worker.worker,height,1,shade,&work)
+    } else {
+        shade(&work,0,height,worker.worker)
     }
     for &texel in out {if texel.a>0 {texel=[4]f32{texel.r/texel.a,texel.g/texel.a,texel.b/texel.a,1}}}
     for column in 0..<width {

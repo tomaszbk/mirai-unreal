@@ -14,6 +14,7 @@ import mirai_project "mirai:project"
 import fx "project:plugins/unreal/editor/material/fixture"
 import unreal "project:plugins/unreal/editor/package"
 import "mirai:std/base"
+import "mirai:std/jobs"
 
 // Synthetic packages: a material graph built expression by expression.
 
@@ -826,6 +827,19 @@ images_are_baked_texel_by_texel_from_the_graph :: proc(t:^testing.T) {
     testing.expect_value(t,data[1],u8(math.round(f32(0.75*255))))
     testing.expect_value(t,data[2],u8(128))
     testing.expect_value(t,data[0],u8(255))
+    // Rows baked on the jobs of a job system give the same image.
+    large:=Pixels{37,53,make([][4]f32,37*53,context.temp_allocator)}
+    for &texel,i in large.texels {texel={f32(i%37)/37,f32(i/37)/53,f32(i%7)/7,1}}
+    tinted:=binary(&g,.Mul,component(&g,s,1),parameter(&g,"Tint",1,{3,0,0,0},{3,0,0,0}))
+    image.channels[0]=tinted
+    image.channels[3]=binary(&g,.Add,component(&g,s,2),component(&g,s,0))
+    sources[0]=&large
+    alone,_,_,_:=image_bake(&g,image,{.SRGB,.Linear,.Linear,.Linear},sources,true,context.temp_allocator)
+    js:jobs.Job_System
+    if !testing.expect(t,jobs.system_init(&js,{threads=3})) {return}
+    defer jobs.system_destroy(&js)
+    shared,_,_,_:=image_bake(&g,image,{.SRGB,.Linear,.Linear,.Linear},sources,true,context.temp_allocator,{system=&js})
+    testing.expect(t,slice.equal(alone,shared))
 }
 
 // A damaged material package translates or is refused, never a crash.

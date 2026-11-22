@@ -826,9 +826,16 @@ With a job system in `Import_Options.worker`, the packages of the meshes the lev
 current (`importer.outputs_current`: the writer keeps them all), in jobs while the level is
 translated, in the order the translation asks for them: of each scene, its actors' meshes and then
 the instanced components, if a translator takes them. After a component's mesh go the materials from
-other packages that it overrides: a job translates them and builds their images in the level's
-`Builder`, where the translation finds them. The translation writes each one, with its ids, when it
-reaches it, one after another: what is written is the same as without read-ahead.
+other packages that it overrides: a job translates them, builds their images in the level's
+`Builder`, where the translation finds them, and their textures. The translation writes each one,
+with its ids, when it reaches it, one after another: what is written is the same as without
+read-ahead.
+
+- **Each texture is built once per import.** The same image with the same build options is in
+  every package that shows its material: the first model that builds it (a package read ahead, a
+  mesh, the materials the translation writes or a material read ahead) keeps a copy in `c.built`
+  (`Built_Textures`, with its own lock), and the others take it as built. Under the floor it is let
+  go with the images.
 
 - **Memory floor.** A level import leaves `MEMORY_FLOOR` of the machine's memory free, measured at
   that moment (`base.memory_stats`). A read starts if the available memory, minus what the running
