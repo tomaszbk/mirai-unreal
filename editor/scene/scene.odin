@@ -307,16 +307,24 @@ catalog_folder :: proc(d:^level.Document) -> string {
     name:=d.library.packages[int(d.levels[0].ref.pkg)].name
     parent_end:=strings.last_index_byte(name,'/')
     if parent_end<=0 {return ""}
+    best:^unreal.Source_Mount
     mount_end:=0
-    for mount in d.library.mounts {
+    for &mount in d.library.mounts {
         prefix:=mount.package_prefix
         if len(prefix)<=parent_end && len(prefix)>mount_end &&
             name[len(prefix)]=='/' && strings.has_prefix(name,prefix) {
             mount_end=len(prefix)
+            best=&mount
         }
     }
-    if mount_end==0 || parent_end==mount_end {return ""}
-    return name[mount_end+1:parent_end]
+    if best==nil {return ""}
+    rel:=name[mount_end+1:parent_end] if parent_end>mount_end else ""
+    dir:=best.directory
+    root_label:=filepath.base(dir)
+    if strings.equal_fold(root_label,"Content") {
+        if parent:=filepath.base(filepath.dir(dir));parent!="" && parent!="." {root_label=parent}
+    }
+    return importer.catalog_peel(dir,root_label,rel,context.temp_allocator)
 }
 
 // The scene of a level read already, as level_import writes it: source is
@@ -1068,7 +1076,7 @@ notes_warn :: proc(c:^Context) {
     if n:=c.notes[.Source_Length];n>0 {warn(c,"%d lights have a source length: Mirai draws a tube from the scale of its entity, which they keep at one",n)}
     if n:=c.notes[.IES];n>0 {warn(c,"%d lights have an IES profile, which Mirai does not read",n)}
     if n:=c.notes[.Light_Function];n>0 {warn(c,"%d lights have a light function, which Mirai does not read",n)}
-    if n:=c.notes[.Cone_Clamped];n>0 {warn(c,"%d spot lights have a cone outside 1° to 89°: they were given the nearest",n)}
+    if n:=c.notes[.Cone_Clamped];n>0 {warn(c,"%d spot lights have a cone outside 1Â° to 89Â°: they were given the nearest",n)}
 }
 
 // The imports of the meshes and materials of a level say the same of a
