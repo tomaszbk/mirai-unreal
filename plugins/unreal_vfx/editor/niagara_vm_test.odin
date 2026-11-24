@@ -296,3 +296,118 @@ niagara_data_channel_calls_warn_and_emit_valid_slang :: proc(t:^testing.T) {
     _=os.make_directory_all(folder)
     _=os.write_entire_file(strings.concatenate({folder,"/Niagara_Test_Spawner.slang"},context.temp_allocator),transmute([]u8)program)
 }
+
+// Builds a frozen VectorVM2 ExperimentalContextData blob for tests.
+@(private="file")
+vvm2_blob :: proc(bytecode:[]u8,num_temps:u32,const_remap,input_remap,input_offsets:[]u16,out_ds:[]u8,out_type,out_dst:[]u16) -> []u8 {
+    out:=make([dynamic]u8,context.temp_allocator)
+    u16le :: proc(out:^[dynamic]u8,v:u16) {append(out,u8(v),u8(v>>8))}
+    u32le :: proc(out:^[dynamic]u8,v:u32) {append(out,u8(v),u8(v>>8),u8(v>>16),u8(v>>24))}
+    align16 :: proc(out:^[dynamic]u8) {for len(out)%16!=0 {append(out,0)}}
+
+    u32le(&out,u32(len(bytecode)))
+    u32le(&out,1)
+    u16le(&out,u16(len(const_remap)))
+    u32le(&out,num_temps)
+    u16le(&out,u16(len(const_remap)))
+    u16le(&out,u16(len(input_remap)))
+    u16le(&out,0)
+    u16le(&out,u16(len(input_offsets)/8))
+    u16le(&out,u16(len(out_dst)))
+    u16le(&out,1)
+    u32le(&out,0);u32le(&out,0);u32le(&out,0);u32le(&out,0);u32le(&out,0)
+    u32le(&out,0);u32le(&out,0)
+    for len(out)<64 {append(&out,0)}
+    append(&out,..bytecode)
+    align16(&out)
+    for c in const_remap {u16le(&out,c)}
+    align16(&out)
+    for ir in input_remap {u16le(&out,ir)}
+    align16(&out)
+    for io in input_offsets {u16le(&out,io)}
+    align16(&out)
+    append(&out,..out_ds)
+    align16(&out)
+    for ot in out_type {u16le(&out,ot)}
+    align16(&out)
+    for od in out_dst {u16le(&out,od)}
+    align16(&out)
+    return out[:]
+}
+
+// All 81 merged VectorVM2 / Fortnite opcodes (98..178) decompile through
+// ExperimentalContextData into valid HLSL and a Mirai Vfx program.
+@(test)
+niagara_vvm2_all_merged_opcodes_decompile :: proc(t:^testing.T) {
+    testing.expect_value(t,int(Niagara_Op.Output_Half_From_Half),178)
+    u16le :: proc(out:^[dynamic]u8,v:u16) {append(out,u8(v),u8(v>>8))}
+
+    attrs:=slice.clone([]Niagara_Variable{
+        variable("Particles.Position","Vector3f"),
+        variable("Particles.Age","NiagaraFloat"),
+        variable("Particles.ID","NiagaraID"),
+    },context.temp_allocator)
+    // Constants: engine (640 bytes = 160 dwords), then 5 literals at dwords 160..164.
+    lits:=slice.clone([]Niagara_Variable{
+        variable("L0","NiagaraFloat",2),
+        variable("L1","NiagaraFloat",3),
+        variable("L2","NiagaraFloat",4),
+        variable("L3","NiagaraFloat",5),
+        variable("L4","NiagaraFloat",1),
+    },context.temp_allocator)
+    // Register layout: temps [0..2), consts [2..7) -> dwords 160..164, inputs [7..8) -> Age (float reg 3),
+    // dup inputs [8..9), outputs [9..10) -> serial 0 (ds=0, float reg 3 = Age).
+    const_remap:=[]u16{160,161,162,163,164}
+    in_offsets:=[]u16{0,1,1,1,0,0,0,0}
+
+    for opc in u8(Niagara_Op.Exec_Indexf)..=u8(Niagara_Op.Output_Half_From_Half) {
+        op_val:=Niagara_Op(opc)
+        code:=make([dynamic]u8,context.temp_allocator)
+        #partial switch op_val {
+        case .Exec_Indexf:
+            append(&code,opc);u16le(&code,0)
+            append(&code,u8(Niagara_Op.Output_Float),1,0);u16le(&code,0);u16le(&code,9)
+        case .Output_Float_From_Half,.Output_Half_From_Half:
+            append(&code,opc,1,0);u16le(&code,2);u16le(&code,9)
+        case:
+            ins:=niagara_op_inputs(op_val)
+            outs:=niagara_op_outputs(op_val)
+            testing.expectf(t,ins>=1 && ins<=5,"merged op %v unexpected inputs=%d",op_val,ins)
+            testing.expectf(t,outs==1 || outs==2,"merged op %v unexpected outputs=%d",op_val,outs)
+            append(&code,opc)
+            for k in 0..<ins {u16le(&code,u16(2+k))}
+            u16le(&code,0)
+            if outs==2 {u16le(&code,1)}
+            append(&code,u8(Niagara_Op.Output_Float),1,0);u16le(&code,0);u16le(&code,9)
+        }
+        append(&code,u8(Niagara_Op.Done))
+        blob:=vvm2_blob(code[:],2,const_remap,{3},in_offsets,{0},{0},{3})
+        ctx,parsed:=niagara_vm2_parse(blob,context.temp_allocator)
+        if !testing.expectf(t,parsed,"vvm2 parse failed for %v",op_val) {continue}
+        vm:=Niagara_Vm{vvm2=ctx,usage=.Update,attributes=attrs,literals=lits}
+        problems:=make([dynamic]string,context.temp_allocator)
+        text,ok:=niagara_vm_hlsl(&vm,&problems)
+        testing.expectf(t,ok && len(problems)==0,"merged op %v failed: ok=%v problems=%v",op_val,ok,problems[:])
+        testing.expectf(t,strings.contains(text,"Context.Map.Particles.Age = "), "merged op %v missing output",op_val)
+    }
+
+    // End-to-end VectorVM2 update script (Age = Age + DeltaTime, alive while Age < 2.0) builds a Vfx program.
+    code:=make([dynamic]u8,context.temp_allocator)
+    // temps [0..2), consts [2..4) -> dword 1 (DeltaTime at byte 4), dword 160 (literal 2.0 at byte 640)
+    // inputs [4..5) -> float reg 3 (Age); dup [5..6); outputs [6..7) -> serial 0 (Age)
+    append(&code,u8(Niagara_Op.Add));u16le(&code,4);u16le(&code,2);u16le(&code,0)
+    append(&code,u8(Niagara_Op.Cmplt));u16le(&code,0);u16le(&code,3);u16le(&code,1)
+    append(&code,u8(Niagara_Op.Acquire_Index));u16le(&code,1);append(&code,0)
+    append(&code,u8(Niagara_Op.Output_Float),1,0);u16le(&code,0);u16le(&code,6)
+    append(&code,u8(Niagara_Op.Done))
+    blob:=vvm2_blob(code[:],2,{1,160},{3},in_offsets,{0},{0},{3})
+    ctx,parsed:=niagara_vm2_parse(blob,context.temp_allocator)
+    testing.expect(t,parsed)
+    vm:=Niagara_Vm{vvm2=ctx,usage=.Update,attributes=attrs,literals=lits}
+    problems:=make([dynamic]string,context.temp_allocator)
+    text,ok:=niagara_vm_hlsl(&vm,&problems)
+    testing.expectf(t,ok && len(problems)==0,"VVM2 e2e failed: %v",problems[:])
+    testing.expect(t,strings.contains(text,"Context.Map.Particles.Age = InputDataFloat(0, 3);"))
+    testing.expect(t,strings.contains(text,"Context.Map.DataInstance.Alive = (v1 != 0u);"))
+    testing.expect(t,strings.contains(text,"OutputDataFloat(0, 3, TmpWriteIndex, Context.Map.Particles.Age);"))
+}

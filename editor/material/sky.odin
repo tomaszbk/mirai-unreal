@@ -134,6 +134,14 @@ sky_shade :: proc(s:^Sky_Graph,dome:Sky_View,points:[]Sky_Point,out:[][3]f32) {
             case .Vertex_Bitangent:v.y=1
             case .Two_Sided_Sign:v.x=1
             case .Per_Instance_Random,.Particle_Random:v.x=0.5
+            case .Fresnel:
+                base:=node.args[0]!=NONE?values[node.args[0]].x:node.value.x
+                exp:=node.args[1]!=NONE?values[node.args[1]].x:5
+                n_ws:=node.args[2]!=NONE?values[node.args[2]].xyz:point.normal
+                nlen:=math.sqrt(n_ws.x*n_ws.x+n_ws.y*n_ws.y+n_ws.z*n_ws.z)
+                if nlen>0 {n_ws/=nlen}
+                ndv:=clamp(n_ws.x*view.x+n_ws.y*view.y+n_ws.z*view.z,0,1)
+                v.x=base+(1-base)*math.pow(clamp(1-ndv,0,1),max(exp,0))
             case .Texture:
             case .Sample:
                 index:=g.nodes[node.args[0]].index

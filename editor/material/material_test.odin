@@ -2205,3 +2205,151 @@ a_grass_output_gives_each_grass_type_its_layers_rule_and_varieties :: proc(t:^te
     d:=meadow.varieties[1]
     testing.expect(t,d.density==4 && d.cull=={100,100} && d.weights=={0,1} && d.scaling==.Uniform && d.casts_shadow,"the defaults of a variety")
 }
+
+// Solid Subsurface / PreintegratedSkin / SubsurfaceProfile wire to Mirai
+// Material_Subsurface (with Opacity as weight), while TwoSidedFoliage and
+// thin Subsurface wire to Material_Diffuse_Transmission.
+@(test)
+shading_models_wire_to_subsurface_and_diffuse_transmission :: proc(t:^testing.T) {
+    Case :: struct {
+        model:string,
+        two_sided:bool,
+        opacity:f32,
+        want_subsurface:bool,
+        want_transmission:bool,
+    }
+    cases:=[]Case{
+        {"MSM_Subsurface",false,0.75,true,false},
+        {"MSM_PreintegratedSkin",false,0.6,true,false},
+        {"MSM_SubsurfaceProfile",false,0.8,true,false},
+        {"MSM_TwoSidedFoliage",false,1.0,false,true},
+        {"MSM_TwoSidedFoliage",true,1.0,false,true},
+        {"MSM_Subsurface",true,1.0,false,true},
+    }
+    for tc in cases {
+        b:=material_begin("M_SSS")
+        w:=fx.writer(&b.p)
+        fx.float_put(&w,"R",tc.opacity)
+        op:=expression(&b,"Constant","Op",&w)
+        m:=fx.writer(&b.p)
+        fx.enum_put(&m,"ShadingModel","EMaterialShadingModel",tc.model)
+        fx.bool_put(&m,"TwoSided",tc.two_sided)
+        fx.input_put(&m,"BaseColor","ColorMaterialInput",{use_constant=true,constant={0.6,0.4,0.3,1}})
+        fx.input_put(&m,"SubsurfaceColor","ColorMaterialInput",{use_constant=true,constant={0.9,0.2,0.1,1}})
+        fx.input_put(&m,"Opacity","ScalarMaterialInput",{expression=op})
+        b.p.exports[0].data=fx.finish(&m)
+        lib:Library
+        library_with(&lib,{"/Game/M/M_SSS",fx.package_bytes(&b.p,"/Game/M/M_SSS")})
+        translated,ok:=translate_one(t,&lib,"/Game/M/M_SSS")
+        if ok {
+            if tc.want_subsurface {
+                testing.expectf(t,abs(translated.info.subsurface.weight-tc.opacity)<1e-4,"%s weight %v != %v",tc.model,translated.info.subsurface.weight,tc.opacity)
+                testing.expectf(t,abs(translated.info.subsurface.color.x-0.9)<0.01,"%s color %v",tc.model,translated.info.subsurface.color)
+                testing.expectf(t,translated.info.subsurface.radius>0 && translated.info.subsurface.radius<=asset.MATERIAL_SUBSURFACE_RADIUS_MAX,"%s radius %v",tc.model,translated.info.subsurface.radius)
+                testing.expect_value(t,translated.info.diffuse_transmission.weight,f32(0))
+            }
+            if tc.want_transmission {
+                testing.expectf(t,translated.info.diffuse_transmission.weight>0,"%s expected diffuse transmission",tc.model)
+                testing.expect_value(t,translated.info.subsurface.weight,f32(0))
+            }
+            translated_destroy(&translated)
+        }
+        library_destroy(&lib)
+    }
+    // Program-driven subsurface (varying SubsurfaceColor) sets s.subsurface_* and enables info.subsurface.weight.
+    b:=material_begin("M_SSS_Prog")
+    w:=fx.writer(&b.p)
+    pos:=expression(&b,"WorldPosition","Pos",&w)
+    m:=fx.writer(&b.p)
+    fx.enum_put(&m,"ShadingModel","EMaterialShadingModel","MSM_Subsurface")
+    fx.input_put(&m,"BaseColor","ColorMaterialInput",{use_constant=true,constant={0.5,0.4,0.3,1}})
+    fx.input_put(&m,"SubsurfaceColor","ColorMaterialInput",{expression=pos})
+    b.p.exports[0].data=fx.finish(&m)
+    lib:Library
+    library_with(&lib,{"/Game/M/M_SSS_Prog",fx.package_bytes(&b.p,"/Game/M/M_SSS_Prog")})
+    defer library_destroy(&lib)
+    translated,ok:=translate_one(t,&lib,"/Game/M/M_SSS_Prog")
+    if !ok {return}
+    defer translated_destroy(&translated)
+    testing.expect(t,!translated_is_standard(&translated))
+    testing.expect(t,translated.info.subsurface.weight>0,"layer allowance enabled on Material_Info")
+    testing.expect(t,strings.contains(translated.program.source,"s.subsurface_color="))
+    testing.expect(t,strings.contains(translated.program.source,"s.subsurface_weight="))
+    testing.expect(t,strings.contains(translated.program.source,"s.subsurface_radius="))
+    program_compiles(t,translated.program)
+}
+
+// High-ROI Fortnite nodes: real view-vector Fresnel & ReflectionVectorWS,
+// TwoSidedSign, PerInstanceRandom, CurveAtlasRowParameter, and Particle* nodes
+// translate with 0 untranslated expressions and compile as valid Mirai Slang.
+@(test)
+fortnite_nodes_translate_and_compile_to_slang :: proc(t:^testing.T) {
+    b:=material_begin("M_Fortnite_Nodes")
+    atlas:=fx.external(&b.p,"/Game/Curves/CA_Colors","/Script/Engine","CurveLinearColorAtlas","CA_Colors")
+    sprite_tex:=fx.external(&b.p,"/Game/FX/T_Spark","/Script/Engine","Texture2D","T_Spark")
+    w:=fx.writer(&b.p)
+    two_sided:=expression(&b,"TwoSidedSign","TS",&w)
+    w=fx.writer(&b.p)
+    inst_rand:=expression(&b,"PerInstanceRandom","IR",&w)
+    w=fx.writer(&b.p)
+    p_rel_time:=expression(&b,"ParticleRelativeTime","PRT",&w)
+    w=fx.writer(&b.p)
+    p_pos:=expression(&b,"ParticlePositionWS","PP",&w)
+    w=fx.writer(&b.p)
+    p_size:=expression(&b,"ParticleSize","PS",&w)
+    w=fx.writer(&b.p)
+    p_dir:=expression(&b,"ParticleDirection","PD",&w)
+    w=fx.writer(&b.p)
+    fx.object_put(&w,"Texture",sprite_tex)
+    p_subuv:=expression(&b,"ParticleSubUV","PSU",&w)
+    w=fx.writer(&b.p)
+    fx.name_property_put(&w,"ParameterName","ColorRow")
+    fx.float_put(&w,"DefaultValue",2)
+    fx.object_put(&w,"Atlas",atlas)
+    fx.input_put(&w,"InputTime","ExpressionInput",{expression=p_rel_time})
+    curve_row:=expression(&b,"CurveAtlasRowParameter","CA",&w)
+    w=fx.writer(&b.p)
+    fx.input_put(&w,"BaseReflectFractionIn","ExpressionInput",{expression=inst_rand})
+    fx.float_put(&w,"Exponent",3.5)
+    fx.input_put(&w,"Normal","ExpressionInput",{expression=p_dir})
+    fresnel:=expression(&b,"Fresnel","Fr",&w)
+    w=fx.writer(&b.p)
+    fx.input_put(&w,"CustomWorldNormal","ExpressionInput",{expression=p_dir})
+    refl:=expression(&b,"ReflectionVectorWS","Refl",&w)
+    w=fx.writer(&b.p)
+    fx.input_put(&w,"A","ExpressionInput",{expression=curve_row})
+    fx.input_put(&w,"B","ExpressionInput",{expression=p_subuv})
+    color_mul:=expression(&b,"Multiply","CM",&w)
+    w=fx.writer(&b.p)
+    fx.input_put(&w,"A","ExpressionInput",{expression=color_mul})
+    fx.input_put(&w,"B","ExpressionInput",{expression=refl})
+    emissive_add:=expression(&b,"Add","EA",&w)
+    w=fx.writer(&b.p)
+    fx.input_put(&w,"A","ExpressionInput",{expression=fresnel})
+    fx.input_put(&w,"B","ExpressionInput",{expression=two_sided})
+    rough_mul:=expression(&b,"Multiply","RM",&w)
+    w=fx.writer(&b.p)
+    fx.input_put(&w,"A","ExpressionInput",{expression=p_size,mask={true,false,false,false}})
+    fx.input_put(&w,"B","ExpressionInput",{expression=p_pos,mask={true,false,false,false}})
+    met_add:=expression(&b,"Add","MA",&w)
+
+    m:=fx.writer(&b.p)
+    fx.input_put(&m,"BaseColor","ColorMaterialInput",{expression=color_mul})
+    fx.input_put(&m,"EmissiveColor","ColorMaterialInput",{expression=emissive_add})
+    fx.input_put(&m,"Roughness","ScalarMaterialInput",{expression=rough_mul})
+    fx.input_put(&m,"Metallic","ScalarMaterialInput",{expression=met_add})
+    b.p.exports[0].data=fx.finish(&m)
+    lib:Library
+    library_with(&lib,{"/Game/M/M_Fortnite_Nodes",fx.package_bytes(&b.p,"/Game/M/M_Fortnite_Nodes")})
+    defer library_destroy(&lib)
+    translated,ok:=translate_one(t,&lib,"/Game/M/M_Fortnite_Nodes")
+    if !ok {return}
+    defer translated_destroy(&translated)
+    testing.expect_value(t,len(translated.untranslated),0)
+    testing.expect(t,!translated_is_standard(&translated))
+    src:=translated.program.source
+    for snippet in ([]string{"unreal_fresnel(","unreal_view_vector(ctx)","unreal_two_sided_sign(ctx)","unreal_per_instance_random(ctx)","mirai_texture_size(","ctx.particle_radius*100.0","ctx.particle_data[3]"}) {
+        testing.expectf(t,strings.contains(src,snippet),"missing %q in generated Slang:\n%s",snippet,src)
+    }
+    program_compiles(t,translated.program)
+}

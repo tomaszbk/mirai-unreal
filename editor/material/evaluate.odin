@@ -125,6 +125,7 @@ Evaluator :: struct {
     fuzz:[2]u32, // the color and weight of fibers over the surface a legacy function asks for; NONE: none
     exposure_relative:bool, // the graph undoes the exposure (EyeAdaptationInverse)
     diffuse_transmission:[2]u32, // the color and weight of the light a thin surface lets through; NONE: none
+    subsurface:[3]u32,           // the color, weight and radius (metres) of subsurface scattering; NONE: none
     custom_data:[]f32,      // of the instance: what PerInstanceCustomData reads
     reads_custom_data:bool, // PerInstanceCustomData was evaluated
     reads:[]Texture_Read,   // of the options
@@ -143,6 +144,7 @@ evaluator_init :: proc(e:^Evaluator,lib:^Library,g:^Graph,allocator:=context.all
     e.lib,e.g=lib,g
     e.fuzz={NONE,NONE}
     e.diffuse_transmission={NONE,NONE}
+    e.subsurface={NONE,NONE,NONE}
     e.scopes.allocator=allocator
     e.aggregates.allocator=allocator
     e.memo.allocator=allocator
@@ -473,10 +475,7 @@ expression_build :: proc(e:^Evaluator,o:Object,output:i32,scope:i32) -> Value {
         distance:=binary(g,.Div,unary(g,.Length,binary(g,.Sub,a,b)),radius)
         return nodes(unary(g,.Saturate,binary(g,.Div,binary(g,.Sub,scalar(g,1),distance),hardness)))
     case "TwoSidedSign":
-        // Unreal leaves the frame of a back face as it is and the graph turns
-        // it with this sign; Mirai turns the frame of a back face itself.
-        note(e,"TwoSidedSign is 1: Mirai turns the tangent frame of back faces itself")
-        return nodes(scalar(g,1))
+        return nodes(context_value(g,.Two_Sided_Sign,1))
     case "Rotator":
         time,connected:=pin(e,o,"Time",scope)
         if !connected {time=context_value(g,.Time,1)}
@@ -506,8 +505,7 @@ expression_build :: proc(e:^Evaluator,o:Object,output:i32,scope:i32) -> Value {
     case "VertexNormalWS":return nodes(context_value(g,.Vertex_Normal,3))
     case "PixelNormalWS":return nodes(context_value(g,.Pixel_Normal,3))
     case "PerInstanceRandom":
-        note(e,"PerInstanceRandom is taken as 0.5, its mean: Mirai programs have no per instance value")
-        return nodes(scalar(g,0.5))
+        return nodes(context_value(g,.Per_Instance_Random,1))
     case "Reroute":
         return pin_value(e,o,"Input",scope)
     // Computes its input per vertex and interpolates it: the same value, which Mirai computes per pixel.
@@ -547,6 +545,8 @@ expression_build :: proc(e:^Evaluator,o:Object,output:i32,scope:i32) -> Value {
         return nodes(texture_object(e,o,scope))
     case "TextureSample","TextureSampleParameter2D":
         return texture_sample(e,o,scope)
+    case "CurveAtlasRowParameter":
+        return curve_atlas_row(e,o,scope)
     // The texels of a texture across and down, or the size of one texel in its coordinates.
     case "TextureProperty":
         tex,connected:=pin(e,o,"TextureObject",scope)
@@ -611,18 +611,21 @@ expression_build :: proc(e:^Evaluator,o:Object,output:i32,scope:i32) -> Value {
     }
     switch kind {
     case "Fresnel":
-        base,connected:=pin(e,o,"BaseReflectFractionIn",scope)
-        if !connected {base=scalar(g,prop_float(o,"BaseReflectFraction",0.04))}
-        value,ok:=evaluate_constant(g,base)
-        if !ok {return untranslated(e,o,"its base reflection is not constant")}
-        note(e,"Fresnel %s is taken at normal incidence (%g): Mirai's surfaces reflect with their own Fresnel",object_name(o),value.x)
-        return nodes(node_add(g,{op=.Fresnel,width=1,value={value.x,0,0,0},args={NONE,NONE,NONE}}))
-    // The view, like Fresnel, at normal incidence: Mirai's surfaces reflect by
-    // the view themselves, so what fakes it by the view sees the surface head on.
-    case "CameraVectorWS","ReflectionVectorWS":
-        if e.seen_from_eye && kind=="CameraVectorWS" {return nodes(context_value(g,.Camera_Vector,3))}
-        note(e,"%s is taken at normal incidence: the surface seen head on",object_name(o))
-        return nodes(context_value(g,.Pixel_Normal,3))
+        base:=pin_or(e,o,"BaseReflectFractionIn","BaseReflectFraction",0.04,scope)
+        exp:=pin_or(e,o,"ExponentIn","Exponent",5,scope)
+        norm,has_norm:=pin(e,o,"Normal",scope)
+        if has_norm {norm=unary(g,.Normalize,convert(g,norm,3))} else {norm=NONE}
+        val,const_ok:=evaluate_constant(g,base)
+        return nodes(node_add(g,{op=.Fresnel,width=1,value={const_ok?val.x:0.04,0,0,0},args={convert(g,base,1),convert(g,exp,1),norm}}))
+    case "CameraVectorWS":
+        return nodes(context_value(g,.Camera_Vector,3))
+    case "ReflectionVectorWS":
+        norm,has_norm:=pin(e,o,"CustomWorldNormal",scope)
+        n:=has_norm?unary(g,.Normalize,convert(g,norm,3)):context_value(g,.Pixel_Normal,3)
+        v:=context_value(g,.Camera_Vector,3)
+        // reflect(-V, N) = 2 * dot(N, V) * N - V
+        two_ndv:=binary(g,.Mul,scalar(g,2),binary(g,.Dot,n,v))
+        return nodes(binary(g,.Sub,binary(g,.Mul,n,two_ndv),v))
     case "CameraPositionWS":
         if e.seen_from_eye {return nodes(world_place(e,.Camera_Position))}
         // The eye of that view: along the normal, as far as the view sees the point.
@@ -710,8 +713,21 @@ expression_build :: proc(e:^Evaluator,o:Object,output:i32,scope:i32) -> Value {
     // and its radius: half the narrower side of its sprite.
     case "ParticleRandom":return nodes(context_value(g,.Particle_Random,1))
     case "ParticleRadius":return nodes(context_value(g,.Particle_Radius,1))
-    case "ParticleSubUV","ParticlePositionWS","ParticleRelativeTime":
-        return untranslated(e,o,"particle values belong to .particle programs")
+    case "ParticleSize":
+        diam:=binary(g,.Mul,context_value(g,.Particle_Radius,1),scalar(g,2))
+        return nodes(append_values(g,diam,diam))
+    // Mirai's sprite vertex shader applies SubUV frame UVs to ctx.uv0.
+    case "ParticleSubUV":return texture_sample(e,o,scope)
+    case "ParticlePositionWS":return nodes(world_place(e,.Object_Position))
+    // Normalized particle age [0..1] passed via DynamicParameter slot 3.w when provided by a VFX program.
+    case "ParticleRelativeTime":
+        data:=node_add(g,{op=.Particle_Data,width=4,index=3,value={0,0,0,0},args={NONE,NONE,NONE}})
+        return nodes(component(g,data,3))
+    case "ParticleDirection":return nodes(unary(g,.Normalize,object_axis(e,0)))
+    case "ParticleSpeed":
+        note(e,"ParticleSpeed is taken as 0: Mirai surface programs do not carry particle velocity")
+        return nodes(scalar(g,0))
+    case "ParticleMotionBlurFade":return nodes(scalar(g,1))
     case "Custom":return custom_expression(e,o,output,scope)
     // How much the value changes to the next pixel of the image along x or y.
     case "DDX","DDY":
@@ -1130,6 +1146,58 @@ texture_sample :: proc(e:^Evaluator,o:Object,scope:i32) -> Value {
     }
     if result==NONE {return untranslated(e,o,"its coordinates are not two values")}
     return nodes(result)
+}
+
+// Samples one row of a UCurveLinearColorAtlas at InputTime, per UE6
+// UMaterialExpressionCurveAtlasRowParameter::Compile:
+//   u = (t * (w - 1) + 0.5) / w,  v = (slot + 0.5) / h.
+@(private)
+curve_atlas_row :: proc(e:^Evaluator,o:Object,scope:i32) -> Value {
+    g:=e.g
+    atlas_ref:=prop_object(o,"Atlas")
+    if atlas_ref==0 {return untranslated(e,o,"it names no curve atlas")}
+    atlas_path,path_err:=unreal.reference_path(&o.pkg.p,atlas_ref,g.textures.allocator)
+    if path_err.code!=.None || atlas_path=="" {return untranslated(e,o,"its curve atlas path could not be read")}
+    atlas_name:=atlas_path[strings.last_index_any(atlas_path,"./:")+1:]
+    tex:=texture(g,{path=atlas_path,name=atlas_name,sampler=.Linear_Color})
+    // Determine the row slot: scalar parameter override -> Atlas.GradientCurves index -> DefaultValue.
+    slot_val:=prop_float(o,"DefaultValue",0)
+    if curve_ref:=prop_object(o,"Curve");curve_ref!=0 {
+        if curve_path,cerr:=unreal.reference_path(&o.pkg.p,curve_ref,context.temp_allocator);cerr.code==.None && curve_path!="" {
+            if atlas_obj,found:=object_resolve(e.lib,o.pkg,atlas_ref);found {
+                ap,alist:=props(atlas_obj)
+                if prop:=unreal.property_find(ap,alist,"GradientCurves");prop!=nil {
+                    if view,verr:=unreal.property_array(ap,prop);verr.code==.None {
+                        if refs,rerr:=unreal.array_object_refs(ap,view,context.temp_allocator);rerr.code==.None {
+                            for r,idx in refs {
+                                if r==0 {continue}
+                                if rp,rperr:=unreal.reference_path(ap,r,context.temp_allocator);rperr.code==.None && rp==curve_path {
+                                    slot_val=f32(idx)
+                                    break
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    param_name:=prop_name(o,"ParameterName","")
+    slot:u32
+    if param_name!="" {
+        val:=slot_val
+        if found:=override_find(e,param_name,.Scalar,scope);found!=nil {val=found.value.x}
+        slot=parameter(g,param_name,1,{val,0,0,0},{slot_val,0,0,0})
+    } else {
+        slot=scalar(g,slot_val)
+    }
+    t:=unary(g,.Saturate,convert(g,pin_or(e,o,"InputTime","",0,scope),1))
+    size:=texture_size(g,tex)
+    w:=binary(g,.Max,component(g,size,0),scalar(g,1))
+    h:=binary(g,.Max,component(g,size,1),scalar(g,1))
+    u:=binary(g,.Div,binary(g,.Add,binary(g,.Mul,t,binary(g,.Sub,w,scalar(g,1))),scalar(g,0.5)),w)
+    v:=binary(g,.Div,binary(g,.Add,slot,scalar(g,0.5)),h)
+    return nodes(sample(g,tex,append_values(g,u,v)))
 }
 
 // A scalar or vector of a Material Parameter Collection: its default value.

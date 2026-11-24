@@ -74,7 +74,7 @@ operand :: proc(m:^Emitter,n:u32,width:u8=0) -> string {
     node:=&m.g.nodes[n]
     text:string
     switch {
-    case node.op==.Constant || node.op==.Fresnel:text=literal(node.value,node.width)
+    case node.op==.Constant:text=literal(node.value,node.width)
     case node.op==.Parameter && m.folded[n]:text=literal(m.g.parameters[node.index].value,node.width)
     case node.op==.Parameter || node.op==.Texture:text=fmt.tprintf("p.%s",m.fields[n])
     case:text=fmt.tprintf(m.duals[n]?"v%d.value":"v%d",n)
@@ -134,12 +134,12 @@ carry_of :: proc(op:Op,landscape:bool) -> Carry {
     case .UV,.World_Position,.Screen_Position:return .Source
     // The normal of a landscape whole is that of the maps of its terrain.
     case .Vertex_Normal:return landscape?.Opaque:.Source
-    case .Constant,.Parameter,.Texture,.Fresnel,.Texture_Size,.Time,.Origin,.Object_Position,.Object_Radius,.Actor_Position,
+    case .Constant,.Parameter,.Texture,.Texture_Size,.Time,.Origin,.Object_Position,.Object_Radius,.Actor_Position,
          .Object_Axis,.Object_Bounds,.Screen_Size,.Per_Instance_Random,.Two_Sided_Sign,.Particle_Data,.Particle_Random,
          .Particle_Radius,.Arguments,.Floor,.Ceil,.Round,.Trunc,.Sign,.Step,.Less,.Less_Equal:
         return .Zero
     case .Sample,.Sample_Grad,.Texture_Read,.Noise,.Vector_Noise,.Custom,.Custom_Output,.Vertex_Color,.Vertex_Tangent,
-         .Vertex_Bitangent,.Pixel_Normal,.Layer_Weight,.Pixel_Depth,.Scene_Depth,.Camera_Vector,.Camera_Position,.Ddx,.Ddy:
+         .Vertex_Bitangent,.Pixel_Normal,.Layer_Weight,.Pixel_Depth,.Scene_Depth,.Camera_Vector,.Camera_Position,.Fresnel,.Ddx,.Ddy:
         return .Opaque
     }
     return .Chain
@@ -458,6 +458,14 @@ line_emit :: proc(m:^Emitter,n:u32,indent:string) {
         }
     case .Vertex_Tangent:code="float3(-ctx.tangent.z,ctx.tangent.x,ctx.tangent.y)"
     case .Vertex_Bitangent:code="unreal_bitangent(ctx)"
+    case .Camera_Vector:code="unreal_view_vector(ctx)"
+    case .Two_Sided_Sign:code="unreal_two_sided_sign(ctx)"
+    case .Per_Instance_Random:code="unreal_per_instance_random(ctx)"
+    case .Fresnel:
+        base_expr:=a!=NONE?operand(m,a,1):float_text(node.value.x)
+        exp_expr:=b!=NONE?operand(m,b,1):"5.0"
+        norm_expr:=c!=NONE?operand(m,c,3):"unreal_vector(ctx.normal)"
+        code=fmt.tprintf("unreal_fresnel(ctx,%s,%s,%s)",base_expr,exp_expr,norm_expr)
     case .Vertex_Color:code="ctx.vertex_color"
     case .Object_Position:code="unreal_point(ctx.object_center)"
     case .Actor_Position:code="unreal_point(ctx.object_position)"
@@ -623,7 +631,8 @@ program_build :: proc(t:^Translated_Material,e:^Evaluator,base_color,alpha,metal
     } else if !map_normal && normal_map(t,e,normal) {map_normal=true}
     outputs:=[?]u32{base_color,alpha,metallic,roughness,specular,occlusion,emissive,map_normal?NONE:normal,
         shading==.Clear_Coat?roots[.Clear_Coat]:NONE,shading==.Clear_Coat?roots[.Clear_Coat_Roughness]:NONE,
-        shading!=.Cloth?e.fuzz[0]:NONE,shading!=.Cloth?e.fuzz[1]:NONE,e.diffuse_transmission[0],e.diffuse_transmission[1]}
+        shading!=.Cloth?e.fuzz[0]:NONE,shading!=.Cloth?e.fuzz[1]:NONE,e.diffuse_transmission[0],e.diffuse_transmission[1],
+        e.subsurface[0],e.subsurface[1],e.subsurface[2]}
     m:=Emitter{g=g,landscape=landscape}
     m.scopes=scopes_plan(g,outputs[:])
     m.emitted=make([]bool,len(g.nodes),context.temp_allocator)
@@ -683,6 +692,15 @@ program_build :: proc(t:^Translated_Material,e:^Evaluator,base_color,alpha,metal
         set(b,&m,"fuzz_weight",outputs[11],1)
         set(b,&m,"diffuse_transmission_color",outputs[12],3)
         set(b,&m,"diffuse_transmission_weight",outputs[13],1)
+        set(b,&m,"subsurface_color",outputs[14],3)
+        set(b,&m,"subsurface_weight",outputs[15],1)
+        set(b,&m,"subsurface_radius",outputs[16],1)
+        // Enable layer allowance on Material_Info so Mirai's renderer permits program-driven layers.
+        if outputs[12]!=NONE && t.info.diffuse_transmission.weight==0 {t.info.diffuse_transmission.weight=1}
+        if outputs[14]!=NONE && t.info.subsurface.weight==0 {
+            t.info.subsurface.weight=1
+            t.info.subsurface.radius=SUBSURFACE_RADIUS_DEFAULT
+        }
         if landscape {strings.write_string(b,"    unreal_landscape_paint(s,landscape);\n")}
     }
     if alpha!=NONE {set(b,&m,"alpha",alpha,1)}
@@ -876,6 +894,20 @@ void unreal_specular(inout Mirai_Surface s, float specular) {
     float r=sqrt(max(f0,0.02));
     s.specular_ior=(1.0+r)/(1.0-r);
     s.specular_factor=min(f0/0.02,1.0);
+}
+float3 unreal_view_vector(Mirai_Surface_Context ctx) {
+    return unreal_vector(normalize(ctx.vertex_normal));
+}
+float unreal_two_sided_sign(Mirai_Surface_Context ctx) {
+    return dot(ctx.normal,ctx.vertex_normal)>=0.0?1.0:-1.0;
+}
+float unreal_per_instance_random(Mirai_Surface_Context ctx) {
+    return mirai_cell_value(ctx.origin+int3(floor(ctx.object_position*100.0)));
+}
+float unreal_fresnel(Mirai_Surface_Context ctx, float base_reflect, float exponent, float3 normal_ws) {
+    float3 v=unreal_view_vector(ctx);
+    float ndv=saturate(dot(normalize(normal_ws),v));
+    return lerp(saturate(base_reflect),1.0,pow(saturate(1.0-ndv),max(exponent,0.0)));
 }
 `
 

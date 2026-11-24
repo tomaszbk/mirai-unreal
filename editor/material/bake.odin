@@ -52,7 +52,8 @@ node_compute :: proc(g:^Graph,node:^Node,args:[3][4]f32,ctx:^Texel_Context) -> (
     }
     a,b,c:=wide(g,node,0,args),wide(g,node,1,args),wide(g,node,2,args)
     #partial switch node.op {
-    case .Constant,.Fresnel:return node.value
+    case .Constant:return node.value
+    case .Fresnel:return node.args[0]!=NONE?args[0]:node.value
     case .Parameter:return g.parameters[node.index].value
     case .Sample:
         texture:=g.nodes[node.args[0]].index

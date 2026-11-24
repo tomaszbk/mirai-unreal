@@ -285,6 +285,7 @@ MAP_NAMES :: [asset.Material_Map_Kind]string{
     .Specular="Specular",.Specular_Color="SpecularColor",.Coat="Coat",.Coat_Roughness="CoatRoughness",.Coat_Normal="CoatNormal",
     .Fuzz_Color="FuzzColor",.Fuzz_Roughness="FuzzRoughness",.Anisotropy="Anisotropy",
     .Diffuse_Transmission="DiffuseTransmission",.Diffuse_Transmission_Color="DiffuseTransmissionColor",
+    .Subsurface="Subsurface",.Subsurface_Radius="SubsurfaceRadius",
     .Mask="Mask",
 }
 
@@ -312,8 +313,8 @@ material_build :: proc(b:^Builder,t:^material.Translated_Material,decoder:^krake
         case .Normal:
             relevant={true,true,true,false}
             encodings={.Normal,.Normal,.Normal,.Linear}
-        case .Occlusion:relevant={true,false,false,false}
-        case .Specular,.Mask:relevant={false,false,false,true}
+        case .Occlusion,.Subsurface_Radius:relevant={true,false,false,false}
+        case .Specular,.Subsurface,.Mask:relevant={false,false,false,true}
         case:for c in 0..<4 {relevant[c]=image.channels[c]!=material.NONE}
         }
         wanted:=bit_set[texture.Usage]{.Data}

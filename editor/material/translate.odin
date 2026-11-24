@@ -271,6 +271,7 @@ uv_sets_place :: proc(t:^Translated_Material,e:^Evaluator,roots:[Attribute]u32) 
     for root in roots {append(&read,root)}
     append(&read,..e.fuzz[:])
     append(&read,..e.diffuse_transmission[:])
+    append(&read,..e.subsurface[:])
     for n in nodes_under(g,read[:]) {
         if g.nodes[n].op==.UV && int(g.nodes[n].index) in e.uv_sets {t.uv_sets+={int(g.nodes[n].index)}}
     }
@@ -441,7 +442,10 @@ outputs_read :: proc(blend:Blend,shading:Shading) -> (wanted:bit_set[Attribute])
     #partial switch shading {
     case .Clear_Coat:wanted+={.Clear_Coat,.Clear_Coat_Roughness}
     case .Cloth:wanted+={.Clear_Coat,.Subsurface_Color}
-    case .Subsurface,.Preintegrated_Skin,.Two_Sided_Foliage:wanted+={.Subsurface_Color}
+    case .Subsurface,.Preintegrated_Skin,.Subsurface_Profile:
+        wanted+={.Subsurface_Color}
+        if blend==.Opaque || blend==.Masked {wanted+={.Opacity}}
+    case .Two_Sided_Foliage:wanted+={.Subsurface_Color}
     }
     return
 }
@@ -633,11 +637,8 @@ translate_values :: proc(t:^Translated_Material,e:^Evaluator,roots:[Attribute]u3
     case .Subsurface,.Preintegrated_Skin,.Two_Sided_Foliage:
         if thin || shading==.Two_Sided_Foliage {
             note(e,"shading model %v on a thin surface: the light it scatters through is diffuse transmission",shading)
-        } else {
-            note(e,"shading model %v: Mirai has no volume scattering; the surface is lit as opaque, with the light it scatters as diffuse reflection",shading)
         }
     case .Subsurface_Profile:
-        note(e,"shading model %v: Mirai has no volume scattering; the surface is lit as opaque",shading)
     case .Thin_Translucent:
         note(e,"shading model %v is glass that filters what it lets through by its base color, not by its transmittance color",shading)
     case .Hair,.Eye,.Single_Layer_Water,.Substrate,.From_Expression:
@@ -657,7 +658,7 @@ translate_values :: proc(t:^Translated_Material,e:^Evaluator,roots:[Attribute]u3
     // those that multiply it are taken out of it; a program reads them as
     // data, so its base color keeps them.
     stripped,colors:=strip_vertex_color(g,roots[.Base_Color])
-    base_color:=base_color_lit(e,stripped,scattered,roots,shading,thin)
+    base_color:=base_color_lit(e,stripped,scattered,roots,connected,blend,shading,thin)
     with_colors:=base_color
     if colors==.Multiply_Base_Color {with_colors=NONE}
     // A blended layer lit through a volume of light without its direction
@@ -691,7 +692,7 @@ translate_values :: proc(t:^Translated_Material,e:^Evaluator,roots:[Attribute]u3
         t.vertex_colors=colors
         return
     }
-    if with_colors==NONE {with_colors=base_color_lit(e,roots[.Base_Color],scattered,roots,shading,thin)}
+    if with_colors==NONE {with_colors=base_color_lit(e,roots[.Base_Color],scattered,roots,connected,blend,shading,thin)}
     // A mask map cuts a masked material, never its program. A mask no map
     // holds (it moves, it reads the place or noise) is drawn blended by the
     // program, covering whole where the mask reaches the cutoff and nothing
@@ -791,20 +792,26 @@ strip_vertex_alpha :: proc(g:^Graph,n:u32) -> u32 {
     return NONE
 }
 
-// The base color as Mirai lights it: lit as opaque, the light Unreal
-// scatters back from under the surface by SubsurfaceColor is diffuse
-// reflection, the albedo that reflects as much toward a light at normal
-// incidence added to the base color; a thin surface lets it through.
+// Default subsurface scattering radius in metres (within MATERIAL_SUBSURFACE_RADIUS_MAX = 0.1).
+SUBSURFACE_RADIUS_DEFAULT :: f32(0.015)
+SUBSURFACE_SKIN_RADIUS :: f32(0.012)
+
+// The base color as Mirai lights it: thin / TwoSidedFoliage splits into
+// Material_Diffuse_Transmission; solid Subsurface / PreintegratedSkin /
+// SubsurfaceProfile wires directly to Mirai's Material_Subsurface.
 @(private)
-base_color_lit :: proc(e:^Evaluator,base,scattered:u32,roots:[Attribute]u32,shading:Shading,thin:bool) -> u32 {
+base_color_lit :: proc(e:^Evaluator,base,scattered:u32,roots:[Attribute]u32,connected:[Attribute]bool,blend:Blend,shading:Shading,thin:bool) -> u32 {
     g:=e.g
     base_color:=base
     transmits:=shading==.Two_Sided_Foliage || thin && (shading==.Subsurface || shading==.Preintegrated_Skin)
-    if !transmits && (shading==.Subsurface || shading==.Preintegrated_Skin) && scattered!=NONE {
-        if base_color==NONE {base_color=constant(g,ATTRIBUTE_DEFAULTS[.Base_Color],3)}
-        albedo:=convert(g,scattered,3)
-        if shading==.Subsurface {albedo=binary(g,.Mul,albedo,scalar(g,SUBSURFACE_BACKSCATTER))}
-        base_color=unary(g,.Saturate,binary(g,.Add,convert(g,base_color,3),albedo))
+    if !transmits && (shading==.Subsurface || shading==.Preintegrated_Skin || shading==.Subsurface_Profile) {
+        color:=scattered!=NONE ? unary(g,.Saturate,convert(g,scattered,3)) : constant(g,ATTRIBUTE_DEFAULTS[.Subsurface_Color],3)
+        weight:=scalar(g,1)
+        if (blend==.Opaque || blend==.Masked) && connected[.Opacity] && roots[.Opacity]!=NONE {
+            weight=unary(g,.Saturate,convert(g,roots[.Opacity],1))
+        }
+        radius:=scalar(g,shading==.Subsurface ? SUBSURFACE_RADIUS_DEFAULT : SUBSURFACE_SKIN_RADIUS)
+        e.subsurface={color,weight,radius}
     }
     if transmits {
         if base_color==NONE {base_color=constant(g,ATTRIBUTE_DEFAULTS[.Base_Color],3)}
@@ -1019,6 +1026,27 @@ standard_model :: proc(t:^Translated_Material,e:^Evaluator,base_color,alpha,meta
             image:=MAP_NONE
             for c in 0..<3 {image.channels[c]=component(g,convert(g,color.image,3),u8(c))}
             t.images[.Diffuse_Transmission_Color]=image
+        }
+    }
+    if e.subsurface[0]!=NONE {
+        color,ok:=map_form(g,e.subsurface[0])
+        weight,weight_ok:=map_form(g,e.subsurface[1])
+        radius,radius_ok:=map_form(g,e.subsurface[2])
+        if !ok || !weight_ok || !radius_ok || color.image!=NONE {return refuse(e,"the subsurface")}
+        info.subsurface.weight=clamp(weight.factor.x,0,1)
+        info.subsurface.color={clamp(color.factor.x,0,1),clamp(color.factor.y,0,1),clamp(color.factor.z,0,1)}
+        info.subsurface.radius=clamp(radius.factor.x,0,asset.MATERIAL_SUBSURFACE_RADIUS_MAX)
+        if weight.image!=NONE {
+            transform,uv_ok:=uv_transform(g,weight.uv)
+            if !uv_ok {return refuse(e,"the coordinates of the subsurface weight")}
+            maps[.Subsurface]=transform
+            t.images[.Subsurface]=Map_Image{{NONE,NONE,NONE,convert(g,weight.image,1)}}
+        }
+        if radius.image!=NONE {
+            transform,uv_ok:=uv_transform(g,radius.uv)
+            if !uv_ok {return refuse(e,"the coordinates of the subsurface radius")}
+            maps[.Subsurface_Radius]=transform
+            t.images[.Subsurface_Radius]=Map_Image{{convert(g,radius.image,1),NONE,NONE,NONE}}
         }
     }
     if e.fuzz[0]!=NONE && shading!=.Cloth {

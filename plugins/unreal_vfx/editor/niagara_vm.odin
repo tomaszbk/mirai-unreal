@@ -62,9 +62,40 @@ Niagara_Vm_Function :: struct {
     registered:string,    // the signatures of its name its compilation keeps, for a problem when none matches
 }
 
+// A remapped input register in a frozen VectorVM2 runtime context.
+Niagara_Vm2_Input :: struct {
+    data_set:int,
+    register:Niagara_Register,
+    index:int,
+}
+
+// A remapped output register in a frozen VectorVM2 runtime context.
+Niagara_Vm2_Output :: struct {
+    data_set:int,
+    register:Niagara_Register,
+    dst_reg:int, // 0xFFFF = unused
+}
+
+// External function metadata stored inside a frozen VectorVM2 context.
+Niagara_Vm2_Ext_Fn :: struct {
+    num_inputs,num_outputs:int,
+}
+
+// Frozen VectorVM2 runtime context parsed from ExperimentalContextData / OptimizedByteCode
+// (UE6 VectorVMBridge.cpp ThawRuntimeContext & VectorVMRuntime.cpp VVMBuildMapTableCaches).
+Niagara_Vm2 :: struct {
+    bytecode:[]u8,
+    num_temp_regs:int,
+    const_remap:[]u16,
+    inputs:[]Niagara_Vm2_Input,
+    outputs:[]Niagara_Vm2_Output,
+    ext_fns:[]Niagara_Vm2_Ext_Fn,
+}
+
 // What the decompilation reads of a script.
 Niagara_Vm :: struct {
     code:[]u8,
+    vvm2:Maybe(Niagara_Vm2),
     usage:Niagara_Vm_Usage,
     interpolated:bool,              // its table of constants keeps those of the frame before after its own
     attributes:[]Niagara_Variable,  // of its data set 0, in the order of their registers
@@ -72,6 +103,108 @@ Niagara_Vm :: struct {
     parameters:[]Niagara_Variable,  // its external constants, in the order of their table
     literals:[]Niagara_Variable,    // its literals, with their bytes
     functions:[]Niagara_Vm_Function,
+}
+
+// Parses a frozen VectorVM2 ExperimentalContextData blob.
+@(private)
+niagara_vm2_parse :: proc(data:[]u8,allocator:=context.temp_allocator) -> (ctx:Niagara_Vm2,ok:bool) {
+    if len(data)<64 {return}
+    u16_at :: proc(d:[]u8,off:int) -> u16 {v,_:=endian.get_u16(d[off:],.Little);return v}
+    u32_at :: proc(d:[]u8,off:int) -> u32 {v,_:=endian.get_u32(d[off:],.Little);return v}
+    i32_at :: proc(d:[]u8,off:int) -> i32 {v,_:=endian.get_i32(d[off:],.Little);return v}
+    align16 :: proc(n:int) -> int {return (n+15)&~15}
+
+    num_bytecode:=int(u32_at(data,0))
+    num_temp_regs:=int(u32_at(data,10))
+    num_consts_remapped:=int(u16_at(data,14))
+    num_inputs_remapped:=int(u16_at(data,16))
+    num_input_datasets:=int(u16_at(data,20))
+    num_outputs_remapped:=int(u16_at(data,22))
+    num_ext_fns:=int(u32_at(data,26))
+    if num_bytecode==0 || num_bytecode>len(data) {return}
+    if num_temp_regs>1<<20 || num_ext_fns>1<<16 {return}
+
+    // sizeof(FRuntimeContextData) == 56 -> 16-byte aligned Bytecode starts at 64.
+    at:=64
+    if at+num_bytecode>len(data) {return}
+    ctx.bytecode=data[at:at+num_bytecode]
+    ctx.num_temp_regs=num_temp_regs
+    at+=align16(num_bytecode)
+
+    if num_consts_remapped>0 {
+        need:=num_consts_remapped*2
+        if at+need>len(data) {return}
+        ctx.const_remap=make([]u16,num_consts_remapped,allocator)
+        for i in 0..<num_consts_remapped {ctx.const_remap[i]=u16_at(data,at+i*2)}
+        at+=align16(need)
+    }
+
+    input_remap:[]u16
+    if num_inputs_remapped>0 {
+        need:=num_inputs_remapped*2
+        if at+need>len(data) {return}
+        input_remap=make([]u16,num_inputs_remapped,context.temp_allocator)
+        for i in 0..<num_inputs_remapped {input_remap[i]=u16_at(data,at+i*2)}
+        at+=align16(need)
+    }
+
+    input_offsets:[]u16
+    if num_input_datasets>0 {
+        need:=num_input_datasets*8*2
+        if at+need>len(data) {return}
+        input_offsets=make([]u16,num_input_datasets*8,context.temp_allocator)
+        for i in 0..<num_input_datasets*8 {input_offsets[i]=u16_at(data,at+i*2)}
+        at+=align16(need)
+    }
+
+    if num_inputs_remapped>0 {
+        ctx.inputs=make([]Niagara_Vm2_Input,num_inputs_remapped,allocator)
+        for i in 0..<num_inputs_remapped {ctx.inputs[i]={index=int(input_remap[i])}}
+        for ds in 0..<num_input_datasets {
+            base:=ds*8
+            f_start,i_start,h_start,h_end:=int(input_offsets[base+0]),int(input_offsets[base+1]),int(input_offsets[base+2]),int(input_offsets[base+3])
+            for k in f_start..<min(i_start,num_inputs_remapped) {ctx.inputs[k]={ds,.Float,int(input_remap[k])}}
+            for k in i_start..<min(h_start,num_inputs_remapped) {ctx.inputs[k]={ds,.Int,int(input_remap[k])}}
+            for k in h_start..<min(h_end,num_inputs_remapped) {ctx.inputs[k]={ds,.Half,int(input_remap[k])}}
+        }
+    }
+
+    out_ds:[]u8
+    out_type:[]u16
+    out_dst:[]u16
+    if num_outputs_remapped>0 {
+        if at+num_outputs_remapped>len(data) {return}
+        out_ds=data[at:at+num_outputs_remapped]
+        at+=align16(num_outputs_remapped)
+        need:=num_outputs_remapped*2
+        if at+need>len(data) {return}
+        out_type=make([]u16,num_outputs_remapped,context.temp_allocator)
+        for i in 0..<num_outputs_remapped {out_type[i]=u16_at(data,at+i*2)}
+        at+=align16(need)
+        if at+need>len(data) {return}
+        out_dst=make([]u16,num_outputs_remapped,context.temp_allocator)
+        for i in 0..<num_outputs_remapped {out_dst[i]=u16_at(data,at+i*2)}
+        at+=align16(need)
+        ctx.outputs=make([]Niagara_Vm2_Output,num_outputs_remapped,allocator)
+        for i in 0..<num_outputs_remapped {
+            reg:=Niagara_Register.Float
+            if out_type[i]==1 {reg=.Int} else if out_type[i]==2 {reg=.Half}
+            ctx.outputs[i]={data_set=int(out_ds[i]),register=reg,dst_reg=int(out_dst[i])}
+        }
+    }
+
+    if num_ext_fns>0 {
+        need:=num_ext_fns*16
+        if at+need>len(data) {return}
+        ctx.ext_fns=make([]Niagara_Vm2_Ext_Fn,num_ext_fns,allocator)
+        for i in 0..<num_ext_fns {
+            ctx.ext_fns[i]={
+                num_inputs=int(i32_at(data,at+i*16+8)),
+                num_outputs=int(i32_at(data,at+i*16+12)),
+            }
+        }
+    }
+    return ctx,true
 }
 
 // The type of a variable from the definition its tagged properties keep.
@@ -168,8 +301,47 @@ niagara_parameters_of :: proc(p:^unreal.Package,property:^unreal.Property) -> (l
     return niagara_variables(p,unreal.property_find(p,&fields,"Parameters"),true)
 }
 
+// Reads a FNiagaraVMExecutableByteCode tagged struct ({Data, UncompressedSize}),
+// inflating zlib when compressed.
+@(private)
+niagara_vm_bytecode_field :: proc(p:^unreal.Package,vm_fields:^Struct_Fields,name:string,problems:^[dynamic]string) -> (bytes:[]u8,ok:bool) {
+    code:=struct_field(vm_fields,name)
+    if code==nil {return}
+    fields,fields_error:=unreal.property_tagged_struct(p,code,true,context.temp_allocator)
+    if fields_error.code!=.None {return}
+    data:=unreal.property_find(p,&fields,"Data")
+    if data==nil {return}
+    view,view_error:=unreal.property_array(p,data)
+    if view_error.code!=.None {return}
+    raw,bytes_error:=unreal.span_bytes(p,view.data)
+    if bytes_error.code!=.None || len(raw)==0 {return}
+    unpacked,_:=level.value_real(p,unreal.property_find(p,&fields,"UncompressedSize"),-1)
+    if unpacked>0 {
+        out:=make([]u8,int(unpacked),context.temp_allocator)
+        if stbi.zlib_decode_buffer(raw_data(out),c.int(len(out)),raw_data(raw),c.int(len(raw)))!=c.int(len(out)) {
+            append(problems,"its bytecode does not decompress: its script is not translated")
+            return
+        }
+        raw=out
+    }
+    return raw,true
+}
+
+// Reads a raw u8 array field from CachedScriptVM (ExperimentalContextData / ScriptLiterals).
+@(private)
+niagara_vm_raw_bytes :: proc(p:^unreal.Package,vm_fields:^Struct_Fields,name:string) -> []u8 {
+    prop:=struct_field(vm_fields,name)
+    if prop==nil {return nil}
+    view,view_error:=unreal.property_array(p,prop)
+    if view_error.code!=.None {return nil}
+    raw,raw_error:=unreal.span_bytes(p,view.data)
+    if raw_error.code!=.None {return nil}
+    return raw
+}
+
 // What the decompilation reads of a script, from its CachedScriptVM; false
-// without bytecode. problems says what it cannot read.
+// without bytecode. Supports legacy ByteCode (VectorVM1) and VectorVM2
+// ExperimentalContextData / OptimizedByteCode.
 @(private)
 niagara_vm_read :: proc(d:^level.Document,script:level.Ref,vm_fields:^Struct_Fields,problems:^[dynamic]string) -> (vm:Niagara_Vm,ok:bool) {
     p:=vm_fields.p
@@ -181,27 +353,26 @@ niagara_vm_read :: proc(d:^level.Document,script:level.Ref,vm_fields:^Struct_Fie
     case "SystemSpawnScript","SystemUpdateScript": vm.usage=.System
     case: return
     }
-    // The bytecode, which a save keeps compressed with zlib when that is smaller.
-    code:=struct_field(vm_fields,"ByteCode")
-    if code==nil {return}
-    fields,fields_error:=unreal.property_tagged_struct(p,code,true,context.temp_allocator)
-    if fields_error.code!=.None {return}
-    data:=unreal.property_find(p,&fields,"Data")
-    if data==nil {return}
-    view,view_error:=unreal.property_array(p,data)
-    if view_error.code!=.None {return}
-    bytes,bytes_error:=unreal.span_bytes(p,view.data)
-    if bytes_error.code!=.None || len(bytes)==0 {return}
-    unpacked,_:=level.value_real(p,unreal.property_find(p,&fields,"UncompressedSize"),-1)
-    if unpacked>0 {
-        out:=make([]u8,int(unpacked),context.temp_allocator)
-        if stbi.zlib_decode_buffer(raw_data(out),c.int(len(out)),raw_data(bytes),c.int(len(bytes)))!=c.int(len(out)) {
-            append(problems,"its bytecode does not decompress: its script is not translated")
+    // Prefer ByteCode when present; fall back to VectorVM2 ExperimentalContextData
+    // or OptimizedByteCode (UE5.4+/UE6 cooked builds strip ByteCode.Data).
+    if bytes,has:=niagara_vm_bytecode_field(p,vm_fields,"ByteCode",problems);has {
+        vm.code=bytes
+    } else if exp:=niagara_vm_raw_bytes(p,vm_fields,"ExperimentalContextData");len(exp)>0 {
+        if ctx,parsed:=niagara_vm2_parse(exp,context.temp_allocator);parsed {
+            vm.vvm2=ctx
+        } else {
+            append(problems,"its VectorVM2 ExperimentalContextData is malformed: its script is not translated")
             return
         }
-        bytes=out
+    } else if opt,has_opt:=niagara_vm_bytecode_field(p,vm_fields,"OptimizedByteCode",problems);has_opt {
+        if ctx,parsed:=niagara_vm2_parse(opt,context.temp_allocator);parsed {
+            vm.vvm2=ctx
+        } else {
+            vm.code=opt
+        }
+    } else {
+        return
     }
-    vm.code=bytes
     // The table of constants of an interpolated spawn script keeps the values of the frame before
     // after those of this one.
     vm.interpolated=usage=="ParticleSpawnScriptInterpolated"
@@ -221,6 +392,11 @@ niagara_vm_read :: proc(d:^level.Document,script:level.Ref,vm_fields:^Struct_Fie
     if vm.literals,read=niagara_parameters_of(p,struct_field(vm_fields,"InternalParameters"));!read {
         append(problems,"its literals do not read: its script is not translated")
         return
+    }
+    if len(vm.literals)==0 {
+        if raw:=niagara_vm_raw_bytes(p,vm_fields,"ScriptLiterals");len(raw)>0 {
+            vm.literals=slice.clone([]Niagara_Variable{{name="ScriptLiterals",data=raw}},context.temp_allocator)
+        }
     }
     // The parameters of the instance of the system its script reads as data set 1.
     if vm.usage==.System {
@@ -638,8 +814,8 @@ niagara_vm_output :: proc(w:^Niagara_Vm_Writer,set,index:int,register:Niagara_Re
     if !slice.contains(w.writes[:],line) {append(&w.writes,line)}
 }
 
-// The operations of the VectorVM bytecode a compilation keeps (up
-// to iasf; the merged ones after it are the optimizer's).
+// The operations of VectorVM1 (0..97) and VectorVM2 merged Fortnite opcodes
+// (98..178, matching UE6 VectorVM.h:51-233).
 @(private)
 Niagara_Op :: enum u8 {
     Done,Add,Sub,Mul,Div,Mad,Lerp,Rcp,Rsq,Sqrt,Neg,Abs,Exp,Exp2,Log,Log2,Sin,Cos,Tan,Asin,Acos,Atan,Atan2,
@@ -650,110 +826,426 @@ Niagara_Op :: enum u8 {
     Input_Noadvance_Int,Input_Noadvance_Half,Output_Float,Output_Int,Output_Half,Acquire_Index,
     External_Call,Exec_Index,Noise2d,Noise3d,Enter_Stat_Scope,Exit_Stat_Scope,Update_Id,Acquire_Id,
     Half_To_Float,Fasi,Iasf,
+    // Merged VectorVM2 / Fortnite opcodes (98..178).
+    Exec_Indexf,Exec_Index_Addi,
+    Cmplt_Select,Cmple_Select,Cmpeq_Select,Cmplti_Select,Cmplei_Select,Cmpeqi_Select,
+    Cmplt_Logic_And,Cmple_Logic_And,Cmpgt_Logic_And,Cmpge_Logic_And,Cmpeq_Logic_And,Cmpne_Logic_And,
+    Cmplti_Logic_And,Cmplei_Logic_And,Cmpgti_Logic_And,Cmpgei_Logic_And,Cmpeqi_Logic_And,Cmpnei_Logic_And,
+    Cmplt_Logic_Or,Cmple_Logic_Or,Cmpgt_Logic_Or,Cmpge_Logic_Or,Cmpeq_Logic_Or,Cmpne_Logic_Or,
+    Cmplti_Logic_Or,Cmplei_Logic_Or,Cmpgti_Logic_Or,Cmpgei_Logic_Or,Cmpeqi_Logic_Or,Cmpnei_Logic_Or,
+    Mad_Add,Mad_Sub0,Mad_Sub1,Mad_Mul,Mad_Sqrt,Mad_Mad0,Mad_Mad1,
+    Mul_Mad0,Mul_Mad1,Mul_Add,Mul_Sub0,Mul_Sub1,Mul_Mul,Mul_Max,Mul_2x,
+    Add_Mad1,Add_Add,Sub_Cmplt1,Sub_Neg,Sub_Mul,Div_Mad0,Div_F2i,Div_Mul,
+    Muli_Addi,Addi_Bit_Rshift,Addi_Muli,B2i_2x,
+    I2f_Div0,I2f_Div1,I2f_Mul,I2f_Mad0,I2f_Mad1,
+    F2i_Select1,F2i_Maxi,F2i_Addi,Fmod_Add,Bit_And_I2f,Bit_Rshift_Bit_And,
+    Neg_Cmplt,Bit_Or_Muli,Bit_Lshift_Bit_Or,Random_Add,Random_2x,Max_F2i,
+    Select_Mul,Select_Add,Sin_Cos,Output_Float_From_Half,Output_Half_From_Half,
 }
 
-// The inputs of an operation over registers: [op][constant flags][input...][output], each a u16.
+// The inputs of an operation over registers.
 @(private)
 niagara_op_inputs :: proc(op:Niagara_Op) -> int {
     #partial switch op {
     case .Rcp,.Rsq,.Sqrt,.Neg,.Abs,.Exp,.Exp2,.Log,.Log2,.Sin,.Cos,.Tan,.Asin,.Acos,.Atan,.Ceil,.Floor,.Frac,.Trunc,
-         .Round,.Sign,.Random,.Noise,.Absi,.Negi,.Signi,.Randomi,.Bit_Not,.Logic_Not,.F2i,.I2f,.F2b,.B2f,.I2b,.B2i,.Fasi,.Iasf:
+         .Round,.Sign,.Random,.Noise,.Absi,.Negi,.Signi,.Randomi,.Bit_Not,.Logic_Not,.F2i,.I2f,.F2b,.B2f,.I2b,.B2i,
+         .Half_To_Float,.Fasi,.Iasf,.Exec_Index_Addi,.B2i_2x,.Random_2x,.Sin_Cos:
         return 1
     case .Add,.Sub,.Mul,.Div,.Atan2,.Fmod,.Min,.Max,.Pow,.Step,.Cmplt,.Cmple,.Cmpgt,.Cmpge,.Cmpeq,.Cmpneq,.Addi,.Subi,
          .Muli,.Divi,.Mini,.Maxi,.Cmplti,.Cmplei,.Cmpgti,.Cmpgei,.Cmpeqi,.Cmpneqi,.Bit_And,.Bit_Or,.Bit_Xor,.Bit_Lshift,
-         .Bit_Rshift,.Logic_And,.Logic_Or,.Logic_Xor,.Noise2d:
+         .Bit_Rshift,.Logic_And,.Logic_Or,.Logic_Xor,.Noise2d,
+         .Mul_2x,.Sub_Neg,.Div_F2i,.I2f_Div0,.I2f_Div1,.I2f_Mul,.F2i_Maxi,.F2i_Addi,.Bit_And_I2f,.Neg_Cmplt,.Random_Add,.Max_F2i:
         return 2
-    case .Mad,.Lerp,.Clamp,.Select,.Clampi,.Noise3d:
+    case .Mad,.Lerp,.Clamp,.Select,.Clampi,.Noise3d,
+         .Cmplt_Logic_And,.Cmple_Logic_And,.Cmpgt_Logic_And,.Cmpge_Logic_And,.Cmpeq_Logic_And,.Cmpne_Logic_And,
+         .Cmplti_Logic_And,.Cmplei_Logic_And,.Cmpgti_Logic_And,.Cmpgei_Logic_And,.Cmpeqi_Logic_And,.Cmpnei_Logic_And,
+         .Cmplt_Logic_Or,.Cmple_Logic_Or,.Cmpgt_Logic_Or,.Cmpge_Logic_Or,.Cmpeq_Logic_Or,.Cmpne_Logic_Or,
+         .Cmplti_Logic_Or,.Cmplei_Logic_Or,.Cmpgti_Logic_Or,.Cmpgei_Logic_Or,.Cmpeqi_Logic_Or,.Cmpnei_Logic_Or,
+         .Mad_Sqrt,.Mul_Add,.Mul_Sub0,.Mul_Sub1,.Mul_Mul,.Mul_Max,.Add_Add,.Sub_Cmplt1,.Sub_Mul,.Div_Mul,
+         .Muli_Addi,.Addi_Bit_Rshift,.Addi_Muli,.I2f_Mad0,.I2f_Mad1,.F2i_Select1,.Fmod_Add,
+         .Bit_Rshift_Bit_And,.Bit_Or_Muli,.Bit_Lshift_Bit_Or:
         return 3
+    case .Cmplt_Select,.Cmple_Select,.Cmpeq_Select,.Cmplti_Select,.Cmplei_Select,.Cmpeqi_Select,
+         .Mad_Add,.Mad_Sub0,.Mad_Sub1,.Mad_Mul,.Mul_Mad0,.Mul_Mad1,.Add_Mad1,.Div_Mad0,.Select_Mul,.Select_Add:
+        return 4
+    case .Mad_Mad0,.Mad_Mad1:
+        return 5
     }
     return 0
 }
 
-// The bits an operation over registers leaves, as the VM computes them: a division, root or power of a value near zero is zero, a
-// comparison all ones or zero, a select bitwise, a shift logical, frac what
-// trunc leaves, the noise zero.
+// Register outputs of an operation (2 for paired VectorVM2 merged ops).
 @(private)
-niagara_op_expression :: proc(op:Niagara_Op,a,b,c:string) -> string {
+niagara_op_outputs :: proc(op:Niagara_Op) -> int {
+    #partial switch op {
+    case .Mul_2x,.B2i_2x,.Random_2x,.Sin_Cos: return 2
+    }
+    return niagara_op_inputs(op)>0 ? 1 : 0
+}
+
+// The bits an operation over registers leaves, as the VM computes them (UE6 VectorVMRuntime.cpp).
+// Returns expr0 and, for 2-output merged ops, expr1.
+@(private)
+niagara_op_expressions :: proc(op:Niagara_Op,args:[]string) -> (e0,e1:string) {
+    a:=len(args)>0?args[0]:"0u"
+    b:=len(args)>1?args[1]:"0u"
+    c:=len(args)>2?args[2]:"0u"
+    d:=len(args)>3?args[3]:"0u"
+    e:=len(args)>4?args[4]:"0u"
     F :: proc(x:string) -> string {return fmt.tprintf("asfloat(%s)",x)}
     I :: proc(x:string) -> string {return fmt.tprintf("asint(%s)",x)}
-    f :: proc(format:string,args:..any) -> string {return fmt.tprintf("asuint(%s)",fmt.tprintf(format,..args))}
-    mask :: proc(format:string,args:..any) -> string {return fmt.tprintf("((%s) ? 0xFFFFFFFFu : 0u)",fmt.tprintf(format,..args))}
+    f :: proc(format:string,vals:..any) -> string {return fmt.tprintf("asuint(%s)",fmt.tprintf(format,..vals))}
+    mask :: proc(format:string,vals:..any) -> string {return fmt.tprintf("((%s) ? 0xFFFFFFFFu : 0u)",fmt.tprintf(format,..vals))}
+    sel :: proc(cond,t_val,f_val:string) -> string {return fmt.tprintf("((%s & %s) | (~%s & %s))",cond,t_val,cond,f_val)}
+    divf :: proc(x,y:string) -> string {return fmt.tprintf("(abs(%s) > 1e-8 ? %s / %s : 0.0)",y,x,y)}
     #partial switch op {
-    case .Add: return f("%s + %s",F(a),F(b))
-    case .Sub: return f("%s - %s",F(a),F(b))
-    case .Mul: return f("%s * %s",F(a),F(b))
-    case .Div: return f("abs(%s) > 1e-8 ? %s / %s : 0.0",F(b),F(a),F(b))
-    case .Mad: return f("%s * %s + %s",F(a),F(b),F(c))
-    case .Lerp: return f("%s + (%s - %s) * %s",F(a),F(b),F(a),F(c))
-    case .Rcp: return f("abs(%s) > 1e-8 ? 1.0 / %s : 0.0",F(a),F(a))
-    case .Rsq: return f("%s > 1e-8 ? rsqrt(%s) : 0.0",F(a),F(a))
-    case .Sqrt: return f("%s > 1e-8 ? sqrt(%s) : 0.0",F(a),F(a))
-    case .Neg: return f("-%s",F(a))
-    case .Abs: return f("abs(%s)",F(a))
-    case .Exp: return f("exp(%s)",F(a))
-    case .Exp2: return f("exp2(%s)",F(a))
-    case .Log: return f("%s > 0.0 ? log(%s) : 0.0",F(a),F(a))
-    case .Log2: return f("log2(%s)",F(a))
-    case .Sin: return f("sin(%s)",F(a))
-    case .Cos: return f("cos(%s)",F(a))
-    case .Tan: return f("tan(%s)",F(a))
-    case .Asin: return f("asin(clamp(%s, -1.0, 1.0))",F(a))
-    case .Acos: return f("acos(clamp(%s, -1.0, 1.0))",F(a))
-    case .Atan: return f("atan(%s)",F(a))
-    case .Atan2: return f("atan2(%s, %s)",F(a),F(b))
-    case .Ceil: return f("ceil(%s)",F(a))
-    case .Floor: return f("floor(%s)",F(a))
-    case .Fmod: return f("fmod(%s, %s)",F(a),F(b))
-    case .Frac: return f("%s - trunc(%s)",F(a),F(a))
-    case .Trunc: return f("trunc(%s)",F(a))
-    case .Clamp: return f("min(max(%s, %s), %s)",F(a),F(b),F(c))
-    case .Min: return f("min(%s, %s)",F(a),F(b))
-    case .Max: return f("max(%s, %s)",F(a),F(b))
-    case .Pow: return f("%s > 1e-8 ? pow(%s, %s) : 0.0",F(a),F(a),F(b))
-    case .Round: return f("round(%s)",F(a))
-    case .Sign: return f("%s >= 0.0 ? 1.0 : -1.0",F(a))
-    case .Step: return f("%s - %s >= 0.0 ? 1.0 : 0.0",F(b),F(a))
-    case .Random: return f("rand(%s)",F(a))
-    case .Noise,.Noise2d,.Noise3d: return "0u"
-    case .Cmplt: return mask("%s < %s",F(a),F(b))
-    case .Cmple: return mask("%s <= %s",F(a),F(b))
-    case .Cmpgt: return mask("%s > %s",F(a),F(b))
-    case .Cmpge: return mask("%s >= %s",F(a),F(b))
-    case .Cmpeq: return mask("%s == %s",F(a),F(b))
-    case .Cmpneq: return mask("%s != %s",F(a),F(b))
-    case .Select: return fmt.tprintf("(%s & %s) | (~%s & %s)",a,b,a,c)
-    case .Addi: return f("%s + %s",I(a),I(b))
-    case .Subi: return f("%s - %s",I(a),I(b))
-    case .Muli: return f("%s * %s",I(a),I(b))
-    case .Divi: return f("niagara_vm_divi(%s, %s)",I(a),I(b))
-    case .Clampi: return f("min(max(%s, %s), %s)",I(a),I(b),I(c))
-    case .Mini: return f("min(%s, %s)",I(a),I(b))
-    case .Maxi: return f("max(%s, %s)",I(a),I(b))
-    case .Absi: return f("abs(%s)",I(a))
-    case .Negi: return f("-%s",I(a))
-    case .Signi: return f("%s >= 0 ? 1 : -1",I(a))
-    case .Randomi: return f("int(rand(float(%s)))",I(a))
-    case .Cmplti: return mask("%s < %s",I(a),I(b))
-    case .Cmplei: return mask("%s <= %s",I(a),I(b))
-    case .Cmpgti: return mask("%s > %s",I(a),I(b))
-    case .Cmpgei: return mask("%s >= %s",I(a),I(b))
-    case .Cmpeqi: return mask("%s == %s",I(a),I(b))
-    case .Cmpneqi: return mask("%s != %s",I(a),I(b))
-    case .Bit_And,.Logic_And: return fmt.tprintf("%s & %s",a,b)
-    case .Bit_Or,.Logic_Or: return fmt.tprintf("%s | %s",a,b)
-    case .Bit_Xor,.Logic_Xor: return fmt.tprintf("%s ^ %s",a,b)
-    case .Bit_Not,.Logic_Not: return fmt.tprintf("~%s",a)
-    case .Bit_Lshift: return fmt.tprintf("%s << %s",a,b)
-    case .Bit_Rshift: return fmt.tprintf("%s >> %s",a,b)
-    case .F2i: return f("int(%s)",F(a))
-    case .I2f: return f("float(%s)",I(a))
-    case .F2b: return mask("%s > 0.0",F(a))
-    case .B2f: return fmt.tprintf("%s & 0x3f800000u",a)
-    case .I2b: return mask("%s > 0",I(a))
-    case .B2i: return fmt.tprintf("%s & 1u",a)
-    case .Fasi,.Iasf: return a
+    case .Add: return f("%s + %s",F(a),F(b)),""
+    case .Sub: return f("%s - %s",F(a),F(b)),""
+    case .Mul: return f("%s * %s",F(a),F(b)),""
+    case .Div: return f("abs(%s) > 1e-8 ? %s / %s : 0.0",F(b),F(a),F(b)),""
+    case .Mad: return f("%s * %s + %s",F(a),F(b),F(c)),""
+    case .Lerp: return f("%s + (%s - %s) * %s",F(a),F(b),F(a),F(c)),""
+    case .Rcp: return f("abs(%s) > 1e-8 ? 1.0 / %s : 0.0",F(a),F(a)),""
+    case .Rsq: return f("%s > 1e-8 ? rsqrt(%s) : 0.0",F(a),F(a)),""
+    case .Sqrt: return f("%s > 1e-8 ? sqrt(%s) : 0.0",F(a),F(a)),""
+    case .Neg: return f("-%s",F(a)),""
+    case .Abs: return f("abs(%s)",F(a)),""
+    case .Exp: return f("exp(%s)",F(a)),""
+    case .Exp2: return f("exp2(%s)",F(a)),""
+    case .Log: return f("%s > 0.0 ? log(%s) : 0.0",F(a),F(a)),""
+    case .Log2: return f("log2(%s)",F(a)),""
+    case .Sin: return f("sin(%s)",F(a)),""
+    case .Cos: return f("cos(%s)",F(a)),""
+    case .Tan: return f("tan(%s)",F(a)),""
+    case .Asin: return f("asin(clamp(%s, -1.0, 1.0))",F(a)),""
+    case .Acos: return f("acos(clamp(%s, -1.0, 1.0))",F(a)),""
+    case .Atan: return f("atan(%s)",F(a)),""
+    case .Atan2: return f("atan2(%s, %s)",F(a),F(b)),""
+    case .Ceil: return f("ceil(%s)",F(a)),""
+    case .Floor: return f("floor(%s)",F(a)),""
+    case .Fmod: return f("fmod(%s, %s)",F(a),F(b)),""
+    case .Frac: return f("%s - trunc(%s)",F(a),F(a)),""
+    case .Trunc: return f("trunc(%s)",F(a)),""
+    case .Clamp: return f("min(max(%s, %s), %s)",F(a),F(b),F(c)),""
+    case .Min: return f("min(%s, %s)",F(a),F(b)),""
+    case .Max: return f("max(%s, %s)",F(a),F(b)),""
+    case .Pow: return f("%s > 1e-8 ? pow(%s, %s) : 0.0",F(a),F(a),F(b)),""
+    case .Round: return f("round(%s)",F(a)),""
+    case .Sign: return f("%s >= 0.0 ? 1.0 : -1.0",F(a)),""
+    case .Step: return f("%s - %s >= 0.0 ? 1.0 : 0.0",F(b),F(a)),""
+    case .Random: return f("rand(%s)",F(a)),""
+    case .Noise,.Noise2d,.Noise3d: return "0u",""
+    case .Cmplt: return mask("%s < %s",F(a),F(b)),""
+    case .Cmple: return mask("%s <= %s",F(a),F(b)),""
+    case .Cmpgt: return mask("%s > %s",F(a),F(b)),""
+    case .Cmpge: return mask("%s >= %s",F(a),F(b)),""
+    case .Cmpeq: return mask("%s == %s",F(a),F(b)),""
+    case .Cmpneq: return mask("%s != %s",F(a),F(b)),""
+    case .Select: return fmt.tprintf("(%s & %s) | (~%s & %s)",a,b,a,c),""
+    case .Addi: return f("%s + %s",I(a),I(b)),""
+    case .Subi: return f("%s - %s",I(a),I(b)),""
+    case .Muli: return f("%s * %s",I(a),I(b)),""
+    case .Divi: return f("niagara_vm_divi(%s, %s)",I(a),I(b)),""
+    case .Clampi: return f("min(max(%s, %s), %s)",I(a),I(b),I(c)),""
+    case .Mini: return f("min(%s, %s)",I(a),I(b)),""
+    case .Maxi: return f("max(%s, %s)",I(a),I(b)),""
+    case .Absi: return f("abs(%s)",I(a)),""
+    case .Negi: return f("-%s",I(a)),""
+    case .Signi: return f("%s >= 0 ? 1 : -1",I(a)),""
+    case .Randomi: return f("int(rand(float(%s)))",I(a)),""
+    case .Cmplti: return mask("%s < %s",I(a),I(b)),""
+    case .Cmplei: return mask("%s <= %s",I(a),I(b)),""
+    case .Cmpgti: return mask("%s > %s",I(a),I(b)),""
+    case .Cmpgei: return mask("%s >= %s",I(a),I(b)),""
+    case .Cmpeqi: return mask("%s == %s",I(a),I(b)),""
+    case .Cmpneqi: return mask("%s != %s",I(a),I(b)),""
+    case .Bit_And,.Logic_And: return fmt.tprintf("%s & %s",a,b),""
+    case .Bit_Or,.Logic_Or: return fmt.tprintf("%s | %s",a,b),""
+    case .Bit_Xor,.Logic_Xor: return fmt.tprintf("%s ^ %s",a,b),""
+    case .Bit_Not,.Logic_Not: return fmt.tprintf("~%s",a),""
+    case .Bit_Lshift: return fmt.tprintf("%s << %s",a,b),""
+    case .Bit_Rshift: return fmt.tprintf("%s >> %s",a,b),""
+    case .F2i: return f("int(%s)",F(a)),""
+    case .I2f: return f("float(%s)",I(a)),""
+    case .F2b: return mask("%s > 0.0",F(a)),""
+    case .B2f: return fmt.tprintf("%s & 0x3f800000u",a),""
+    case .I2b: return mask("%s > 0",I(a)),""
+    case .B2i: return fmt.tprintf("%s & 1u",a),""
+    case .Half_To_Float,.Fasi,.Iasf: return a,""
+    // Merged VectorVM2 / Fortnite opcodes (98..176, UE6 VectorVMRuntime.cpp:2063-2140).
+    case .Exec_Index_Addi: return f("ExecIndex() + %s",I(a)),""
+    case .Cmplt_Select: return sel(mask("%s < %s",F(a),F(b)),c,d),""
+    case .Cmple_Select: return sel(mask("%s <= %s",F(a),F(b)),c,d),""
+    case .Cmpeq_Select: return sel(mask("%s == %s",F(a),F(b)),c,d),""
+    case .Cmplti_Select: return sel(mask("%s < %s",I(a),I(b)),c,d),""
+    case .Cmplei_Select: return sel(mask("%s <= %s",I(a),I(b)),c,d),""
+    case .Cmpeqi_Select: return sel(mask("%s == %s",I(a),I(b)),c,d),""
+    case .Cmplt_Logic_And: return fmt.tprintf("(%s & %s)",mask("%s < %s",F(a),F(b)),c),""
+    case .Cmple_Logic_And: return fmt.tprintf("(%s & %s)",mask("%s <= %s",F(a),F(b)),c),""
+    case .Cmpgt_Logic_And: return fmt.tprintf("(%s & %s)",mask("%s > %s",F(a),F(b)),c),""
+    case .Cmpge_Logic_And: return fmt.tprintf("(%s & %s)",mask("%s >= %s",F(a),F(b)),c),""
+    case .Cmpeq_Logic_And: return fmt.tprintf("(%s & %s)",mask("%s == %s",F(a),F(b)),c),""
+    case .Cmpne_Logic_And: return fmt.tprintf("(%s & %s)",mask("%s != %s",F(a),F(b)),c),""
+    case .Cmplti_Logic_And: return fmt.tprintf("(%s & %s)",mask("%s < %s",I(a),I(b)),c),""
+    case .Cmplei_Logic_And: return fmt.tprintf("(%s & %s)",mask("%s <= %s",I(a),I(b)),c),""
+    case .Cmpgti_Logic_And: return fmt.tprintf("(%s & %s)",mask("%s > %s",I(a),I(b)),c),""
+    case .Cmpgei_Logic_And: return fmt.tprintf("(%s & %s)",mask("%s >= %s",I(a),I(b)),c),""
+    case .Cmpeqi_Logic_And: return fmt.tprintf("(%s & %s)",mask("%s == %s",I(a),I(b)),c),""
+    case .Cmpnei_Logic_And: return fmt.tprintf("(%s & %s)",mask("%s != %s",I(a),I(b)),c),""
+    case .Cmplt_Logic_Or: return fmt.tprintf("(%s | %s)",mask("%s < %s",F(a),F(b)),c),""
+    case .Cmple_Logic_Or: return fmt.tprintf("(%s | %s)",mask("%s <= %s",F(a),F(b)),c),""
+    case .Cmpgt_Logic_Or: return fmt.tprintf("(%s | %s)",mask("%s > %s",F(a),F(b)),c),""
+    case .Cmpge_Logic_Or: return fmt.tprintf("(%s | %s)",mask("%s >= %s",F(a),F(b)),c),""
+    case .Cmpeq_Logic_Or: return fmt.tprintf("(%s | %s)",mask("%s == %s",F(a),F(b)),c),""
+    case .Cmpne_Logic_Or: return fmt.tprintf("(%s | %s)",mask("%s != %s",F(a),F(b)),c),""
+    case .Cmplti_Logic_Or: return fmt.tprintf("(%s | %s)",mask("%s < %s",I(a),I(b)),c),""
+    case .Cmplei_Logic_Or: return fmt.tprintf("(%s | %s)",mask("%s <= %s",I(a),I(b)),c),""
+    case .Cmpgti_Logic_Or: return fmt.tprintf("(%s | %s)",mask("%s > %s",I(a),I(b)),c),""
+    case .Cmpgei_Logic_Or: return fmt.tprintf("(%s | %s)",mask("%s >= %s",I(a),I(b)),c),""
+    case .Cmpeqi_Logic_Or: return fmt.tprintf("(%s | %s)",mask("%s == %s",I(a),I(b)),c),""
+    case .Cmpnei_Logic_Or: return fmt.tprintf("(%s | %s)",mask("%s != %s",I(a),I(b)),c),""
+    case .Mad_Add: return f("(%s * %s + %s) + %s",F(a),F(b),F(c),F(d)),""
+    case .Mad_Sub0: return f("(%s * %s + %s) - %s",F(a),F(b),F(c),F(d)),""
+    case .Mad_Sub1: return f("%s - (%s * %s + %s)",F(d),F(a),F(b),F(c)),""
+    case .Mad_Mul: return f("(%s * %s + %s) * %s",F(a),F(b),F(c),F(d)),""
+    case .Mad_Sqrt: return f("(%s * %s + %s) > 1e-8 ? sqrt(%s * %s + %s) : 0.0",F(a),F(b),F(c),F(a),F(b),F(c)),""
+    case .Mad_Mad0: return f("%s * %s + (%s * %s + %s)",F(d),F(e),F(a),F(b),F(c)),""
+    case .Mad_Mad1: return f("(%s * %s + %s) * %s + %s",F(a),F(b),F(c),F(d),F(e)),""
+    case .Mul_Mad0: return f("(%s * %s) * %s + %s",F(a),F(b),F(c),F(d)),""
+    case .Mul_Mad1: return f("%s * %s + (%s * %s)",F(c),F(d),F(a),F(b)),""
+    case .Mul_Add: return f("%s * %s + %s",F(a),F(b),F(c)),""
+    case .Mul_Sub0: return f("%s * %s - %s",F(a),F(b),F(c)),""
+    case .Mul_Sub1: return f("%s - %s * %s",F(c),F(a),F(b)),""
+    case .Mul_Mul: return f("(%s * %s) * %s",F(a),F(b),F(c)),""
+    case .Mul_Max: return f("max(%s * %s, %s)",F(a),F(b),F(c)),""
+    case .Mul_2x:
+        m:=f("%s * %s",F(a),F(b))
+        return m,m
+    case .Add_Mad1: return f("%s * %s + (%s + %s)",F(c),F(d),F(a),F(b)),""
+    case .Add_Add: return f("(%s + %s) + %s",F(a),F(b),F(c)),""
+    case .Sub_Cmplt1: return mask("%s < (%s - %s)",F(c),F(a),F(b)),""
+    case .Sub_Neg: return f("-(%s - %s)",F(a),F(b)),""
+    case .Sub_Mul: return f("(%s - %s) * %s",F(a),F(b),F(c)),""
+    case .Div_Mad0: return f("%s * %s + %s",divf(F(a),F(b)),F(c),F(d)),""
+    case .Div_F2i: return f("int(%s)",divf(F(a),F(b))),""
+    case .Div_Mul: return f("%s * %s",divf(F(a),F(b)),F(c)),""
+    case .Muli_Addi: return f("%s * %s + %s",I(a),I(b),I(c)),""
+    case .Addi_Bit_Rshift: return fmt.tprintf("(asuint(%s + %s) >> %s)",I(a),I(b),c),""
+    case .Addi_Muli: return f("(%s + %s) * %s",I(a),I(b),I(c)),""
+    case .B2i_2x:
+        v:=fmt.tprintf("(%s & 1u)",a)
+        return v,v
+    case .I2f_Div0: return f("%s",divf(fmt.tprintf("float(%s)",I(a)),F(b))),""
+    case .I2f_Div1: return f("%s",divf(F(b),fmt.tprintf("float(%s)",I(a)))),""
+    case .I2f_Mul: return f("float(%s) * %s",I(a),F(b)),""
+    case .I2f_Mad0: return f("float(%s) * %s + %s",I(a),F(b),F(c)),""
+    case .I2f_Mad1: return f("%s * %s + float(%s)",F(a),F(b),I(c)),""
+    case .F2i_Select1: return sel(a,f("int(%s)",F(b)),c),""
+    case .F2i_Maxi: return f("max(int(%s), %s)",F(a),I(b)),""
+    case .F2i_Addi: return f("int(%s) + %s",F(a),I(b)),""
+    case .Fmod_Add: return f("fmod(%s, %s) + %s",F(a),F(b),F(c)),""
+    case .Bit_And_I2f: return f("float(asint(%s & %s))",a,b),""
+    case .Bit_Rshift_Bit_And: return fmt.tprintf("((%s >> %s) & %s)",a,b,c),""
+    case .Neg_Cmplt: return mask("(-%s) < %s",F(a),F(b)),""
+    case .Bit_Or_Muli: return f("asint(%s | %s) * %s",a,b,I(c)),""
+    case .Bit_Lshift_Bit_Or: return fmt.tprintf("((%s << %s) | %s)",a,b,c),""
+    case .Random_Add: return f("rand(%s) + %s",F(a),F(b)),""
+    case .Random_2x: return f("rand(%s)",F(a)),f("rand(%s)",F(a))
+    case .Max_F2i: return f("int(max(%s, %s))",F(a),F(b)),""
+    case .Select_Mul: return f("asfloat(%s) * %s",sel(a,b,c),F(d)),""
+    case .Select_Add: return f("asfloat(%s) + %s",sel(a,b,c),F(d)),""
+    case .Sin_Cos: return f("sin(%s)",F(a)),f("cos(%s)",F(a))
     }
-    return "0u"
+    return "0u",""
+}
+
+// Emits a VectorVM2 call whose arguments use unified register indices.
+@(private)
+niagara_vm2_call :: proc(w:^Niagara_Vm_Writer,fn:^Niagara_Vm_Function,in_exprs:[]string,out_regs:[]int) {
+    if !fn.found {
+        niagara_vm_problem(w,"%s.%s reads %d registers and writes %d, which no signature its compilation keeps matches (%s): it gives zero",fn.owner,fn.name,fn.inputs,fn.outputs,fn.registered==""?"none":strings.trim_space(fn.registered))
+        for o in out_regs {if o!=0xFFFF {fmt.sbprintf(&w.body,"    v%d = 0u;\n",o)}}
+        return
+    }
+    prototype:=strings.builder_make(context.temp_allocator)
+    fmt.sbprintf(&prototype,"void %s(",fn.symbol)
+    named:=make([dynamic]string,context.temp_allocator)
+    for p,i in fn.params {
+        if i>0 {strings.write_string(&prototype,", ")}
+        name:=strings.concatenate({i>=fn.ins?"Out_":"In_",niagara_symbol(p.name)},context.temp_allocator)
+        if slice.contains(named[:],name) {name=fmt.tprintf("%s_%d",name,i)}
+        append(&named,name)
+        fmt.sbprintf(&prototype,"%s%s %s",i>=fn.ins?"out ":"",p.type.hlsl,name)
+    }
+    strings.write_string(&prototype,");")
+    if text:=strings.to_string(prototype);!slice.contains(w.prototypes[:],text) {append(&w.prototypes,text)}
+    strings.write_string(&w.body,"    {\n")
+    k:=1
+    for p,i in fn.params {
+        fmt.sbprintf(&w.body,"        %s a%d = (%s)0;\n",p.type.hlsl,i,p.type.hlsl)
+        if i>=fn.ins {continue}
+        for c in p.type.components {
+            bits:=k<len(in_exprs)?in_exprs[k]:"0u"
+            k+=1
+            fmt.sbprintf(&w.body,"        a%d%s = %s;\n",i,c.suffix,niagara_vm_value(bits,c))
+        }
+    }
+    fmt.sbprintf(&w.body,"        %s(",fn.symbol)
+    for _,i in fn.params {fmt.sbprintf(&w.body,"%sa%d",i>0?", ":"",i)}
+    strings.write_string(&w.body,");\n")
+    k=0
+    for p,i in fn.params[fn.ins:] {
+        for c in p.type.components {
+            o:=k<len(out_regs)?out_regs[k]:0xFFFF
+            k+=1
+            if o!=0xFFFF {fmt.sbprintf(&w.body,"        v%d = %s;\n",o,niagara_vm_bits(fmt.tprintf("a%d%s",fn.ins+i,c.suffix),c))}
+        }
+    }
+    strings.write_string(&w.body,"    }\n")
+}
+
+// Decompiles a frozen VectorVM2 script (ExperimentalContextData / OptimizedByteCode)
+// into the same HLSL shape as niagara_vm_hlsl.
+@(private)
+niagara_vm2_hlsl :: proc(w:^Niagara_Vm_Writer,ctx:^Niagara_Vm2,entry,map_name:string,problems:^[dynamic]string) -> (text:string,ok:bool) {
+    code:=ctx.bytecode
+    at:=0
+    const_base:=ctx.num_temp_regs
+    input_base:=const_base+len(ctx.const_remap)
+    output_base:=input_base+len(ctx.inputs)*2
+
+    u16_at :: proc(code:[]u8,at:int,bad:^bool) -> int {
+        if at+2>len(code) {bad^=true;return 0}
+        v,_:=endian.get_u16(code[at:],.Little)
+        return int(v)
+    }
+    reg :: proc(w:^Niagara_Vm_Writer,index:int) -> string {
+        w.registers=max(w.registers,index+1)
+        return fmt.tprintf("v%d",index)
+    }
+    read_reg :: proc(w:^Niagara_Vm_Writer,ctx:^Niagara_Vm2,const_base,input_base:int,r:int) -> string {
+        if r==0xFFFF {return "0u"}
+        if r>=const_base && r<const_base+len(ctx.const_remap) {
+            return niagara_vm_constant(w,int(ctx.const_remap[r-const_base])*4)
+        }
+        if r>=input_base && r<input_base+len(ctx.inputs) {
+            inp:=ctx.inputs[r-input_base]
+            return niagara_vm_input(w,inp.data_set,inp.index,inp.register)
+        }
+        w.registers=max(w.registers,r+1)
+        return fmt.tprintf("v%d",r)
+    }
+
+    decode: for at<len(code) {
+        if code[at]>u8(Niagara_Op.Output_Half_From_Half) {
+            append(problems,fmt.tprintf("its bytecode has an operation %d at byte %d the translation does not know: its script is not translated",code[at],at))
+            return
+        }
+        op:=Niagara_Op(code[at])
+        at+=1
+        bad:=false
+        #partial switch op {
+        case .Done:
+            break decode
+        case .Exec_Index:
+            dst:=u16_at(code,at,&bad)
+            at+=2
+            if bad {break}
+            fmt.sbprintf(&w.body,"    %s = asuint(ExecIndex());\n",reg(w,dst))
+        case .Exec_Indexf:
+            dst:=u16_at(code,at,&bad)
+            at+=2
+            if bad {break}
+            fmt.sbprintf(&w.body,"    %s = asuint(float(ExecIndex()));\n",reg(w,dst))
+        case .Output_Float,.Output_Int,.Output_Half,.Output_Float_From_Half,.Output_Half_From_Half:
+            if at+2>len(code) {bad=true;break}
+            num_loops:=int(code[at])
+            ds_ins:=int(code[at+1])
+            at+=2
+            if at+num_loops*4>len(code) {bad=true;break}
+            srcs:=make([]int,num_loops,context.temp_allocator)
+            dsts:=make([]int,num_loops,context.temp_allocator)
+            for j in 0..<num_loops {srcs[j]=u16_at(code,at+j*2,&bad)}
+            at+=num_loops*2
+            for j in 0..<num_loops {dsts[j]=u16_at(code,at+j*2,&bad)}
+            at+=num_loops*2
+            if bad {break}
+            def_reg:=Niagara_Register.Float
+            if op==.Output_Int {def_reg=.Int} else if op==.Output_Half || op==.Output_Half_From_Half {def_reg=.Half}
+            for j in 0..<num_loops {
+                serial:=dsts[j]-output_base
+                ds,rkind,dst_reg:=ds_ins,def_reg,dsts[j]
+                if serial>=0 && serial<len(ctx.outputs) {
+                    o:=ctx.outputs[serial]
+                    if o.dst_reg==0xFFFF {continue}
+                    ds,rkind,dst_reg=o.data_set,o.register,o.dst_reg
+                }
+                niagara_vm_output(w,ds,dst_reg,rkind,read_reg(w,ctx,const_base,input_base,srcs[j]))
+            }
+        case .Acquire_Index:
+            in_reg:=u16_at(code,at,&bad)
+            if at+3>len(code) {bad=true;break}
+            ds:=int(code[at+2])
+            at+=3
+            if bad {break}
+            if ds==0 && w.vm.usage!=.System {
+                fmt.sbprintf(&w.body,"    %s = (%s != 0u);\n",niagara_vm_path(w,"DataInstance.Alive","bool"),read_reg(w,ctx,const_base,input_base,in_reg))
+            }
+        case .Update_Id,.Acquire_Id:
+            r0,r1:=u16_at(code,at,&bad),u16_at(code,at+2,&bad)
+            if at+5>len(code) {bad=true;break}
+            at+=5
+            if bad {break}
+            if op==.Acquire_Id {
+                fmt.sbprintf(&w.body,"    %s = asuint(niagara_id.x);\n    %s = asuint(niagara_id.y);\n",reg(w,r0),reg(w,r1))
+            }
+        case .External_Call:
+            fi:=u16_at(code,at,&bad)
+            at+=2
+            if bad {break}
+            if fi>=len(w.vm.functions) {
+                append(problems,fmt.tprintf("its bytecode calls a function %d its compilation does not list: its script is not translated",fi))
+                return
+            }
+            fn:=&w.vm.functions[fi]
+            n_in,n_out:=fn.inputs,fn.outputs
+            if fi<len(ctx.ext_fns) {n_in,n_out=ctx.ext_fns[fi].num_inputs,ctx.ext_fns[fi].num_outputs}
+            if n_in<0 || n_out<0 || at+2*(n_in+n_out)>len(code) {bad=true;break}
+            in_exprs:=make([]string,n_in,context.temp_allocator)
+            for k in 0..<n_in {in_exprs[k]=read_reg(w,ctx,const_base,input_base,u16_at(code,at+2*k,&bad))}
+            at+=2*n_in
+            out_regs:=make([]int,n_out,context.temp_allocator)
+            for k in 0..<n_out {
+                r:=u16_at(code,at+2*k,&bad)
+                out_regs[k]=r
+                if r!=0xFFFF {_=reg(w,r)}
+            }
+            at+=2*n_out
+            if bad {break}
+            niagara_vm2_call(w,fn,in_exprs,out_regs)
+        case:
+            inputs:=niagara_op_inputs(op)
+            outputs:=niagara_op_outputs(op)
+            if inputs==0 {
+                append(problems,fmt.tprintf("its bytecode has the operation %v at byte %d, which a compilation does not write: its script is not translated",op,at-1))
+                return
+            }
+            args:[5]string
+            for i in 0..<inputs {args[i]=read_reg(w,ctx,const_base,input_base,u16_at(code,at+2*i,&bad))}
+            dst0:=u16_at(code,at+2*inputs,&bad)
+            dst1:=outputs==2 ? u16_at(code,at+2*(inputs+1),&bad) : 0xFFFF
+            at+=2*(inputs+outputs)
+            if bad {break}
+            e0,e1:=niagara_op_expressions(op,args[:inputs])
+            fmt.sbprintf(&w.body,"    %s = %s;\n",reg(w,dst0),e0)
+            if outputs==2 && dst1!=0xFFFF {fmt.sbprintf(&w.body,"    %s = %s;\n",reg(w,dst1),e1)}
+        }
+        if bad {
+            append(problems,fmt.tprintf("its bytecode ends inside an operation at byte %d: its script is not translated",at))
+            return
+        }
+    }
+    return niagara_vm_text(w,entry,map_name),true
 }
 
 // The text of a script decompiled from its bytecode, in the shape the
@@ -774,6 +1266,9 @@ niagara_vm_hlsl :: proc(vm:^Niagara_Vm,problems:^[dynamic]string) -> (text:strin
     w.table=niagara_vm_table(vm)
     // The first frame of the scripts of the system runs with a step of its own (niagara_main_write).
     if vm.usage==.System {_=niagara_vm_constant(&w,4)}
+    if ctx,has_vvm2:=vm.vvm2.?;has_vvm2 {
+        return niagara_vm2_hlsl(&w,&ctx,entry,map_name,problems)
+    }
     code:=vm.code
     at:=0
     // The u16 of the operation at an offset of bytes from its first operand.
@@ -787,7 +1282,7 @@ niagara_vm_hlsl :: proc(vm:^Niagara_Vm,problems:^[dynamic]string) -> (text:strin
         return fmt.tprintf("v%d",index)
     }
     decode: for at<len(code) {
-        if code[at]>u8(Niagara_Op.Iasf) {
+        if code[at]>u8(Niagara_Op.Output_Half_From_Half) {
             append(problems,fmt.tprintf("its bytecode has an operation %d at byte %d the translation does not know: its script is not translated",code[at],at))
             return
         }
@@ -807,7 +1302,7 @@ niagara_vm_hlsl :: proc(vm:^Niagara_Vm,problems:^[dynamic]string) -> (text:strin
             case .Input_Half,.Input_Noadvance_Half: register=.Half
             }
             fmt.sbprintf(&w.body,"    %s = %s;\n",reg(&w,dst),niagara_vm_input(&w,set,index,register))
-        case .Output_Float,.Output_Int,.Output_Half:
+        case .Output_Float,.Output_Int,.Output_Half,.Output_Float_From_Half,.Output_Half_From_Half:
             // [op][operand: register 0, constant 1][set][index register][source][register of the set]
             if at>=len(code) {bad=true;break}
             constant:=code[at]&1!=0
@@ -815,7 +1310,7 @@ niagara_vm_hlsl :: proc(vm:^Niagara_Vm,problems:^[dynamic]string) -> (text:strin
             at+=9
             if bad {break}
             register:=Niagara_Register.Float
-            if op==.Output_Int {register=.Int} else if op==.Output_Half {register=.Half}
+            if op==.Output_Int {register=.Int} else if op==.Output_Half || op==.Output_Half_From_Half {register=.Half}
             niagara_vm_output(&w,set,dst,register,constant?niagara_vm_constant(&w,source):reg(&w,source))
         case .Acquire_Index:
             // [op][operand of the condition][set][condition][index]: whether the instance stays.
@@ -833,6 +1328,11 @@ niagara_vm_hlsl :: proc(vm:^Niagara_Vm,problems:^[dynamic]string) -> (text:strin
             at+=2
             if bad {break}
             fmt.sbprintf(&w.body,"    %s = asuint(ExecIndex());\n",reg(&w,dst))
+        case .Exec_Indexf:
+            dst:=u(code,at,&bad)
+            at+=2
+            if bad {break}
+            fmt.sbprintf(&w.body,"    %s = asuint(float(ExecIndex()));\n",reg(&w,dst))
         case .Enter_Stat_Scope:
             at+=2
         case .Exit_Stat_Scope:
@@ -863,21 +1363,25 @@ niagara_vm_hlsl :: proc(vm:^Niagara_Vm,problems:^[dynamic]string) -> (text:strin
             niagara_vm_call(&w,fn,operands)
         case:
             inputs:=niagara_op_inputs(op)
+            outputs:=niagara_op_outputs(op)
             if inputs==0 {
                 append(problems,fmt.tprintf("its bytecode has the operation %v at byte %d, which a compilation does not write: its script is not translated",op,at-1))
                 return
             }
             if at>=len(code) {bad=true;break}
             flags:=code[at]
-            args:[3]string
+            args:[5]string
             for i in 0..<inputs {
                 v:=u(code,at+1+2*i,&bad)
                 args[i]=flags&(1<<uint(i))!=0?niagara_vm_constant(&w,v):reg(&w,v)
             }
-            dst:=u(code,at+1+2*inputs,&bad)
-            at+=1+2*(inputs+1)
+            dst0:=u(code,at+1+2*inputs,&bad)
+            dst1:=outputs==2 ? u(code,at+1+2*(inputs+1),&bad) : 0xFFFF
+            at+=1+2*(inputs+outputs)
             if bad {break}
-            fmt.sbprintf(&w.body,"    %s = %s;\n",reg(&w,dst),niagara_op_expression(op,args[0],args[1],args[2]))
+            e0,e1:=niagara_op_expressions(op,args[:inputs])
+            fmt.sbprintf(&w.body,"    %s = %s;\n",reg(&w,dst0),e0)
+            if outputs==2 && dst1!=0xFFFF {fmt.sbprintf(&w.body,"    %s = %s;\n",reg(&w,dst1),e1)}
         }
         if bad {
             append(problems,fmt.tprintf("its bytecode ends inside an operation at byte %d: its script is not translated",at))
