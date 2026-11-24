@@ -3,7 +3,9 @@ package cooked
 import "core:encoding/json"
 import "core:math/linalg"
 import "core:mem"
+import "core:slice"
 import "core:strings"
+import "mirai:asset"
 
 // Converts `ue5parse` cooked mesh/rig sockets (from glTF `extras.socket` /
 // node extras or socket JSON) and cooked animation events (`ue5parse events`
@@ -226,4 +228,148 @@ cooked_anim_events_parse :: proc(json_text:string,allocator:=context.allocator) 
     ev.sync_markers=syncs[:]
     ev.sections=sections[:]
     return ev,nil
+}
+
+// Mirrors Mirai's anim.Animation_Event_Kind for clip markers and duration spans
+// consumed by vfx_animation.Particle_Animation_Span and abilities.Ability_Window.span.
+Cooked_Anim_Event_Kind :: enum u8 {
+    Marker,
+    Span_Begin,
+    Span_End,
+}
+
+Cooked_Clip_Event :: struct {
+    kind:Cooked_Anim_Event_Kind,
+    name:string,
+    time:f32, // seconds
+    class:string,
+    track:string,
+}
+
+// Paired start/end point markers (e.g. FortMeleeAnimTrails_On / _Off) mapped
+// directly onto vfx_animation.Particle_Animation_Span (span + end_marker).
+Cooked_Paired_Span :: struct {
+    base_name:string,
+    start_marker:string,
+    end_marker:string,
+    start_time:f32,
+    end_time:f32,
+}
+
+// Emits native Mirai asset.Animation_Marker_Desc entries compatible with
+// vfx_animation.Particle_Animation_Span and abilities.Ability_Window.span:
+//   - point notifies & sync markers -> duration == 0 (.Marker)
+//   - notify states & montage sections -> duration > 0 (.Span_Begin / .Span_End)
+cooked_anim_markers :: proc(ev:^Cooked_Anim_Events,allocator:=context.allocator) -> []asset.Animation_Marker_Desc {
+    out:=make([dynamic]asset.Animation_Marker_Desc,allocator)
+    for n in ev.notifies {
+        if n.name=="" {continue}
+        append(&out,asset.Animation_Marker_Desc{
+            time=n.time,
+            name=strings.clone(n.name,allocator),
+            duration=n.duration,
+        })
+    }
+    for sm in ev.sync_markers {
+        if sm.name=="" {continue}
+        append(&out,asset.Animation_Marker_Desc{
+            time=sm.time,
+            name=strings.clone(sm.name,allocator),
+            duration=0,
+        })
+    }
+    for sec,i in ev.sections {
+        if sec.name=="" {continue}
+        end_t:=ev.length
+        if i+1<len(ev.sections) && ev.sections[i+1].start>sec.start {
+            end_t=ev.sections[i+1].start
+        }
+        dur:=end_t>sec.start ? end_t-sec.start : 0
+        append(&out,asset.Animation_Marker_Desc{
+            time=sec.start,
+            name=strings.clone(sec.name,allocator),
+            duration=dur,
+        })
+    }
+    slice.sort_by(out[:],proc(a,b:asset.Animation_Marker_Desc) -> bool {
+        if a.time!=b.time {return a.time<b.time}
+        return a.name<b.name
+    })
+    return out[:]
+}
+
+// Expands cooked animation events into chronological .Marker / .Span_Begin / .Span_End
+// events matching Mirai's Animation_Events stream.
+cooked_anim_timeline_events :: proc(ev:^Cooked_Anim_Events,allocator:=context.allocator) -> []Cooked_Clip_Event {
+    out:=make([dynamic]Cooked_Clip_Event,allocator)
+    for n in ev.notifies {
+        if n.name=="" {continue}
+        if n.duration>0 {
+            append(&out,Cooked_Clip_Event{
+                kind=.Span_Begin,
+                name=strings.clone(n.name,allocator),
+                time=n.time,
+                class=strings.clone(n.class,allocator),
+                track=strings.clone(n.track,allocator),
+            })
+            append(&out,Cooked_Clip_Event{
+                kind=.Span_End,
+                name=strings.clone(n.name,allocator),
+                time=n.time+n.duration,
+                class=strings.clone(n.class,allocator),
+                track=strings.clone(n.track,allocator),
+            })
+        } else {
+            append(&out,Cooked_Clip_Event{
+                kind=.Marker,
+                name=strings.clone(n.name,allocator),
+                time=n.time,
+                class=strings.clone(n.class,allocator),
+                track=strings.clone(n.track,allocator),
+            })
+        }
+    }
+    for sm in ev.sync_markers {
+        if sm.name=="" {continue}
+        append(&out,Cooked_Clip_Event{
+            kind=.Marker,
+            name=strings.clone(sm.name,allocator),
+            time=sm.time,
+            class="SyncMarker",
+        })
+    }
+    slice.sort_by(out[:],proc(a,b:Cooked_Clip_Event) -> bool {
+        if a.time!=b.time {return a.time<b.time}
+        if a.kind!=b.kind {return a.kind<b.kind}
+        return a.name<b.name
+    })
+    return out[:]
+}
+
+// Detects paired start/end point markers (e.g. *_On / *_Off, *_Begin / *_End,
+// *_Start / *_Stop) so callers can bind vfx_animation.Particle_Animation_Span
+// (span = start_marker, end_marker = end_marker).
+cooked_anim_paired_spans :: proc(ev:^Cooked_Anim_Events,allocator:=context.allocator) -> []Cooked_Paired_Span {
+    PAIRS :: [3][2]string{{"_On","_Off"},{"_Begin","_End"},{"_Start","_Stop"}}
+    out:=make([dynamic]Cooked_Paired_Span,allocator)
+    for a,i in ev.notifies {
+        if a.duration>0 || a.name=="" {continue}
+        for pair in PAIRS {
+            if !strings.has_suffix(a.name,pair[0]) {continue}
+            base:=a.name[:len(a.name)-len(pair[0])]
+            want_end:=strings.concatenate({base,pair[1]},context.temp_allocator)
+            for b,j in ev.notifies {
+                if j==i || b.duration>0 || b.time<a.time || b.name!=want_end {continue}
+                append(&out,Cooked_Paired_Span{
+                    base_name=strings.clone(base,allocator),
+                    start_marker=strings.clone(a.name,allocator),
+                    end_marker=strings.clone(b.name,allocator),
+                    start_time=a.time,
+                    end_time=b.time,
+                })
+                break
+            }
+        }
+    }
+    return out[:]
 }

@@ -176,13 +176,42 @@ build_cooked_emitter :: proc(
         }
     }
 
-    // Renderers -> Particle_Render, Particle_Blend, flipbook, material, meshes.
+    // Renderers -> Particle_Render, Particle_Blend, Particle_Light (v10), flipbook, material, meshes.
     meshes:=make([dynamic]string,allocator)
+    has_light_renderer:=false
+    light_radius_scale:f32=1
+    light_diffuse_scale:f32=1
+    light_color_add:[3]f32
+    light_shadows:=false
+    light_max:u16=1
+    light_indirect:f32=1
+    light_scattering:f32=1
+    light_explicit_intensity:f32=0
+    light_explicit_range:f32=0
+    light_explicit_radius:f32=0
     if rends,has_r:=eobj["Renderers"].(json.Array);has_r {
         for r in rends {
             robj,rok:=r.(json.Object)
             if !rok {continue}
             kind:=jstr(robj["Kind"],jstr(robj["Class"]))
+            low_kind:=strings.to_lower(kind,context.temp_allocator)
+            if strings.contains(low_kind,"light") {
+                has_light_renderer=true
+                if rs,ok:=jf32(robj["RadiusScale"]);ok && rs>0 {light_radius_scale=rs}
+                if ds,ok:=jf32(robj["DiffuseScale"]);ok && ds>0 {light_diffuse_scale=ds}
+                if ca,ok:=jvec3(robj["ColorAdd"]);ok {light_color_add={max(ca.x,0),max(ca.y,0),max(ca.z,0)}}
+                if c_val,ok:=jvec3(robj["Color"]);ok && (c_val.x>0||c_val.y>0||c_val.z>0) {
+                    light_color_add={max(c_val.x,0),max(c_val.y,0),max(c_val.z,0)}
+                }
+                light_shadows=jbool(robj["bMegaLightsCastShadows"],false) || jbool(robj["bCastShadows"],false)
+                if ml,ok:=jf32(robj["MaxLights"]);ok && ml>=1 {light_max=u16(clamp(ml,1,65535))}
+                if ind,ok:=jf32(robj["IndirectLightingIntensity"]);ok && ind>=0 {light_indirect=ind}
+                if sc,ok:=jf32(robj["VolumetricScatteringIntensity"]);ok && sc>=0 {light_scattering=sc}
+                if li,ok:=jf32(robj["Intensity"]);ok && li>0 {light_explicit_intensity=li}
+                if lr,ok:=jf32(robj["Radius"]);ok && lr>0 {light_explicit_range=lr*cooked.UNREAL_TO_MIRAI_SCALE}
+                if lsr,ok:=jf32(robj["SourceRadius"]);ok && lsr>0 {light_explicit_radius=lsr*cooked.UNREAL_TO_MIRAI_SCALE}
+                continue
+            }
             if mat:=jstr(robj["Material"]);mat!="" && out.material_path=="" {
                 out.material_path=strings.clone(mat,allocator)
                 if cm,found:=mat_by_path[mat];found {
@@ -199,7 +228,7 @@ build_cooked_emitter :: proc(
                 out.info.flipbook={u32(max(sx,1)),u32(max(sy,1))}
             }
             switch {
-            case strings.contains(kind,"Sprite"):
+            case strings.contains(low_kind,"sprite"):
                 align:=jstr(robj["Alignment"])
                 if strings.contains(align,"Velocity") {
                     out.info.render=.Velocity
@@ -208,12 +237,12 @@ build_cooked_emitter :: proc(
                 } else {
                     out.info.render=.Billboard
                 }
-            case strings.contains(kind,"Ribbon"):
+            case strings.contains(low_kind,"ribbon"):
                 out.info.render=.Ribbon
                 if strings.contains(jstr(robj["FacingMode"]),"Custom") {
                     out.info.ribbon_axis=.Emitter_Up
                 }
-            case strings.contains(kind,"Mesh"):
+            case strings.contains(low_kind,"mesh"):
                 out.info.render=.Mesh
                 facing:=jstr(robj["FacingMode"])
                 if strings.contains(facing,"Velocity") {out.info.facing=.Velocity} else {out.info.facing=.Emitter}
@@ -225,14 +254,14 @@ build_cooked_emitter :: proc(
                         }
                     }
                 }
-            case strings.contains(kind,"Beam"):
+            case strings.contains(low_kind,"beam"):
                 out.info.render=.Beam
             }
         }
     }
     out.mesh_paths=meshes[:]
 
-    // Parse particle scripts (Spawn & Update) -> extract lifetime/size/color/drag + generate Vfx Slang shader.
+    // Parse particle scripts (Spawn & Update) -> extract lifetime/size/color/light + generate Vfx Slang shader.
     spawn_script,update_script:json.Object
     has_spawn,has_update:=false,false
     if scripts,has_sc:=eobj["Scripts"].(json.Array);has_sc {
@@ -248,7 +277,12 @@ build_cooked_emitter :: proc(
         }
     }
 
-    // Extract scalar defaults from Spawn outputs into Particle_Info (lifetime, size, color).
+    // Extract scalar defaults from Spawn outputs into Particle_Info (lifetime, size, color, light).
+    spawn_light_radius_cm:f32=0
+    spawn_light_intensity:f32=0
+    spawn_light_scatter:f32=-1
+    spawn_light_color:[3]f32
+    has_spawn_light_color:=false
     if has_spawn {
         if outs,has_o:=spawn_script["Outputs"].(json.Array);has_o {
             for o in outs {
@@ -269,8 +303,53 @@ build_cooked_emitter :: proc(
                 case "Color.y": out.info.colors[0].y=clamp(val,0,10);out.info.colors[1].y=out.info.colors[0].y
                 case "Color.z": out.info.colors[0].z=clamp(val,0,10);out.info.colors[1].z=out.info.colors[0].z
                 case "Color.w": out.info.colors[0].w=clamp(val,0,1);out.info.colors[1].w=out.info.colors[0].w
+                case "LightRadius":
+                    if val>0 {spawn_light_radius_cm=val}
+                case "LightIntensity","LightBrightness":
+                    if val>0 {spawn_light_intensity=val}
+                case "LightVolumetricScattering":
+                    if val>=0 {spawn_light_scatter=val}
+                case "LightColor.x": spawn_light_color.x=max(val,0);has_spawn_light_color=true
+                case "LightColor.y": spawn_light_color.y=max(val,0);has_spawn_light_color=true
+                case "LightColor.z": spawn_light_color.z=max(val,0);has_spawn_light_color=true
                 }
             }
+        }
+    }
+
+    // Populate Mirai .particle v10 Particle_Light when a Niagara light renderer or light bindings exist.
+    if has_light_renderer || spawn_light_radius_cm>0 || spawn_light_intensity>0 {
+        lrange:=light_explicit_range
+        if lrange<=0 {
+            if spawn_light_radius_cm>0 {
+                lrange=spawn_light_radius_cm*cooked.UNREAL_TO_MIRAI_SCALE*max(light_radius_scale,0.01)
+            } else {
+                lrange=5.0*max(light_radius_scale,0.1)
+            }
+        }
+        lintensity:=light_explicit_intensity
+        if lintensity<=0 {lintensity=spawn_light_intensity}
+        if lintensity<=0 {
+            // Derive peak candela from color brightness when unlit HDR color drives Niagara light.
+            cmax:=max(out.info.colors[0].x,max(out.info.colors[0].y,out.info.colors[0].z))
+            lintensity=150.0*max(light_diffuse_scale,0.1)*max(cmax,1.0)
+        }
+        lcolor:=has_spawn_light_color ? spawn_light_color : light_color_add
+        if lcolor=={} && (out.info.colors[0].x>0||out.info.colors[0].y>0||out.info.colors[0].z>0) {
+            cmax:=max(out.info.colors[0].x,max(out.info.colors[0].y,out.info.colors[0].z))
+            if cmax>1e-4 {lcolor={out.info.colors[0].x/cmax,out.info.colors[0].y/cmax,out.info.colors[0].z/cmax}}
+        }
+        lradius:=light_explicit_radius>0 ? light_explicit_radius : min(max(out.info.size[0]*0.5,0),lrange)
+        lscatter:=spawn_light_scatter>=0 ? spawn_light_scatter : light_scattering
+        out.info.light={
+            color=lcolor,
+            intensity=max(lintensity,0),
+            range=max(lrange,0),
+            radius=clamp(lradius,0,max(lrange,0)),
+            max_lights=max(light_max,1),
+            shadows=light_shadows,
+            indirect=max(light_indirect,0),
+            scattering=max(lscatter,0),
         }
     }
 
@@ -643,4 +722,24 @@ jf32 :: proc(v:json.Value,fallback:f32=0) -> (f32,bool) {
         return f32(x),true
     }
     return fallback,false
+}
+
+@(private="file")
+jvec3 :: proc(v:json.Value) -> ([3]f32,bool) {
+    if arr,ok:=v.(json.Array);ok && len(arr)>=3 {
+        x,_:=jf32(arr[0],0);y,_:=jf32(arr[1],0);z,_:=jf32(arr[2],0)
+        return {x,y,z},true
+    }
+    if obj,ok:=v.(json.Object);ok {
+        out:[3]f32
+        found:=false
+        if a,has:=obj["X"];has {out.x,_=jf32(a,0);found=true}
+        if a,has:=obj["R"];has {out.x,_=jf32(a,0);found=true}
+        if a,has:=obj["Y"];has {out.y,_=jf32(a,0);found=true}
+        if a,has:=obj["G"];has {out.y,_=jf32(a,0);found=true}
+        if a,has:=obj["Z"];has {out.z,_=jf32(a,0);found=true}
+        if a,has:=obj["B"];has {out.z,_=jf32(a,0);found=true}
+        return out,found
+    }
+    return {},false
 }

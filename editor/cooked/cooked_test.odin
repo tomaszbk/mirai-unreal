@@ -1,9 +1,14 @@
 package cooked
 
+import "core:fmt"
 import "core:math"
 import "core:mem"
+import "core:os"
+import "core:path/filepath"
+import "core:strings"
 import "core:testing"
 import "mirai:asset"
+import shaders "mirai:cook/shaders"
 
 @(test)
 cooked_material_builds_native_v6_subsurface_and_foliage :: proc(t:^testing.T) {
@@ -127,4 +132,177 @@ cooked_sockets_and_anim_events_convert_cleanly :: proc(t:^testing.T) {
     _,herr:=cooked_material_parse("{broken",alloc)
     _,hbad:=herr.?
     testing.expect(t,hbad)
+}
+
+// Table-driven check across all 6 native Mirai cooked material archetype templates:
+// verifies canonical sidecar parsing, .mat v6 round-trip, and real slangc compilation.
+@(test)
+cooked_material_six_archetypes_roundtrip_and_compile_slang :: proc(t:^testing.T) {
+    arena:mem.Dynamic_Arena
+    mem.dynamic_arena_init(&arena)
+    defer mem.dynamic_arena_destroy(&arena)
+    alloc:=mem.dynamic_arena_allocator(&arena)
+
+    Case :: struct {
+        label:string,
+        json:string,
+        want_arch:Material_Archetype,
+        want_alpha:asset.Alpha_Mode,
+        want_two_sided:bool,
+        want_sss:bool,
+        want_dt:bool,
+        want_snippets:[]string,
+    }
+    cases:=[]Case{
+        {
+            label="standard_smr",
+            json=`{"name":"MI_MetalProp","archetype":"standard","BlendMode":"BLEND_Opaque","ShadingModel":"MSM_DefaultLit",
+                "parameters":{"RoughnessMin":0.2,"RoughnessMax":0.85,"Metallic":0.1,"SubsurfaceWeight":0.4,"BaseColor":[0.7,0.7,0.75,1]},
+                "textures":{"Diffuse":"/Game/T_Prop_D.T_Prop_D","Normal":"/Game/T_Prop_N.T_Prop_N","SpecularMasks":"/Game/T_Prop_S.T_Prop_S","MasksTexture":"/Game/T_Prop_M.T_Prop_M"}}`,
+            want_arch=.Standard_SMR,want_alpha=.Opaque,want_sss=true,
+            want_snippets={"//! mirai surface Cooked_Standard_SMR","cooked_normal_gl","s.subsurface_weight","s.occlusion"},
+        },
+        {
+            label="foliage_3color",
+            json=`{"name":"MI_PineTree","archetype":"foliage","BlendMode":"BLEND_Masked","ShadingModel":"MSM_TwoSidedFoliage","TwoSided":true,"OpacityMaskClipValue":0.35,
+                "parameters":{"Color1_Base":[0.18,0.42,0.1,1],"Color2_Lit":[0.35,0.65,0.15,1],"Color3_Shadows":[0.08,0.2,0.05,1],
+                    "FlowerColorMult":[0.95,0.4,0.6,1],"IsFlowers":true,"RoughnessMin":0.3,"RoughnessMax":0.8},
+                "textures":{"Diffuse":"/Game/T_Leaf_D.T_Leaf_D","Normal":"/Game/T_Leaf_N.T_Leaf_N","MasksTexture":"/Game/T_Leaf_M.T_Leaf_M"}}`,
+            want_arch=.Foliage_3Color,want_alpha=.Mask,want_two_sided=true,want_dt=true,
+            want_snippets={"//! mirai surface Cooked_Foliage_3Color","masks.b * 2.0","flower_color_mult","s.diffuse_transmission_color","s.alpha = masks.r"},
+        },
+        {
+            label="layered_uv1",
+            json=`{"name":"MI_Building_Brick","archetype":"layered","BlendMode":"BLEND_Opaque","ShadingModel":"MSM_DefaultLit",
+                "parameters":{"Tiling":2.0,"RoughnessMin":0.3,"RoughnessMax":0.9},
+                "textures":{"Diffuse":"/Game/T_L1_D.T_L1_D","Diffuse_Texture_2":"/Game/T_L2_D.T_L2_D","Diffuse_Texture_3":"/Game/T_L3_D.T_L3_D",
+                    "Normal_Texture_2":"/Game/T_L2_N.T_L2_N","ORM_Texture_6":"/Game/T_L6_ORM.T_L6_ORM"}}`,
+            want_arch=.Layered_UV1,want_alpha=.Opaque,
+            want_snippets={"//! mirai surface Cooked_Layered_UV1","ctx.uv1.x","t_diff_5","t_orm_5"},
+        },
+        {
+            label="toon",
+            json=`{"name":"MI_Hero_Toon","archetype":"toon","BlendMode":"BLEND_Opaque","ShadingModel":"MSM_DefaultLit",
+                "parameters":{"BaseColor":[0.9,0.25,0.2,1],"ShadowColor":[0.3,0.15,0.25,1],"ToonSteps":4,"SpecThreshold":0.7},
+                "textures":{"Diffuse":"/Game/T_Toon_D.T_Toon_D","Normal":"/Game/T_Toon_N.T_Toon_N"}}`,
+            want_arch=.Toon,want_alpha=.Opaque,
+            want_snippets={"//! mirai surface Cooked_Toon","spec_band","shadow_tint","floor(shade * steps"},
+        },
+        {
+            label="glass",
+            json=`{"name":"MI_Window_Glass","archetype":"glass","BlendMode":"BLEND_Translucent","ShadingModel":"MSM_ThinTranslucent",
+                "parameters":{"BaseColor":[0.85,0.95,1.0,1],"Opacity":0.3,"IOR":1.52,"FresnelExponent":4.0},
+                "textures":{"Normal":"/Game/T_Glass_N.T_Glass_N"}}`,
+            want_arch=.Glass,want_alpha=.Blend,
+            want_snippets={"//! mirai surface Cooked_Glass","fresnel","s.specular_ior"},
+        },
+        {
+            label="skin_sss",
+            json=`{"name":"MI_Char_Skin","archetype":"skin","BlendMode":"BLEND_Opaque","ShadingModel":"MSM_SubsurfaceProfile",
+                "parameters":{"BaseColor":[0.85,0.62,0.5,1],"SubsurfaceColor":[0.95,0.3,0.18,1],"SubsurfaceOpacity":0.9,"SubsurfaceRadius":1.2,"RoughnessMin":0.25,"RoughnessMax":0.7},
+                "textures":{"Diffuse":"/Game/T_Skin_D.T_Skin_D","Normal":"/Game/T_Skin_N.T_Skin_N","SpecularMasks":"/Game/T_Skin_S.T_Skin_S","MasksTexture":"/Game/T_Skin_M.T_Skin_M"}}`,
+            want_arch=.Skin_SSS,want_alpha=.Opaque,want_sss=true,
+            want_snippets={"//! mirai surface Cooked_Skin_SSS","s.subsurface_weight = saturate(p.skin_bounds.z * m.b)","s.subsurface_radius"},
+        },
+    }
+
+    folder:=".mirai/tmp/cooked-archetypes-test"
+    _=os.make_directory_all(folder)
+    root,cwd_err:=os.get_working_directory(context.temp_allocator)
+
+    for tc in cases {
+        cm,err:=cooked_material_parse(tc.json,alloc)
+        _,bad:=err.?
+        if !testing.expectf(t,!bad,"%s parse failed: %v",tc.label,err) {continue}
+        testing.expect_value(t,cm.archetype,tc.want_arch)
+        testing.expect_value(t,cm.info.alpha_mode,tc.want_alpha)
+        testing.expect_value(t,cm.info.two_sided,tc.want_two_sided)
+        if tc.want_sss {testing.expectf(t,cm.info.subsurface.weight>0,"%s expected subsurface weight > 0",tc.label)}
+        if tc.want_dt {testing.expectf(t,cm.info.diffuse_transmission.weight>0,"%s expected diffuse transmission > 0",tc.label)}
+        for snip in tc.want_snippets {
+            testing.expectf(t,strings.contains(cm.program_source,snip),"%s missing %q in Slang:\n%s",tc.label,snip,cm.program_source)
+        }
+        // Round-trip .mat v6 bytes (including program_parameters).
+        raw,berr:=cooked_material_bytes(&cm,alloc)
+        testing.expect_value(t,berr,asset.Error.None)
+        types:asset.Types
+        asset.types_init(&types)
+        a:asset.Asset
+        testing.expect_value(t,asset.asset_open(&a,raw),asset.Error.None)
+        view,verr:=asset.material_view(&a,&types)
+        testing.expect_value(t,verr,asset.Error.None)
+        testing.expect_value(t,len(view.parameters),len(cm.program_parameters))
+        asset.asset_close(&a)
+        asset.types_destroy(&types)
+        // Verify Slang compiles cleanly with Mirai's shader checker / slangc.
+        if cwd_err==nil {
+            shader_path,_:=filepath.join({folder,fmt.tprintf("%s.slang",cm.program_name)},context.temp_allocator)
+            _=os.write_entire_file(shader_path,transmute([]u8)cm.program_source)
+            res:=shaders.program_check({root=root,project=folder,path=shader_path},context.temp_allocator)
+            if !strings.contains(res.error,"slangc") {
+                testing.expectf(t,res.error=="" && res.errors==0 && res.compiled,"%s Slang compile failed: %s %v",tc.label,res.error,res.diagnostics)
+            }
+        }
+    }
+}
+
+// Verifies animation events emit Mirai Animation_Marker_Desc spans (.Span_Begin/.Span_End)
+// and paired point marker spans compatible with vfx_animation.Particle_Animation_Span
+// and abilities.Ability_Window.span.
+@(test)
+cooked_anim_events_emit_mirai_spans_and_paired_markers :: proc(t:^testing.T) {
+    arena:mem.Dynamic_Arena
+    mem.dynamic_arena_init(&arena)
+    defer mem.dynamic_arena_destroy(&arena)
+    alloc:=mem.dynamic_arena_allocator(&arena)
+
+    ev_json:=`{"Name":"AM_Katana_Slash","SequenceLength":1.2,"RateScale":1.0,
+        "Notifies":[
+            {"Name":"FortMeleeAnimTrails_On","Class":"AnimNotify_Trail","Time":0.12},
+            {"Name":"SwingSFX","Class":"AnimNotify_PlaySound","Time":0.15},
+            {"Name":"FortMeleeAnimTrails_Off","Class":"AnimNotify_Trail","Time":0.42}
+        ],
+        "NotifyStates":[
+            {"Name":"MeleeHitWindow","Class":"AnimNotifyState_Melee","Start":0.18,"End":0.40}
+        ],
+        "SyncMarkers":[{"Name":"FootPlant","Time":0.30}],
+        "Sections":[{"Name":"Slash1","Start":0.0},{"Name":"Recovery","Start":0.55}]}`
+
+    ev,err:=cooked_anim_events_parse(ev_json,alloc)
+    _,bad:=err.?
+    if !testing.expect(t,!bad) {return}
+
+    // Native Mirai Animation_Marker_Desc (duration > 0 -> .Span_Begin/.Span_End).
+    markers:=cooked_anim_markers(&ev,alloc)
+    testing.expect_value(t,len(markers),7)
+    found_hit:=false
+    for m in markers {
+        if m.name=="MeleeHitWindow" {
+            found_hit=true
+            testing.expectf(t,math.abs(m.time-0.18)<1e-4 && math.abs(m.duration-0.22)<1e-4,"hit window %v",m)
+        }
+    }
+    testing.expect(t,found_hit)
+
+    // Timeline expansion (.Span_Begin / .Span_End + .Marker).
+    tl:=cooked_anim_timeline_events(&ev,alloc)
+    testing.expect_value(t,len(tl),6)
+    begins,ends,points:=0,0,0
+    for e in tl {
+        switch e.kind {
+        case .Span_Begin: begins+=1
+        case .Span_End: ends+=1
+        case .Marker: points+=1
+        }
+    }
+    testing.expect(t,begins==1 && ends==1 && points==4)
+
+    // Paired point markers for Particle_Animation_Span (span + end_marker).
+    paired:=cooked_anim_paired_spans(&ev,alloc)
+    if testing.expect_value(t,len(paired),1) {
+        testing.expect_value(t,paired[0].base_name,"FortMeleeAnimTrails")
+        testing.expect_value(t,paired[0].start_marker,"FortMeleeAnimTrails_On")
+        testing.expect_value(t,paired[0].end_marker,"FortMeleeAnimTrails_Off")
+        testing.expectf(t,math.abs(paired[0].start_time-0.12)<1e-4 && math.abs(paired[0].end_time-0.42)<1e-4,"paired times %v",paired[0])
+    }
 }

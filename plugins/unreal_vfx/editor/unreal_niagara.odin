@@ -659,7 +659,22 @@ niagara_renderer :: proc(c:^unreal_scene.Context,info:^effect.Particle_Info,rend
             }
         }
     case "NiagaraLightRendererProperties":
-        unreal_scene.warn(c,"its particles light the scene in Unreal (NiagaraLightRendererProperties); a particle of Mirai glows by its emission and is not a light")
+        radius_scale:=max(real(d,renderer,"RadiusScale",1),0)
+        diffuse_scale:=max(real(d,renderer,"DiffuseScale",1),0)
+        color_add,_:=vector_of(d,renderer,"ColorAdd")
+        shadows,_:=level.bool_of(d,renderer,"bMegaLightsCastShadows",false)
+        light_range:=5.0*max(radius_scale,0.1)
+        light_intensity:=150.0*max(diffuse_scale,0.1)
+        info.light={
+            color={max(color_add.x,0),max(color_add.y,0),max(color_add.z,0)},
+            intensity=max(light_intensity,0),
+            range=max(light_range,0),
+            radius=min(max(info.size[0]*0.5,0),max(light_range,0)),
+            max_lights=1,
+            shadows=shadows,
+            indirect=1,
+            scattering=1,
+        }
         return false
     case:
         unreal_scene.warn(c,"Mirai's effects have nothing for the renderer %s",class)

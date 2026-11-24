@@ -43,8 +43,13 @@ Cooked_Material :: struct {
     parent:string,
     blend_mode:string,
     shading_model:string,
+    archetype:Material_Archetype,
     info:asset.Material_Info,
     texture_paths:[asset.Material_Map_Kind]string,
+    program_name:string,
+    program_source:string, // generated `//! mirai surface` Slang shader
+    program_parameters:[]asset.Material_Parameter,
+    program_textures:[]Cooked_Program_Texture,
     scalars:[]Cooked_Scalar,
     vectors:[]Cooked_Vector,
     textures:[]Cooked_Texture,
@@ -53,7 +58,8 @@ Cooked_Material :: struct {
     dynamic_params:[]string,
 }
 
-// Parses cooked material JSON into a native Mirai v6 Material_Info + bindings.
+// Parses cooked material JSON (`ue5parse material` or canonical sidecar JSON)
+// into a native Mirai v6 Material_Info + archetype Slang surface program.
 cooked_material_parse :: proc(json_text:string,allocator:=context.allocator) -> (m:Cooked_Material,err:Maybe(Error)) {
     root,perr:=parse_json(json_text,context.temp_allocator)
     if perr!=nil {return {},perr}
@@ -61,15 +67,57 @@ cooked_material_parse :: proc(json_text:string,allocator:=context.allocator) -> 
     if !ok {return {},Error{"material","root JSON value must be an object"}}
 
     m.info=asset.MATERIAL_DEFAULTS
-    m.name=strings.clone(json_str(obj["Name"]),allocator)
-    m.path=strings.clone(json_str(obj["Path"]),allocator)
-    m.parent=strings.clone(json_str(obj["Parent"]),allocator)
-    m.blend_mode=strings.clone(json_str(obj["BlendMode"],"BLEND_Opaque"),allocator)
-    m.shading_model=strings.clone(json_str(obj["ShadingModel"],"MSM_DefaultLit"),allocator)
+    m.name=strings.clone(json_str(obj["Name"],json_str(obj["name"])),allocator)
+    m.path=strings.clone(json_str(obj["Path"],json_str(obj["path"])),allocator)
+    m.parent=strings.clone(json_str(obj["Parent"],json_str(obj["parent"])),allocator)
 
-    two_sided:=json_bool(obj["TwoSided"],false)
+    // Support both flat properties (BlendMode/ShadingModel/TwoSided) and nested Material:{BlendMode:{Value:...}}.
+    mat_sub,_:=json_obj(obj["Material"])
+    prop_str :: proc(obj,sub:json.Object,key,fallback:string) -> string {
+        if v,has:=obj[key];has {
+            inner,_:=unwrap_entry(v)
+            if s:=json_str(inner);s!="" {return s}
+        }
+        if sub!=nil {
+            if v,has:=sub[key];has {
+                inner,_:=unwrap_entry(v)
+                if s:=json_str(inner);s!="" {return s}
+            }
+        }
+        return fallback
+    }
+    prop_bool :: proc(obj,sub:json.Object,key:string,fallback:bool) -> bool {
+        if v,has:=obj[key];has {
+            inner,_:=unwrap_entry(v)
+            return json_bool(inner,fallback)
+        }
+        if sub!=nil {
+            if v,has:=sub[key];has {
+                inner,_:=unwrap_entry(v)
+                return json_bool(inner,fallback)
+            }
+        }
+        return fallback
+    }
+    prop_f32 :: proc(obj,sub:json.Object,key:string,fallback:f32) -> f32 {
+        if v,has:=obj[key];has {
+            inner,_:=unwrap_entry(v)
+            if f,fok:=json_f32(inner,fallback);fok {return f}
+        }
+        if sub!=nil {
+            if v,has:=sub[key];has {
+                inner,_:=unwrap_entry(v)
+                if f,fok:=json_f32(inner,fallback);fok {return f}
+            }
+        }
+        return fallback
+    }
+
+    m.blend_mode=strings.clone(prop_str(obj,mat_sub,"BlendMode","BLEND_Opaque"),allocator)
+    m.shading_model=strings.clone(prop_str(obj,mat_sub,"ShadingModel","MSM_DefaultLit"),allocator)
+    two_sided:=prop_bool(obj,mat_sub,"TwoSided",false)
     m.info.two_sided=two_sided
-    clip,_:=json_f32(obj["OpacityMaskClipValue"],0.3333)
+    clip:=prop_f32(obj,mat_sub,"OpacityMaskClipValue",0.3333)
 
     // BlendMode -> Mirai Alpha_Mode.
     blend:=short_enum(m.blend_mode)
@@ -84,40 +132,71 @@ cooked_material_parse :: proc(json_text:string,allocator:=context.allocator) -> 
         m.info.alpha_mode=.Blend
     }
 
-    // Collect parameters (supports both {Name: {Value, From}} and {Name: value}).
+    // Collect parameters (supports Scalars/Vectors/Textures/StaticSwitches AND lowercase sidecar aliases).
     scalars:=make([dynamic]Cooked_Scalar,allocator)
-    if s_obj,has:=json_obj(obj["Scalars"]);has {
-        for k,v in s_obj {
-            val,from:=unwrap_entry(v)
-            if f,fok:=json_f32(val);fok {
-                append(&scalars,Cooked_Scalar{strings.clone(k,allocator),f,strings.clone(from,allocator)})
-            }
-        }
-    }
     vectors:=make([dynamic]Cooked_Vector,allocator)
-    if v_obj,has:=json_obj(obj["Vectors"]);has {
-        for k,v in v_obj {
-            val,from:=unwrap_entry(v)
-            if vec,vok:=json_vec4(val);vok {
-                append(&vectors,Cooked_Vector{strings.clone(k,allocator),vec,strings.clone(from,allocator)})
-            }
-        }
-    }
     textures:=make([dynamic]Cooked_Texture,allocator)
-    if t_obj,has:=json_obj(obj["Textures"]);has {
-        for k,v in t_obj {
-            val,from:=unwrap_entry(v)
-            path:=json_str(val)
-            if path!="" {
-                append(&textures,Cooked_Texture{strings.clone(k,allocator),strings.clone(path,allocator),strings.clone(from,allocator)})
+    switches:=make([dynamic]Cooked_Switch,allocator)
+
+    for key in ([]string{"Scalars","scalars"}) {
+        if s_obj,has:=json_obj(obj[key]);has {
+            for k,v in s_obj {
+                val,from:=unwrap_entry(v)
+                if f,fok:=json_f32(val);fok {
+                    append(&scalars,Cooked_Scalar{strings.clone(k,allocator),f,strings.clone(from,allocator)})
+                }
             }
         }
     }
-    switches:=make([dynamic]Cooked_Switch,allocator)
-    if sw_obj,has:=json_obj(obj["StaticSwitches"]);has {
-        for k,v in sw_obj {
+    for key in ([]string{"Vectors","vectors"}) {
+        if v_obj,has:=json_obj(obj[key]);has {
+            for k,v in v_obj {
+                val,from:=unwrap_entry(v)
+                if vec,vok:=json_vec4(val);vok {
+                    append(&vectors,Cooked_Vector{strings.clone(k,allocator),vec,strings.clone(from,allocator)})
+                }
+            }
+        }
+    }
+    for key in ([]string{"Textures","textures"}) {
+        if t_obj,has:=json_obj(obj[key]);has {
+            for k,v in t_obj {
+                val,from:=unwrap_entry(v)
+                path:=json_str(val)
+                if path!="" {
+                    append(&textures,Cooked_Texture{strings.clone(k,allocator),strings.clone(path,allocator),strings.clone(from,allocator)})
+                }
+            }
+        }
+    }
+    for key in ([]string{"StaticSwitches","static_switches","switches"}) {
+        if sw_obj,has:=json_obj(obj[key]);has {
+            for k,v in sw_obj {
+                val,from:=unwrap_entry(v)
+                append(&switches,Cooked_Switch{strings.clone(k,allocator),json_bool(val),strings.clone(from,allocator)})
+            }
+        }
+    }
+    // Canonical sidecar unified `parameters` map (dispatches by JSON value type).
+    if p_obj,has:=json_obj(obj["parameters"]);has {
+        for k,v in p_obj {
             val,from:=unwrap_entry(v)
-            append(&switches,Cooked_Switch{strings.clone(k,allocator),json_bool(val),strings.clone(from,allocator)})
+            #partial switch x in val {
+            case json.Boolean:
+                append(&switches,Cooked_Switch{strings.clone(k,allocator),bool(x),strings.clone(from,allocator)})
+            case json.Float,json.Integer:
+                if f,fok:=json_f32(val);fok {
+                    append(&scalars,Cooked_Scalar{strings.clone(k,allocator),f,strings.clone(from,allocator)})
+                }
+            case json.String:
+                if string(x)!="" {
+                    append(&textures,Cooked_Texture{strings.clone(k,allocator),strings.clone(string(x),allocator),strings.clone(from,allocator)})
+                }
+            case json.Array,json.Object:
+                if vec,vok:=json_vec4(val);vok {
+                    append(&vectors,Cooked_Vector{strings.clone(k,allocator),vec,strings.clone(from,allocator)})
+                }
+            }
         }
     }
     refs:=make([dynamic]string,allocator)
@@ -228,21 +307,37 @@ cooked_material_parse :: proc(json_text:string,allocator:=context.allocator) -> 
         m.info.opacity=1
     }
 
+    // Preshader-evaluated overrides take highest priority when present.
+    if eval,has:=json_obj(obj["Evaluated"]);has {
+        if bc,bok:=json_vec4(eval["BaseColorTint"]);bok {
+            m.info.base_color={max(bc.x,0),max(bc.y,0),max(bc.z,0)}
+        }
+        if em,eok:=json_vec4(eval["EmissiveColor"]);eok && (em.x>0||em.y>0||em.z>0) {
+            m.info.emission={max(em.x,0),max(em.y,0),max(em.z,0)}
+        }
+    }
+
     // Classify cooked texture parameter names onto Mirai Material_Map_Kind slots.
     for tex in m.textures {
         if kind,matched:=classify_texture_slot(tex.name);matched && m.texture_paths[kind]=="" {
             m.texture_paths[kind]=tex.path
         }
     }
+
+    // Detect & apply one of the 6 native Mirai cooked material archetype templates.
+    explicit_arch:=json_str(obj["archetype"],json_str(obj["Archetype"]))
+    arch:=cooked_material_detect_archetype(explicit_arch,&m)
+    cooked_material_apply_archetype(&m,arch,allocator)
     return m,nil
 }
 
-// Serializes a Cooked_Material's native v6 Material_Info into Mirai `.mat` bytes.
+// Serializes a Cooked_Material's native v6 Material_Info + program parameters
+// into Mirai `.mat` bytes.
 cooked_material_bytes :: proc(m:^Cooked_Material,allocator:=context.allocator) -> ([]u8,asset.Error) {
     types:asset.Types
     asset.types_init(&types)
     defer asset.types_destroy(&types)
-    return asset.material_bytes(&types,{info=m.info},allocator)
+    return asset.material_bytes(&types,{info=m.info,parameters=m.program_parameters},allocator)
 }
 
 @(private="file")
