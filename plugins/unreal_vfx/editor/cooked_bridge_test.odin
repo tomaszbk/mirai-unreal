@@ -221,25 +221,69 @@ cooked_niagara_bridge_emits_particle_v10_light :: proc(t:^testing.T) {
     // No explicit LightColor / ColorAdd -> {0,0,0} so Mirai uses the particle's color.
     testing.expect_value(t,l.color,[3]f32{0,0,0})
 
-    // UE6 simple-light calibration: inverse-squared divides UE cm^2 radiance by 10000;
-    // non-inverse-squared windowed falloff matches at half its radius (peak * 0.75^exp * (R/2)^2).
-    inv_sq:=niagara_particle_light({
-        radius_scale=2.0,diffuse_scale=1.0,inverse_squared=true,
-        color_add={50000,25000,10000},has_color_add=true,
-        particle_scattering=-1,renderer_scattering=1,indirect=1,max_lights=1,
-    })
-    testing.expectf(t,abs(inv_sq.intensity-5.0)<1e-4,"inv_sq cd %v",inv_sq.intensity)
-    testing.expectf(t,abs(inv_sq.color.x-1.0)<1e-4 && abs(inv_sq.color.y-0.5)<1e-4 && abs(inv_sq.color.z-0.2)<1e-4,"inv_sq normalized color %v",inv_sq.color)
-    testing.expectf(t,abs(inv_sq.range-2.0)<1e-4,"range %v",inv_sq.range)
-
-    windowed:=niagara_particle_light({
-        radius_scale=4.0,diffuse_scale=1.0,inverse_squared=false,default_exponent=1.0,
-        fallback_color={1,0.5,0.2,1},fallback_color_intensity=10.0,
-        particle_scattering=-1,renderer_scattering=1,indirect=1,max_lights=1,
-    })
-    // range = 4m, half = 2m -> 10 * 0.75^1 * 2^2 = 30 cd; color stays {0,0,0} (uses particle color).
-    testing.expectf(t,abs(windowed.intensity-30.0)<1e-4,"windowed cd %v",windowed.intensity)
-    testing.expect_value(t,windowed.color,[3]f32{0,0,0})
+    // Table-driven UE6 simple-light calibration: assert exact intensity * effective_color
+    // across HDR (>1) and dim (<1) colors for BOTH particle-color and explicit-color lights.
+    Light_Case :: struct {
+        label:string,
+        params:Niagara_Light_Params,
+        particle_rgb:[3]f32, // effective color Mirai uses when light.color == {0,0,0}
+        want_zero_color:bool,
+        want_eff:[3]f32,     // expected light.intensity * effective_color (cd)
+    }
+    // Windowed factor for radius_scale=4m, half=2m, exp=1: 0.75 * 4 = 3.0.
+    // Inverse-squared factor: 1 / 10000.
+    cases:=[]Light_Case{
+        {
+            label="explicit_hdr_inv_sq",
+            params={radius_scale=2.0,diffuse_scale=1.0,inverse_squared=true,color_add={10,5,2},has_color_add=true,particle_scattering=-1,renderer_scattering=1,indirect=1,max_lights=1},
+            want_eff={10.0/10000.0,5.0/10000.0,2.0/10000.0},
+        },
+        {
+            label="explicit_dim_inv_sq",
+            params={radius_scale=2.0,diffuse_scale=1.0,inverse_squared=true,color_add={0.5,0.25,0.1},has_color_add=true,particle_scattering=-1,renderer_scattering=1,indirect=1,max_lights=1},
+            want_eff={0.5/10000.0,0.25/10000.0,0.1/10000.0},
+        },
+        {
+            label="explicit_hdr_windowed",
+            params={radius_scale=4.0,diffuse_scale=1.0,inverse_squared=false,default_exponent=1.0,particle_color={10,5,2},has_particle_color=true,particle_scattering=-1,renderer_scattering=1,indirect=1,max_lights=1},
+            want_eff={30.0,15.0,6.0},
+        },
+        {
+            label="explicit_dim_windowed",
+            params={radius_scale=4.0,diffuse_scale=1.0,inverse_squared=false,default_exponent=1.0,particle_color={0.5,0.25,0.1},has_particle_color=true,particle_scattering=-1,renderer_scattering=1,indirect=1,max_lights=1},
+            want_eff={1.5,0.75,0.3},
+        },
+        {
+            label="particle_hdr_raw_windowed",
+            params={radius_scale=4.0,diffuse_scale=1.0,inverse_squared=false,default_exponent=1.0,fallback_color={10,5,2,1},fallback_color_intensity=1.0,particle_scattering=-1,renderer_scattering=1,indirect=1,max_lights=1},
+            particle_rgb={10,5,2},want_zero_color=true,
+            want_eff={30.0,15.0,6.0},
+        },
+        {
+            label="particle_hdr_scaled_windowed",
+            params={radius_scale=4.0,diffuse_scale=1.0,inverse_squared=false,default_exponent=1.0,fallback_color={1,0.5,0.2,1},fallback_color_intensity=10.0,particle_scattering=-1,renderer_scattering=1,indirect=1,max_lights=1},
+            particle_rgb={1,0.5,0.2},want_zero_color=true,
+            want_eff={30.0,15.0,6.0},
+        },
+        {
+            label="particle_dim_windowed",
+            params={radius_scale=4.0,diffuse_scale=1.0,inverse_squared=false,default_exponent=1.0,fallback_color={0.5,0.25,0.1,1},fallback_color_intensity=1.0,particle_scattering=-1,renderer_scattering=1,indirect=1,max_lights=1},
+            particle_rgb={0.5,0.25,0.1},want_zero_color=true,
+            want_eff={1.5,0.75,0.3},
+        },
+    }
+    for tc in cases {
+        got:=niagara_particle_light(tc.params)
+        if tc.want_zero_color {
+            testing.expectf(t,got.color=={0,0,0},"%s expected {0,0,0} color, got %v",tc.label,got.color)
+        } else {
+            peak:=max(got.color.x,max(got.color.y,got.color.z))
+            testing.expectf(t,abs(peak-1.0)<1e-4,"%s explicit color must be normalized to peak 1, got %v",tc.label,got.color)
+        }
+        eff_col:=got.color=={} ? tc.particle_rgb : got.color
+        eff:=eff_col*got.intensity
+        testing.expectf(t,abs(eff.x-tc.want_eff.x)<1e-5 && abs(eff.y-tc.want_eff.y)<1e-5 && abs(eff.z-tc.want_eff.z)<1e-5,"%s eff %v != want %v (intensity=%v color=%v)",tc.label,eff,tc.want_eff,got.intensity,got.color)
+    }
 
     // Zero-intensity black light stays disabled (intensity == 0).
     dark:=niagara_particle_light({radius_scale=2.0,diffuse_scale=1.0,inverse_squared=true,particle_scattering=-1,renderer_scattering=1,indirect=1,max_lights=1})

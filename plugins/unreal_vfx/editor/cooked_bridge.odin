@@ -106,14 +106,28 @@ niagara_particle_light :: proc(p:Niagara_Light_Params) -> effect.Particle_Light 
     }
     brightness:=p.alpha_scales_brightness ? clamp(p.fallback_color.w,0,1) : f32(1)
     p_scale:=p.fallback_color_intensity>0 ? p.fallback_color_intensity : f32(1)
-    base_rgb:[3]f32
-    if p.has_particle_color {
-        base_rgb={max(p.particle_color.x,0),max(p.particle_color.y,0),max(p.particle_color.z,0)}
-    } else {
-        base_rgb={max(p.fallback_color.x,0)*p_scale,max(p.fallback_color.y,0)*p_scale,max(p.fallback_color.z,0)*p_scale}
+    fb_rgb:=[3]f32{max(p.fallback_color.x,0),max(p.fallback_color.y,0),max(p.fallback_color.z,0)}
+    fb_peak:=max(fb_rgb.x,max(fb_rgb.y,fb_rgb.z))
+
+    // Mirai multiplies light.intensity by light.color, or by unnormalized particle color
+    // when light.color == {0,0,0}. Match exact intensity * effective_color in both cases:
+    //  - Explicit color (LightColor / ColorAdd): always normalize light.color by peak when
+    //    peak > 0 so dim colors (< 1) are never squared.
+    //  - Particle-color light (light.color == {0,0,0}): do NOT multiply ue_peak by fb_peak,
+    //    since Mirai already multiplies by the unnormalized particle color itself.
+    lcolor:[3]f32
+    ue_peak:f32
+    if p.has_particle_color || p.has_color_add {
+        base_rgb:=p.has_particle_color ? [3]f32{max(p.particle_color.x,0),max(p.particle_color.y,0),max(p.particle_color.z,0)} : fb_rgb*p_scale
+        ue_color:=base_rgb*brightness+{max(p.color_add.x,0),max(p.color_add.y,0),max(p.color_add.z,0)}
+        cmax:=max(ue_color.x,max(ue_color.y,ue_color.z))
+        if cmax>0 {
+            lcolor=ue_color/cmax
+            ue_peak=cmax*max(diffuse_scale,0)
+        }
+    } else if fb_peak>0 {
+        ue_peak=p_scale*brightness*max(diffuse_scale,0)
     }
-    ue_color:=base_rgb*brightness+{max(p.color_add.x,0),max(p.color_add.y,0),max(p.color_add.z,0)}
-    ue_peak:=max(ue_color.x,max(ue_color.y,ue_color.z))*max(diffuse_scale,0)
 
     lintensity:=p.explicit_intensity
     if lintensity<=0 {lintensity=p.particle_intensity}
@@ -125,18 +139,6 @@ niagara_particle_light :: proc(p:Niagara_Light_Params) -> effect.Particle_Light 
             // Windowed radial falloff matched at half its attenuation radius (same as unreal_scene.light_convert).
             half:=lrange*0.5
             lintensity=ue_peak*math.pow(f32(0.75),max(p.default_exponent,0))*half*half
-        }
-    }
-
-    // Keep {0,0,0} when source does not override light color (Mirai uses the particle's color).
-    lcolor:[3]f32
-    if p.has_particle_color || p.has_color_add {
-        c:=p.has_particle_color ? base_rgb : [3]f32{max(p.color_add.x,0),max(p.color_add.y,0),max(p.color_add.z,0)}
-        cmax:=max(c.x,max(c.y,c.z))
-        if cmax>1 {
-            lcolor=c/cmax
-        } else {
-            lcolor=c
         }
     }
     lradius:=p.explicit_source_radius_m>0 ? p.explicit_source_radius_m : min(max(p.fallback_sprite_size_m*0.5,0),max(lrange,0))
