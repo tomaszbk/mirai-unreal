@@ -902,7 +902,10 @@ float unreal_two_sided_sign(Mirai_Surface_Context ctx) {
     return dot(ctx.normal,ctx.vertex_normal)>=0.0?1.0:-1.0;
 }
 float unreal_per_instance_random(Mirai_Surface_Context ctx) {
-    return mirai_cell_value(ctx.origin+int3(floor(ctx.object_position*100.0)));
+    int3 whole;
+    float3 part;
+    origin_lattice(ctx.origin,float3(100.0),whole,part);
+    return mirai_cell_value(whole+int3(floor(part+ctx.object_position*100.0)));
 }
 float unreal_fresnel(Mirai_Surface_Context ctx, float base_reflect, float exponent, float3 normal_ws) {
     float3 v=unreal_view_vector(ctx);

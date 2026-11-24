@@ -36,9 +36,8 @@ unreal_scale_to_mirai :: proc(s:[3]f32) -> [3]f32 {
 // Converts an Unreal quaternion (X,Y,Z,W) in left-handed Z-up to a Mirai
 // right-handed +Y up -Z forward quaternion.
 unreal_quat_to_mirai :: proc(q:[4]f32) -> quaternion128 {
-    // Similarity transform M = [0 1 0; 0 0 1; -1 0 0] (det = +1) maps axis (x,y,z) -> (y,z,-x);
-    // handedness flip negates angle for left->right, giving (-qy, -qz, qx, qw) or axis map;
-    // match mirai-unreal's scene/mesh convention: axis (y, z, -x) with negated handedness.
+    // Basis change M = [0 1 0; 0 0 1; -1 0 0] (det = -1, mirroring left->right handedness)
+    // maps axis (x,y,z) -> (y,z,-x) and negates the rotation angle: (-qy, -qz, qx, qw).
     m:=quaternion(x=-q.y,y=-q.z,z=q.x,w=q.w)
     return linalg.quaternion_normalize(m)
 }

@@ -411,3 +411,67 @@ niagara_vvm2_all_merged_opcodes_decompile :: proc(t:^testing.T) {
     testing.expect(t,strings.contains(text,"Context.Map.DataInstance.Alive = (v1 != 0u);"))
     testing.expect(t,strings.contains(text,"OutputDataFloat(0, 3, TmpWriteIndex, Context.Map.Particles.Age);"))
 }
+
+// Hostile VectorVM2 validation: rejects excessive register counts, out-of-range
+// temp registers, and unmapped output serials; handles stat scopes, fasi/iasf,
+// no-advance inputs, and raw ScriptLiterals bytes cleanly.
+@(test)
+niagara_vvm2_validation_and_edge_cases :: proc(t:^testing.T) {
+    u16le :: proc(out:^[dynamic]u8,v:u16) {append(out,u8(v),u8(v>>8))}
+    attrs:=slice.clone([]Niagara_Variable{
+        variable("Particles.Position","Vector3f"),
+        variable("Particles.Age","NiagaraFloat"),
+    },context.temp_allocator)
+
+    // 1. Hostile num_temp_regs > MAX_VVM2_REGS is rejected by parser.
+    tiny:=[]u8{u8(Niagara_Op.Done)}
+    _,hostile_ok:=niagara_vm2_parse(vvm2_blob(tiny,u32(MAX_VVM2_REGS+1),nil,nil,nil,nil,nil,nil),context.temp_allocator)
+    testing.expect(t,!hostile_ok)
+
+    // 2. Out-of-range destination register fails cleanly (no v65534 explosion).
+    bad_dst:=make([dynamic]u8,context.temp_allocator)
+    append(&bad_dst,u8(Niagara_Op.Exec_Index));u16le(&bad_dst,500)
+    append(&bad_dst,u8(Niagara_Op.Done))
+    ctx_bad,parsed_bad:=niagara_vm2_parse(vvm2_blob(bad_dst[:],2,nil,nil,nil,nil,nil,nil),context.temp_allocator)
+    testing.expect(t,parsed_bad)
+    vm_bad:=Niagara_Vm{vvm2=ctx_bad,usage=.Update,attributes=attrs}
+    probs:=make([dynamic]string,context.temp_allocator)
+    _,ok_bad:=niagara_vm_hlsl(&vm_bad,&probs)
+    testing.expect(t,!ok_bad && len(probs)>0)
+
+    // 3. Unmapped output serial reports a problem and does NOT write to raw register indices.
+    bad_out:=make([dynamic]u8,context.temp_allocator)
+    append(&bad_out,u8(Niagara_Op.Exec_Indexf));u16le(&bad_out,0)
+    append(&bad_out,u8(Niagara_Op.Output_Float),1,0);u16le(&bad_out,0);u16le(&bad_out,99)
+    append(&bad_out,u8(Niagara_Op.Done))
+    ctx_out,_:=niagara_vm2_parse(vvm2_blob(bad_out[:],2,nil,nil,nil,{0},{0},{3}),context.temp_allocator)
+    vm_out:=Niagara_Vm{vvm2=ctx_out,usage=.Update,attributes=attrs}
+    probs_out:=make([dynamic]string,context.temp_allocator)
+    out_text,ok_out:=niagara_vm_hlsl(&vm_out,&probs_out)
+    testing.expect(t,ok_out && len(probs_out)>0)
+    testing.expect(t,!strings.contains(out_text,"OutputDataFloat"))
+
+    // 4. Stat scopes + Fasi/Iasf + no-advance input + raw ScriptLiterals blob decompile cleanly.
+    raw_lit:=make([]u8,4,context.temp_allocator)
+    endian.put_u32(raw_lit,.Little,0x40000000) // 2.0f
+    lit_blob:=slice.clone([]Niagara_Variable{{name="ScriptLiterals",data=raw_lit}},context.temp_allocator)
+    // temps [0..1), consts [1..2) -> dword 160 (raw ScriptLiterals 2.0f),
+    // inputs [2..3) -> no-advance float reg 3 (Age); dup [3..4); outputs [4..5) -> serial 0 (Age).
+    code:=make([dynamic]u8,context.temp_allocator)
+    append(&code,u8(Niagara_Op.Enter_Stat_Scope));u16le(&code,7)
+    append(&code,u8(Niagara_Op.Fasi))
+    append(&code,u8(Niagara_Op.Iasf))
+    append(&code,u8(Niagara_Op.Add));u16le(&code,2);u16le(&code,1);u16le(&code,0)
+    append(&code,u8(Niagara_Op.Exit_Stat_Scope))
+    append(&code,u8(Niagara_Op.Output_Float),1,0);u16le(&code,0);u16le(&code,4)
+    append(&code,u8(Niagara_Op.Done))
+    noadv_offsets:=[]u16{0,0,0,0,1,1,1,1}
+    ctx_ok,parsed_ok:=niagara_vm2_parse(vvm2_blob(code[:],1,{160},{3},noadv_offsets,{0},{0},{3}),context.temp_allocator)
+    testing.expect(t,parsed_ok)
+    vm_ok:=Niagara_Vm{vvm2=ctx_ok,usage=.Update,attributes=attrs,literals=lit_blob}
+    probs_ok:=make([dynamic]string,context.temp_allocator)
+    text_ok,decompiled:=niagara_vm_hlsl(&vm_ok,&probs_ok)
+    testing.expectf(t,decompiled && len(probs_ok)==0,"edge-case VVM2 failed: %v",probs_ok[:])
+    testing.expect(t,strings.contains(text_ok,"0x40000000u"))
+    testing.expect(t,strings.contains(text_ok,"Context.Map.Particles.Age = InputDataFloat(0, 3);"))
+}

@@ -37,6 +37,99 @@ Cooked_Vfx_System :: struct {
     materials:[]cooked.Cooked_Material,
 }
 
+// Frees all allocations owned by a Cooked_Vfx_System produced with `allocator`.
+cooked_vfx_system_destroy :: proc(sys:^Cooked_Vfx_System,allocator:=context.allocator) {
+    delete(sys.name,allocator)
+    delete(sys.pkg,allocator)
+    for &em in sys.emitters {
+        delete(em.name,allocator)
+        delete(em.particle_bytes,allocator)
+        delete(em.program_name,allocator)
+        delete(em.program_source,allocator)
+        delete(em.material_path,allocator)
+        for mp in em.mesh_paths {delete(mp,allocator)}
+        delete(em.mesh_paths,allocator)
+        for w in em.warnings {delete(w,allocator)}
+        delete(em.warnings,allocator)
+    }
+    delete(sys.emitters,allocator)
+    for &m in sys.materials {cooked.cooked_material_destroy(&m,allocator)}
+    delete(sys.materials,allocator)
+    sys^={}
+}
+
+// Shared inputs from UNiagaraLightRendererProperties and particle attributes,
+// converted into a native Mirai .particle v10 effect.Particle_Light in one place.
+@(private)
+Niagara_Light_Params :: struct {
+    radius_scale:f32,          // UNiagaraLightRendererProperties::RadiusScale (default 1.0)
+    diffuse_scale:f32,         // UNiagaraLightRendererProperties::DiffuseScale (default 1.0)
+    color_add:[3]f32,          // UNiagaraLightRendererProperties::ColorAdd
+    has_color_add:bool,
+    explicit_range_m:f32,      // explicit light range in metres (>0 overrides radius_cm)
+    explicit_intensity:f32,    // explicit intensity in cd (>0 overrides fallback)
+    explicit_source_radius_m:f32,
+    particle_radius_cm:f32,    // Particles.LightRadius (cm) when known
+    particle_intensity:f32,    // Particles.LightIntensity / LightBrightness when known
+    particle_color:[3]f32,     // Particles.LightColor when known
+    has_particle_color:bool,
+    particle_scattering:f32,   // >=0 when explicitly specified
+    renderer_scattering:f32,   // default 1.0
+    indirect:f32,              // default 1.0
+    shadows:bool,
+    max_lights:u16,            // default 1
+    fallback_sprite_size_m:f32,
+    fallback_color:[4]f32,
+}
+
+// Builds a native Mirai effect.Particle_Light from extracted Niagara light renderer
+// properties, using sensible defaults only when a property is absent.
+@(private)
+niagara_particle_light :: proc(p:Niagara_Light_Params) -> effect.Particle_Light {
+    radius_scale:=p.radius_scale>0 ? p.radius_scale : 1.0
+    diffuse_scale:=p.diffuse_scale>0 ? p.diffuse_scale : 1.0
+    lrange:=p.explicit_range_m
+    if lrange<=0 {
+        if p.particle_radius_cm>0 {
+            lrange=p.particle_radius_cm*cooked.UNREAL_TO_MIRAI_SCALE*max(radius_scale,0.01)
+        } else {
+            // UE UNiagaraLightRendererProperties default LightRadius (100 cm = 1 m) scaled by RadiusScale.
+            lrange=1.0*max(radius_scale,0.1)
+        }
+    }
+    lintensity:=p.explicit_intensity
+    if lintensity<=0 {lintensity=p.particle_intensity}
+    if lintensity<=0 {
+        // When no explicit intensity is authored, derive candela from ColorAdd / HDR particle color.
+        cmax:=max(p.fallback_color.x,max(p.fallback_color.y,p.fallback_color.z))
+        add_max:=max(p.color_add.x,max(p.color_add.y,p.color_add.z))
+        drive:=max(max(cmax,add_max),1.0)
+        lintensity=100.0*max(diffuse_scale,0.1)*drive
+    }
+    lcolor:[3]f32
+    if p.has_particle_color {
+        lcolor={max(p.particle_color.x,0),max(p.particle_color.y,0),max(p.particle_color.z,0)}
+    } else if p.has_color_add {
+        lcolor={max(p.color_add.x,0),max(p.color_add.y,0),max(p.color_add.z,0)}
+    } else if p.fallback_color.x>0 || p.fallback_color.y>0 || p.fallback_color.z>0 {
+        cmax:=max(p.fallback_color.x,max(p.fallback_color.y,p.fallback_color.z))
+        if cmax>1e-4 {lcolor={p.fallback_color.x/cmax,p.fallback_color.y/cmax,p.fallback_color.z/cmax}}
+    }
+    if lcolor=={} {lcolor={1,1,1}}
+    lradius:=p.explicit_source_radius_m>0 ? p.explicit_source_radius_m : min(max(p.fallback_sprite_size_m*0.5,0),max(lrange,0))
+    lscatter:=p.particle_scattering>=0 ? p.particle_scattering : max(p.renderer_scattering,0)
+    return {
+        color=lcolor,
+        intensity=max(lintensity,0),
+        range=max(lrange,0),
+        radius=clamp(lradius,0,max(lrange,0)),
+        max_lights=max(p.max_lights,1),
+        shadows=p.shadows,
+        indirect=max(p.indirect,0),
+        scattering=max(lscatter,0),
+    }
+}
+
 // Parses a `ue5parse.niagara/2` JSON document into native Mirai `.particle`
 // emitters + Vfx Slang shaders + native `.mat` v6 materials.
 cooked_niagara_build :: proc(json_text:string,allocator:=context.allocator) -> (sys:Cooked_Vfx_System,err:Maybe(cooked.Error)) {
@@ -139,7 +232,7 @@ build_cooked_emitter :: proc(
                         if val>0 {out.info.rate=max(out.info.rate,val)}
                     case strings.contains(low,"spawnburst") && strings.has_suffix(low,".count"):
                         if val>0 && burst_idx<effect.PARTICLE_BURSTS {
-                            out.info.bursts[burst_idx]={time=0,count=u32(val+0.5),cycles=1,interval=0}
+                            out.info.bursts[burst_idx]={time=0,count=u32(clamp(val+0.5,0,1e6)),cycles=1,interval=0}
                             burst_idx+=1
                         }
                     case strings.contains(low,"loopduration"):
@@ -317,40 +410,28 @@ build_cooked_emitter :: proc(
         }
     }
 
-    // Populate Mirai .particle v10 Particle_Light when a Niagara light renderer or light bindings exist.
+    // Populate Mirai .particle v10 Particle_Light via shared Niagara light helper.
     if has_light_renderer || spawn_light_radius_cm>0 || spawn_light_intensity>0 {
-        lrange:=light_explicit_range
-        if lrange<=0 {
-            if spawn_light_radius_cm>0 {
-                lrange=spawn_light_radius_cm*cooked.UNREAL_TO_MIRAI_SCALE*max(light_radius_scale,0.01)
-            } else {
-                lrange=5.0*max(light_radius_scale,0.1)
-            }
-        }
-        lintensity:=light_explicit_intensity
-        if lintensity<=0 {lintensity=spawn_light_intensity}
-        if lintensity<=0 {
-            // Derive peak candela from color brightness when unlit HDR color drives Niagara light.
-            cmax:=max(out.info.colors[0].x,max(out.info.colors[0].y,out.info.colors[0].z))
-            lintensity=150.0*max(light_diffuse_scale,0.1)*max(cmax,1.0)
-        }
-        lcolor:=has_spawn_light_color ? spawn_light_color : light_color_add
-        if lcolor=={} && (out.info.colors[0].x>0||out.info.colors[0].y>0||out.info.colors[0].z>0) {
-            cmax:=max(out.info.colors[0].x,max(out.info.colors[0].y,out.info.colors[0].z))
-            if cmax>1e-4 {lcolor={out.info.colors[0].x/cmax,out.info.colors[0].y/cmax,out.info.colors[0].z/cmax}}
-        }
-        lradius:=light_explicit_radius>0 ? light_explicit_radius : min(max(out.info.size[0]*0.5,0),lrange)
-        lscatter:=spawn_light_scatter>=0 ? spawn_light_scatter : light_scattering
-        out.info.light={
-            color=lcolor,
-            intensity=max(lintensity,0),
-            range=max(lrange,0),
-            radius=clamp(lradius,0,max(lrange,0)),
-            max_lights=max(light_max,1),
+        out.info.light=niagara_particle_light({
+            radius_scale=light_radius_scale,
+            diffuse_scale=light_diffuse_scale,
+            color_add=light_color_add,
+            has_color_add=light_color_add!={},
+            explicit_range_m=light_explicit_range,
+            explicit_intensity=light_explicit_intensity,
+            explicit_source_radius_m=light_explicit_radius,
+            particle_radius_cm=spawn_light_radius_cm,
+            particle_intensity=spawn_light_intensity,
+            particle_color=spawn_light_color,
+            has_particle_color=has_spawn_light_color,
+            particle_scattering=spawn_light_scatter,
+            renderer_scattering=light_scattering,
+            indirect=light_indirect,
             shadows=light_shadows,
-            indirect=max(light_indirect,0),
-            scattering=max(lscatter,0),
-        }
+            max_lights=light_max,
+            fallback_sprite_size_m=out.info.size[0],
+            fallback_color=out.info.colors[0],
+        })
     }
 
     // Ensure non-zero spawn activity if emitter had neither rate nor bursts in EmitterScripts.
@@ -382,7 +463,8 @@ build_cooked_emitter :: proc(
     return
 }
 
-// Builds a valid Slang identifier for a cooked Niagara Vfx program.
+// Builds a collision-free Slang identifier <= PARTICLE_NAME_BYTES-1 (63 bytes)
+// for a cooked Niagara Vfx program so info.program always matches its namespace.
 @(private="file")
 cooked_program_name :: proc(sys_name,em_name:string,allocator:mem.Allocator) -> string {
     b:=strings.builder_make(context.temp_allocator)
@@ -390,7 +472,15 @@ cooked_program_name :: proc(sys_name,em_name:string,allocator:mem.Allocator) -> 
     write_ident(&b,sys_name)
     strings.write_byte(&b,'_')
     write_ident(&b,em_name)
-    return strings.clone(strings.to_string(b),allocator)
+    text:=strings.to_string(b)
+    max_len:=effect.PARTICLE_NAME_BYTES-1
+    if len(text)>max_len {
+        full:=strings.concatenate({sys_name,":",em_name},context.temp_allocator)
+        h:=base.hash64(transmute([]u8)full)
+        keep:=max(max_len-17,1)
+        return fmt.aprintf("%s_%016x",text[:keep],h,allocator=allocator)
+    }
+    return strings.clone(text,allocator)
 }
 
 @(private="file")
@@ -476,7 +566,8 @@ emit_cooked_vfx_slang :: proc(
     }
     strings.write_string(&s,"    particle.position = ue_to_mirai_pos(float3(a.f_Position_x, a.f_Position_y, a.f_Position_z));\n")
     strings.write_string(&s,"    particle.velocity = ue_to_mirai_pos(float3(a.f_Velocity_x, a.f_Velocity_y, a.f_Velocity_z));\n")
-    strings.write_string(&s,"    if (a.f_Lifetime > 1e-4) particle.lifetime = a.f_Lifetime;\n")
+    strings.write_string(&s,"    particle.lifetime = max(a.f_Lifetime, 1e-4);\n")
+    strings.write_string(&s,"    particle.age = max(a.f_Age, 0.0);\n")
     strings.write_string(&s,"}\n")
 
     // update()
@@ -484,19 +575,23 @@ emit_cooked_vfx_slang :: proc(
     strings.write_string(&s,"    uint seed = particle.seed ^ uint(ctx.time * 1000.0);\n")
     if has_update {
         emit_script_outputs(&s,update_script,field_set,user_params)
-        if keeps,has_k:=update_script["KeepConditions"].(json.Array);has_k {
-            for kc in keeps {
-                expr:=emit_expr(kc,field_set,user_params,0)
-                fmt.sbprintf(&s,"    if (!(%s != 0.0)) particle.age = 1.0;\n",expr)
-            }
-        }
     } else {
         strings.write_string(&s,"    a.f_Age += ctx.delta_time;\n")
     }
     strings.write_string(&s,"    particle.position = ue_to_mirai_pos(float3(a.f_Position_x, a.f_Position_y, a.f_Position_z));\n")
     strings.write_string(&s,"    particle.velocity = ue_to_mirai_pos(float3(a.f_Velocity_x, a.f_Velocity_y, a.f_Velocity_z));\n")
     strings.write_string(&s,"    particle.rotation = a.f_SpriteRotation * 0.0174532925;\n")
-    strings.write_string(&s,"    if (a.f_Lifetime > 1e-4) particle.age = saturate(a.f_Age / a.f_Lifetime);\n")
+    strings.write_string(&s,"    particle.lifetime = max(a.f_Lifetime, 1e-4);\n")
+    strings.write_string(&s,"    particle.age = max(a.f_Age, 0.0);\n")
+    // Evaluate KeepConditions AFTER updating age/lifetime so kill conditions are never overwritten.
+    if has_update {
+        if keeps,has_k:=update_script["KeepConditions"].(json.Array);has_k {
+            for kc in keeps {
+                expr:=emit_expr(kc,field_set,user_params,0)
+                fmt.sbprintf(&s,"    if (!(%s != 0.0)) particle.age = particle.lifetime;\n",expr)
+            }
+        }
+    }
     strings.write_string(&s,"}\n")
 
     // render()
@@ -644,10 +739,22 @@ emit_expr :: proc(v:json.Value,field_set:map[string]bool,user_params:map[string]
         case "cmpeq","cmpeqi": return fmt.tprintf("(%s == %s ? 1.0 : 0.0)",a0,a1)
         case "cmpneq","cmpneqi": return fmt.tprintf("(%s != %s ? 1.0 : 0.0)",a0,a1)
         case "select": return fmt.tprintf("(%s != 0.0 ? %s : %s)",a0,a1,a2)
-        case "logic_and","bit_and": return fmt.tprintf("((%s != 0.0 && %s != 0.0) ? 1.0 : 0.0)",a0,a1)
-        case "logic_or","bit_or": return fmt.tprintf("((%s != 0.0 || %s != 0.0) ? 1.0 : 0.0)",a0,a1)
-        case "logic_not","bit_not": return fmt.tprintf("(%s == 0.0 ? 1.0 : 0.0)",a0)
-        case "f2i","i2f","f2b","b2f","i2b","b2i","fasi","iasf","half_to_float": return a0
+        case "logic_and": return fmt.tprintf("((%s != 0.0 && %s != 0.0) ? 1.0 : 0.0)",a0,a1)
+        case "logic_or": return fmt.tprintf("((%s != 0.0 || %s != 0.0) ? 1.0 : 0.0)",a0,a1)
+        case "logic_xor": return fmt.tprintf("(((%s != 0.0) != (%s != 0.0)) ? 1.0 : 0.0)",a0,a1)
+        case "logic_not": return fmt.tprintf("(%s == 0.0 ? 1.0 : 0.0)",a0)
+        case "bit_and": return fmt.tprintf("float(int(%s) & int(%s))",a0,a1)
+        case "bit_or": return fmt.tprintf("float(int(%s) | int(%s))",a0,a1)
+        case "bit_xor": return fmt.tprintf("float(int(%s) ^ int(%s))",a0,a1)
+        case "bit_not": return fmt.tprintf("float(~int(%s))",a0)
+        case "bit_lshift": return fmt.tprintf("float(int(%s) << clamp(int(%s), 0, 31))",a0,a1)
+        case "bit_rshift": return fmt.tprintf("float(int(%s) >> clamp(int(%s), 0, 31))",a0,a1)
+        case "f2i","i2f": return fmt.tprintf("float(int(%s))",a0)
+        case "f2b","i2b": return fmt.tprintf("(%s > 0.0 ? 1.0 : 0.0)",a0)
+        case "b2f","b2i": return fmt.tprintf("(%s != 0.0 ? 1.0 : 0.0)",a0)
+        case "fasi": return fmt.tprintf("float(asint(%s))",a0)
+        case "iasf": return fmt.tprintf("asfloat(int(%s))",a0)
+        case "half_to_float": return a0
         }
     }
     return "0.0"

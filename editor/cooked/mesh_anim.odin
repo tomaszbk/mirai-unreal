@@ -335,7 +335,7 @@ cooked_anim_timeline_events :: proc(ev:^Cooked_Anim_Events,allocator:=context.al
             kind=.Marker,
             name=strings.clone(sm.name,allocator),
             time=sm.time,
-            class="SyncMarker",
+            class=strings.clone("SyncMarker",allocator),
         })
     }
     slice.sort_by(out[:],proc(a,b:Cooked_Clip_Event) -> bool {
@@ -346,20 +346,99 @@ cooked_anim_timeline_events :: proc(ev:^Cooked_Anim_Events,allocator:=context.al
     return out[:]
 }
 
+// Frees all allocations owned by a Cooked_Socket slice produced with `allocator`.
+cooked_sockets_destroy :: proc(sockets:[]Cooked_Socket,allocator:=context.allocator) {
+    for s in sockets {
+        delete(s.name,allocator)
+        delete(s.bone,allocator)
+    }
+    delete(sockets,allocator)
+}
+
+// Frees all allocations owned by a Cooked_Anim_Events produced with `allocator`.
+cooked_anim_events_destroy :: proc(ev:^Cooked_Anim_Events,allocator:=context.allocator) {
+    delete(ev.name,allocator)
+    for n in ev.notifies {
+        delete(n.name,allocator)
+        delete(n.class,allocator)
+        delete(n.track,allocator)
+    }
+    delete(ev.notifies,allocator)
+    for sm in ev.sync_markers {delete(sm.name,allocator)}
+    delete(ev.sync_markers,allocator)
+    for sec in ev.sections {
+        delete(sec.name,allocator)
+        delete(sec.next,allocator)
+    }
+    delete(ev.sections,allocator)
+    ev^={}
+}
+
+// Frees all allocations owned by a Animation_Marker_Desc slice produced by cooked_anim_markers.
+cooked_anim_markers_destroy :: proc(markers:[]asset.Animation_Marker_Desc,allocator:=context.allocator) {
+    for m in markers {delete(m.name,allocator)}
+    delete(markers,allocator)
+}
+
+// Frees all allocations owned by a Cooked_Clip_Event slice produced by cooked_anim_timeline_events.
+cooked_anim_timeline_events_destroy :: proc(events:[]Cooked_Clip_Event,allocator:=context.allocator) {
+    for e in events {
+        delete(e.name,allocator)
+        delete(e.class,allocator)
+        delete(e.track,allocator)
+    }
+    delete(events,allocator)
+}
+
+// Frees all allocations owned by a Cooked_Paired_Span slice produced by cooked_anim_paired_spans.
+cooked_anim_paired_spans_destroy :: proc(spans:[]Cooked_Paired_Span,allocator:=context.allocator) {
+    for s in spans {
+        delete(s.base_name,allocator)
+        delete(s.start_marker,allocator)
+        delete(s.end_marker,allocator)
+    }
+    delete(spans,allocator)
+}
+
 // Detects paired start/end point markers (e.g. *_On / *_Off, *_Begin / *_End,
 // *_Start / *_Stop) so callers can bind vfx_animation.Particle_Animation_Span
-// (span = start_marker, end_marker = end_marker).
+// (span = start_marker, end_marker = end_marker). Pairs each start marker with
+// the nearest later unpaired matching end marker regardless of input order.
 cooked_anim_paired_spans :: proc(ev:^Cooked_Anim_Events,allocator:=context.allocator) -> []Cooked_Paired_Span {
     PAIRS :: [3][2]string{{"_On","_Off"},{"_Begin","_End"},{"_Start","_Stop"}}
+    // Sort candidate indices chronologically so earlier starts claim the nearest later end first.
+    Entry :: struct {idx:int,time:f32}
+    entries:=make([]Entry,len(ev.notifies),context.temp_allocator)
+    for n,i in ev.notifies {entries[i]={i,n.time}}
+    slice.sort_by(entries,proc(a,b:Entry) -> bool {
+        if a.time!=b.time {return a.time<b.time}
+        return a.idx<b.idx
+    })
+    used_end:=make([]bool,len(ev.notifies),context.temp_allocator)
     out:=make([dynamic]Cooked_Paired_Span,allocator)
-    for a,i in ev.notifies {
+    for ea in entries {
+        i:=ea.idx
+        a:=ev.notifies[i]
         if a.duration>0 || a.name=="" {continue}
         for pair in PAIRS {
             if !strings.has_suffix(a.name,pair[0]) {continue}
             base:=a.name[:len(a.name)-len(pair[0])]
             want_end:=strings.concatenate({base,pair[1]},context.temp_allocator)
-            for b,j in ev.notifies {
-                if j==i || b.duration>0 || b.time<a.time || b.name!=want_end {continue}
+            best_j:=-1
+            best_time:f32=0
+            for eb in entries {
+                j:=eb.idx
+                if j==i || used_end[j] {continue}
+                b:=ev.notifies[j]
+                if b.duration>0 || b.time<a.time || b.name!=want_end {continue}
+                if best_j<0 || b.time<best_time {
+                    best_j=j
+                    best_time=b.time
+                }
+            }
+            if best_j>=0 {
+                used_end[best_j]=true
+                b:=ev.notifies[best_j]
                 append(&out,Cooked_Paired_Span{
                     base_name=strings.clone(base,allocator),
                     start_marker=strings.clone(a.name,allocator),
@@ -367,7 +446,6 @@ cooked_anim_paired_spans :: proc(ev:^Cooked_Anim_Events,allocator:=context.alloc
                     start_time=a.time,
                     end_time=b.time,
                 })
-                break
             }
         }
     }

@@ -6,6 +6,7 @@ import "core:mem"
 import "core:slice"
 import "core:strings"
 import "mirai:asset"
+import "mirai:std/base"
 
 // Converts `ue5parse material` / `uobject.material_params_json` cooked JSON
 // into a native Mirai v6 material (`asset.Material_Info` + `.mat` bytes +
@@ -37,6 +38,13 @@ Cooked_Switch :: struct {
     from:string,
 }
 
+// Channel packing layout of the metallic/roughness/specular mask texture.
+SMR_Layout :: enum u8 {
+    ORM,                // R = AO, G = Roughness, B = Metallic (standard glTF/UE ORM)
+    Fortnite_SMR,       // R = Specular, G = Metallic, B = Roughness (Fortnite SpecularMasks default)
+    Fortnite_SRM_Green, // R = Specular, G = Roughness, B = Metallic (SwizzleRoughnessToGreen = true)
+}
+
 Cooked_Material :: struct {
     name:string,
     path:string,
@@ -44,6 +52,7 @@ Cooked_Material :: struct {
     blend_mode:string,
     shading_model:string,
     archetype:Material_Archetype,
+    smr_layout:SMR_Layout,
     info:asset.Material_Info,
     texture_paths:[asset.Material_Map_Kind]string,
     program_name:string,
@@ -56,6 +65,65 @@ Cooked_Material :: struct {
     switches:[]Cooked_Switch,
     referenced_textures:[]string,
     dynamic_params:[]string,
+}
+
+// Frees all allocations owned by a Cooked_Material produced with `allocator`.
+cooked_material_destroy :: proc(m:^Cooked_Material,allocator:=context.allocator) {
+    delete(m.name,allocator)
+    delete(m.path,allocator)
+    delete(m.parent,allocator)
+    delete(m.blend_mode,allocator)
+    delete(m.shading_model,allocator)
+    delete(m.program_name,allocator)
+    delete(m.program_source,allocator)
+    delete(m.program_parameters,allocator)
+    for pt in m.program_textures {
+        delete(pt.param,allocator)
+        delete(pt.path,allocator)
+    }
+    delete(m.program_textures,allocator)
+    for s in m.scalars {delete(s.name,allocator);delete(s.from,allocator)}
+    delete(m.scalars,allocator)
+    for v in m.vectors {delete(v.name,allocator);delete(v.from,allocator)}
+    delete(m.vectors,allocator)
+    for t in m.textures {delete(t.name,allocator);delete(t.path,allocator);delete(t.from,allocator)}
+    delete(m.textures,allocator)
+    for sw in m.switches {delete(sw.name,allocator);delete(sw.from,allocator)}
+    delete(m.switches,allocator)
+    for r in m.referenced_textures {delete(r,allocator)}
+    delete(m.referenced_textures,allocator)
+    for d in m.dynamic_params {delete(d,allocator)}
+    delete(m.dynamic_params,allocator)
+    m^={}
+}
+
+// Resolves texture paths on `m` into native Mirai Asset_Ids on both standard
+// Material_Info.maps slots and archetype program_parameters (.Texture entries).
+cooked_material_bind_textures :: proc(
+    m:^Cooked_Material,
+    resolve:proc(path:string,user:rawptr) -> base.Asset_Id,
+    user:rawptr=nil,
+) {
+    if resolve==nil {return}
+    maps:=asset.material_maps(&m.info.maps)
+    for kind in asset.Material_Map_Kind {
+        if path:=m.texture_paths[kind];path!="" {
+            if id:=resolve(path,user);id!={} {
+                maps[kind].texture=id
+            }
+        }
+    }
+    for pt in m.program_textures {
+        if pt.path=="" {continue}
+        id:=resolve(pt.path,user)
+        if id=={} {continue}
+        for &param in m.program_parameters {
+            if param.kind==.Texture && base.text_get(param.name[:])==pt.param {
+                param.texture=id
+                break
+            }
+        }
+    }
 }
 
 // Parses cooked material JSON (`ue5parse material` or canonical sidecar JSON)
@@ -259,14 +327,22 @@ cooked_material_parse :: proc(json_text:string,allocator:=context.allocator) -> 
     }
 
     // Wire ShadingModel directly to Mirai v6 Material_Subsurface / Material_Diffuse_Transmission.
+    // UE MSM_Subsurface and MSM_PreintegratedSkin invert Opacity (0 = max scatter, 1 = opaque);
+    // UE MSM_SubsurfaceProfile uses Opacity directly (0 = none, 1 = full scatter).
     shading:=short_enum(m.shading_model)
     sss_color:=[3]f32{1,1,1}
     if v,found:=find_vector(m.vectors,{"SubsurfaceColor","SubsurfaceTint","FoliageSubsurfaceColor","ScatterColor","SkinSubsurfaceColor"});found {
         sss_color={clamp(v.x,0,1),clamp(v.y,0,1),clamp(v.z,0,1)}
     }
     sss_weight:f32=1
-    if s,found:=find_scalar(m.scalars,{"SubsurfaceOpacity","SubsurfaceWeight","SubsurfaceStrength","Opacity"});found {
+    if s,found:=find_scalar(m.scalars,{"SubsurfaceWeight","SubsurfaceStrength"});found {
         sss_weight=clamp(s,0,1)
+    } else if s,found_op:=find_scalar(m.scalars,{"SubsurfaceOpacity","Opacity"});found_op {
+        if shading=="MSM_SubsurfaceProfile" || shading=="SubsurfaceProfile" {
+            sss_weight=clamp(s,0,1)
+        } else {
+            sss_weight=clamp(1-s,0,1)
+        }
     }
     sss_radius:f32=0.015
     if s,found:=find_scalar(m.scalars,{"SubsurfaceRadius","ScatterRadius"});found {
@@ -284,6 +360,7 @@ cooked_material_parse :: proc(json_text:string,allocator:=context.allocator) -> 
         if two_sided {
             apply_diffuse_transmission(&m.info,sss_color)
         } else {
+            m.info.diffuse_transmission={}
             m.info.subsurface={
                 weight=sss_weight,
                 color=sss_color,
@@ -291,6 +368,7 @@ cooked_material_parse :: proc(json_text:string,allocator:=context.allocator) -> 
             }
         }
     case "MSM_SubsurfaceProfile","SubsurfaceProfile":
+        m.info.diffuse_transmission={}
         m.info.subsurface={weight=sss_weight,color=sss_color,radius=min(sss_radius,0.012)}
     case "MSM_ClearCoat","ClearCoat":
         coat_w:f32=1
@@ -342,6 +420,7 @@ cooked_material_bytes :: proc(m:^Cooked_Material,allocator:=context.allocator) -
 
 @(private="file")
 apply_diffuse_transmission :: proc(info:^asset.Material_Info,sss:[3]f32) {
+    info.subsurface={}
     mb:=max(info.base_color.x,max(info.base_color.y,info.base_color.z))
     ms:=max(sss.x,max(sss.y,sss.z))
     total:=mb+ms
@@ -405,14 +484,19 @@ classify_texture_slot :: proc(name:string) -> (asset.Material_Map_Kind,bool) {
         return .Emission,true
     case strings.contains(low,"subsurface") || strings.contains(low,"sss"):
         return .Subsurface,true
+    // Check packed PBR channel maps (SpecularMasks, SRM, SMR, ORM, MRA) BEFORE generic "mask"
+    // so SpecularMasks is never misclassified as an opacity mask.
+    case strings.contains(low,"specularmasks") || strings.contains(low,"specular_masks") ||
+         strings.contains(low,"srm") || strings.contains(low,"smr") ||
+         strings.contains(low,"orm") || strings.contains(low,"mra") ||
+         strings.contains(low,"rough") || strings.contains(low,"metal"):
+        return .Metallic_Roughness,true
+    case strings.contains(low,"specular") || strings.has_suffix(low,"_s"):
+        return .Specular,true
     case strings.contains(low,"opacity") || strings.contains(low,"alpha") || strings.contains(low,"mask"):
         return .Mask,true
     case strings.contains(low,"ao") || strings.contains(low,"occlusion"):
         return .Occlusion,true
-    case strings.contains(low,"specular") || strings.has_suffix(low,"_s"):
-        return .Specular,true
-    case strings.contains(low,"rough") || strings.contains(low,"metal") || strings.contains(low,"orm") || strings.contains(low,"mra") || strings.contains(low,"srm"):
-        return .Metallic_Roughness,true
     case strings.contains(low,"diffuse") || strings.contains(low,"albedo") || strings.contains(low,"basecolor") || strings.contains(low,"base_color") || strings.contains(low,"color") || strings.has_suffix(low,"_d"):
         return .Base_Color,true
     }

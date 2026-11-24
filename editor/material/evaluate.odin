@@ -611,6 +611,9 @@ expression_build :: proc(e:^Evaluator,o:Object,output:i32,scope:i32) -> Value {
     }
     switch kind {
     case "Fresnel":
+        if !e.seen_from_eye {
+            note(e,"%s is taken at normal incidence: Mirai surface programs do not see the camera",object_name(o))
+        }
         base:=pin_or(e,o,"BaseReflectFractionIn","BaseReflectFraction",0.04,scope)
         exp:=pin_or(e,o,"ExponentIn","Exponent",5,scope)
         norm,has_norm:=pin(e,o,"Normal",scope)
@@ -618,8 +621,14 @@ expression_build :: proc(e:^Evaluator,o:Object,output:i32,scope:i32) -> Value {
         val,const_ok:=evaluate_constant(g,base)
         return nodes(node_add(g,{op=.Fresnel,width=1,value={const_ok?val.x:0.04,0,0,0},args={convert(g,base,1),convert(g,exp,1),norm}}))
     case "CameraVectorWS":
+        if !e.seen_from_eye {
+            note(e,"%s is taken at normal incidence: Mirai surface programs do not see the camera",object_name(o))
+        }
         return nodes(context_value(g,.Camera_Vector,3))
     case "ReflectionVectorWS":
+        if !e.seen_from_eye {
+            note(e,"%s is taken at normal incidence: Mirai surface programs do not see the camera",object_name(o))
+        }
         norm,has_norm:=pin(e,o,"CustomWorldNormal",scope)
         n:=has_norm?unary(g,.Normalize,convert(g,norm,3)):context_value(g,.Pixel_Normal,3)
         v:=context_value(g,.Camera_Vector,3)
@@ -718,15 +727,14 @@ expression_build :: proc(e:^Evaluator,o:Object,output:i32,scope:i32) -> Value {
         return nodes(append_values(g,diam,diam))
     // Mirai's sprite vertex shader applies SubUV frame UVs to ctx.uv0.
     case "ParticleSubUV":return texture_sample(e,o,scope)
-    case "ParticlePositionWS":return nodes(world_place(e,.Object_Position))
-    // Normalized particle age [0..1] passed via DynamicParameter slot 3.w when provided by a VFX program.
+    case "ParticlePositionWS":
+        return untranslated(e,o,"Mirai surface programs do not carry per-particle world position")
     case "ParticleRelativeTime":
-        data:=node_add(g,{op=.Particle_Data,width=4,index=3,value={0,0,0,0},args={NONE,NONE,NONE}})
-        return nodes(component(g,data,3))
-    case "ParticleDirection":return nodes(unary(g,.Normalize,object_axis(e,0)))
+        return untranslated(e,o,"Mirai surface programs do not carry normalized particle age")
+    case "ParticleDirection":
+        return untranslated(e,o,"Mirai surface programs do not carry particle velocity direction")
     case "ParticleSpeed":
-        note(e,"ParticleSpeed is taken as 0: Mirai surface programs do not carry particle velocity")
-        return nodes(scalar(g,0))
+        return untranslated(e,o,"Mirai surface programs do not carry particle speed")
     case "ParticleMotionBlurFade":return nodes(scalar(g,1))
     case "Custom":return custom_expression(e,o,output,scope)
     // How much the value changes to the next pixel of the image along x or y.

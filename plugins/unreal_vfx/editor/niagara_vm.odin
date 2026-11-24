@@ -81,8 +81,7 @@ Niagara_Vm2_Ext_Fn :: struct {
     num_inputs,num_outputs:int,
 }
 
-// Frozen VectorVM2 runtime context parsed from ExperimentalContextData / OptimizedByteCode
-// (UE6 VectorVMBridge.cpp ThawRuntimeContext & VectorVMRuntime.cpp VVMBuildMapTableCaches).
+// Frozen VectorVM2 runtime context parsed from ExperimentalContextData / OptimizedByteCode.
 Niagara_Vm2 :: struct {
     bytecode:[]u8,
     num_temp_regs:int,
@@ -91,6 +90,10 @@ Niagara_Vm2 :: struct {
     outputs:[]Niagara_Vm2_Output,
     ext_fns:[]Niagara_Vm2_Ext_Fn,
 }
+
+// Defensive caps rejecting hostile/corrupt frozen VectorVM2 headers before allocation.
+MAX_VVM2_REGS :: 4096
+MAX_VVM2_EXT_FNS :: 1024
 
 // What the decompilation reads of a script.
 Niagara_Vm :: struct {
@@ -122,7 +125,9 @@ niagara_vm2_parse :: proc(data:[]u8,allocator:=context.temp_allocator) -> (ctx:N
     num_outputs_remapped:=int(u16_at(data,22))
     num_ext_fns:=int(u32_at(data,26))
     if num_bytecode==0 || num_bytecode>len(data) {return}
-    if num_temp_regs>1<<20 || num_ext_fns>1<<16 {return}
+    if num_temp_regs<0 || num_temp_regs>MAX_VVM2_REGS {return}
+    if num_consts_remapped>MAX_VVM2_REGS || num_inputs_remapped>MAX_VVM2_REGS || num_outputs_remapped>MAX_VVM2_REGS {return}
+    if num_input_datasets>256 || num_ext_fns<0 || num_ext_fns>MAX_VVM2_EXT_FNS {return}
 
     // sizeof(FRuntimeContextData) == 56 -> 16-byte aligned Bytecode starts at 64.
     at:=64
@@ -160,12 +165,34 @@ niagara_vm2_parse :: proc(data:[]u8,allocator:=context.temp_allocator) -> (ctx:N
     if num_inputs_remapped>0 {
         ctx.inputs=make([]Niagara_Vm2_Input,num_inputs_remapped,allocator)
         for i in 0..<num_inputs_remapped {ctx.inputs[i]={index=int(input_remap[i])}}
+        // Populate both regular (offsets[0..3]) and no-advance (offsets[3..6] when offsets[7] > 0)
+        // inputs in the sequential order the runtime assigns input buffer slots.
+        counter:=0
+        reg_kinds:=[3]Niagara_Register{.Float,.Int,.Half}
         for ds in 0..<num_input_datasets {
             base:=ds*8
-            f_start,i_start,h_start,h_end:=int(input_offsets[base+0]),int(input_offsets[base+1]),int(input_offsets[base+2]),int(input_offsets[base+3])
-            for k in f_start..<min(i_start,num_inputs_remapped) {ctx.inputs[k]={ds,.Float,int(input_remap[k])}}
-            for k in i_start..<min(h_start,num_inputs_remapped) {ctx.inputs[k]={ds,.Int,int(input_remap[k])}}
-            for k in h_start..<min(h_end,num_inputs_remapped) {ctx.inputs[k]={ds,.Half,int(input_remap[k])}}
+            for j in 0..<3 {
+                start:=int(input_offsets[base+j])
+                end:=int(input_offsets[base+j+1])
+                for k in start..<min(end,num_inputs_remapped) {
+                    if counter<num_inputs_remapped {
+                        ctx.inputs[counter]={ds,reg_kinds[j],int(input_remap[k])}
+                        counter+=1
+                    }
+                }
+            }
+            if input_offsets[base+7]>0 {
+                for j in 0..<3 {
+                    start:=int(input_offsets[base+3+j])
+                    end:=int(input_offsets[base+4+j])
+                    for k in start..<min(end,num_inputs_remapped) {
+                        if counter<num_inputs_remapped {
+                            ctx.inputs[counter]={ds,reg_kinds[j],int(input_remap[k])}
+                            counter+=1
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -368,7 +395,8 @@ niagara_vm_read :: proc(d:^level.Document,script:level.Ref,vm_fields:^Struct_Fie
         if ctx,parsed:=niagara_vm2_parse(opt,context.temp_allocator);parsed {
             vm.vvm2=ctx
         } else {
-            vm.code=opt
+            append(problems,"its VectorVM2 OptimizedByteCode is malformed: its script is not translated")
+            return
         }
     } else {
         return
@@ -393,7 +421,9 @@ niagara_vm_read :: proc(d:^level.Document,script:level.Ref,vm_fields:^Struct_Fie
         append(problems,"its literals do not read: its script is not translated")
         return
     }
-    if len(vm.literals)==0 {
+    literal_bytes:=0
+    for v in vm.literals {literal_bytes+=len(v.data)}
+    if literal_bytes==0 {
         if raw:=niagara_vm_raw_bytes(p,vm_fields,"ScriptLiterals");len(raw)>0 {
             vm.literals=slice.clone([]Niagara_Variable{{name="ScriptLiterals",data=raw}},context.temp_allocator)
         }
@@ -814,8 +844,7 @@ niagara_vm_output :: proc(w:^Niagara_Vm_Writer,set,index:int,register:Niagara_Re
     if !slice.contains(w.writes[:],line) {append(&w.writes,line)}
 }
 
-// The operations of VectorVM1 (0..97) and VectorVM2 merged Fortnite opcodes
-// (98..178, matching UE6 VectorVM.h:51-233).
+// The operations of VectorVM1 (0..97) and VectorVM2 merged opcodes (98..178).
 @(private)
 Niagara_Op :: enum u8 {
     Done,Add,Sub,Mul,Div,Mad,Lerp,Rcp,Rsq,Sqrt,Neg,Abs,Exp,Exp2,Log,Log2,Sin,Cos,Tan,Asin,Acos,Atan,Atan2,
@@ -883,7 +912,7 @@ niagara_op_outputs :: proc(op:Niagara_Op) -> int {
     return niagara_op_inputs(op)>0 ? 1 : 0
 }
 
-// The bits an operation over registers leaves, as the VM computes them (UE6 VectorVMRuntime.cpp).
+// The bits an operation over registers leaves, as the VM computes them.
 // Returns expr0 and, for 2-output merged ops, expr1.
 @(private)
 niagara_op_expressions :: proc(op:Niagara_Op,args:[]string) -> (e0,e1:string) {
@@ -972,7 +1001,7 @@ niagara_op_expressions :: proc(op:Niagara_Op,args:[]string) -> (e0,e1:string) {
     case .I2b: return mask("%s > 0",I(a)),""
     case .B2i: return fmt.tprintf("%s & 1u",a),""
     case .Half_To_Float,.Fasi,.Iasf: return a,""
-    // Merged VectorVM2 / Fortnite opcodes (98..176, UE6 VectorVMRuntime.cpp:2063-2140).
+    // Merged VectorVM2 opcodes (99..176; 98 is exec_indexf and 177..178 are half outputs).
     case .Exec_Index_Addi: return f("ExecIndex() + %s",I(a)),""
     case .Cmplt_Select: return sel(mask("%s < %s",F(a),F(b)),c,d),""
     case .Cmple_Select: return sel(mask("%s <= %s",F(a),F(b)),c,d),""
@@ -1080,7 +1109,10 @@ niagara_vm2_call :: proc(w:^Niagara_Vm_Writer,fn:^Niagara_Vm_Function,in_exprs:[
     strings.write_string(&prototype,");")
     if text:=strings.to_string(prototype);!slice.contains(w.prototypes[:],text) {append(&w.prototypes,text)}
     strings.write_string(&w.body,"    {\n")
-    k:=1
+    in_components:=0
+    for p in fn.params[:fn.ins] {in_components+=len(p.type.components)}
+    // Skip leading data-interface instance register(s) when present before parameter components.
+    k:=len(in_exprs)>in_components ? len(in_exprs)-in_components : 0
     for p,i in fn.params {
         fmt.sbprintf(&w.body,"        %s a%d = (%s)0;\n",p.type.hlsl,i,p.type.hlsl)
         if i>=fn.ins {continue}
@@ -1108,6 +1140,10 @@ niagara_vm2_call :: proc(w:^Niagara_Vm_Writer,fn:^Niagara_Vm_Function,in_exprs:[
 // into the same HLSL shape as niagara_vm_hlsl.
 @(private)
 niagara_vm2_hlsl :: proc(w:^Niagara_Vm_Writer,ctx:^Niagara_Vm2,entry,map_name:string,problems:^[dynamic]string) -> (text:string,ok:bool) {
+    if ctx.num_temp_regs<0 || ctx.num_temp_regs>MAX_VVM2_REGS {
+        append(problems,"its VectorVM2 temp register count is out of range: its script is not translated")
+        return
+    }
     code:=ctx.bytecode
     at:=0
     const_base:=ctx.num_temp_regs
@@ -1119,12 +1155,20 @@ niagara_vm2_hlsl :: proc(w:^Niagara_Vm_Writer,ctx:^Niagara_Vm2,entry,map_name:st
         v,_:=endian.get_u16(code[at:],.Little)
         return int(v)
     }
-    reg :: proc(w:^Niagara_Vm_Writer,index:int) -> string {
+    write_reg :: proc(w:^Niagara_Vm_Writer,ctx:^Niagara_Vm2,index:int,bad_reg:^bool) -> string {
+        if index<0 || index>=ctx.num_temp_regs {
+            bad_reg^=true
+            return "v0"
+        }
         w.registers=max(w.registers,index+1)
         return fmt.tprintf("v%d",index)
     }
-    read_reg :: proc(w:^Niagara_Vm_Writer,ctx:^Niagara_Vm2,const_base,input_base:int,r:int) -> string {
+    read_reg :: proc(w:^Niagara_Vm_Writer,ctx:^Niagara_Vm2,const_base,input_base:int,r:int,bad_reg:^bool) -> string {
         if r==0xFFFF {return "0u"}
+        if r>=0 && r<ctx.num_temp_regs {
+            w.registers=max(w.registers,r+1)
+            return fmt.tprintf("v%d",r)
+        }
         if r>=const_base && r<const_base+len(ctx.const_remap) {
             return niagara_vm_constant(w,int(ctx.const_remap[r-const_base])*4)
         }
@@ -1132,8 +1176,8 @@ niagara_vm2_hlsl :: proc(w:^Niagara_Vm_Writer,ctx:^Niagara_Vm2,entry,map_name:st
             inp:=ctx.inputs[r-input_base]
             return niagara_vm_input(w,inp.data_set,inp.index,inp.register)
         }
-        w.registers=max(w.registers,r+1)
-        return fmt.tprintf("v%d",r)
+        bad_reg^=true
+        return "0u"
     }
 
     decode: for at<len(code) {
@@ -1144,23 +1188,28 @@ niagara_vm2_hlsl :: proc(w:^Niagara_Vm_Writer,ctx:^Niagara_Vm2,entry,map_name:st
         op:=Niagara_Op(code[at])
         at+=1
         bad:=false
+        bad_reg:=false
         #partial switch op {
         case .Done:
             break decode
+        case .Enter_Stat_Scope:
+            if at+2>len(code) {bad=true;break}
+            at+=2
+        case .Exit_Stat_Scope,.Fasi,.Iasf:
+            // Stripped / no-op in frozen VectorVM2 bytecode.
         case .Exec_Index:
             dst:=u16_at(code,at,&bad)
             at+=2
             if bad {break}
-            fmt.sbprintf(&w.body,"    %s = asuint(ExecIndex());\n",reg(w,dst))
+            fmt.sbprintf(&w.body,"    %s = asuint(ExecIndex());\n",write_reg(w,ctx,dst,&bad_reg))
         case .Exec_Indexf:
             dst:=u16_at(code,at,&bad)
             at+=2
             if bad {break}
-            fmt.sbprintf(&w.body,"    %s = asuint(float(ExecIndex()));\n",reg(w,dst))
+            fmt.sbprintf(&w.body,"    %s = asuint(float(ExecIndex()));\n",write_reg(w,ctx,dst,&bad_reg))
         case .Output_Float,.Output_Int,.Output_Half,.Output_Float_From_Half,.Output_Half_From_Half:
             if at+2>len(code) {bad=true;break}
             num_loops:=int(code[at])
-            ds_ins:=int(code[at+1])
             at+=2
             if at+num_loops*4>len(code) {bad=true;break}
             srcs:=make([]int,num_loops,context.temp_allocator)
@@ -1170,17 +1219,17 @@ niagara_vm2_hlsl :: proc(w:^Niagara_Vm_Writer,ctx:^Niagara_Vm2,entry,map_name:st
             for j in 0..<num_loops {dsts[j]=u16_at(code,at+j*2,&bad)}
             at+=num_loops*2
             if bad {break}
-            def_reg:=Niagara_Register.Float
-            if op==.Output_Int {def_reg=.Int} else if op==.Output_Half || op==.Output_Half_From_Half {def_reg=.Half}
             for j in 0..<num_loops {
                 serial:=dsts[j]-output_base
-                ds,rkind,dst_reg:=ds_ins,def_reg,dsts[j]
-                if serial>=0 && serial<len(ctx.outputs) {
-                    o:=ctx.outputs[serial]
-                    if o.dst_reg==0xFFFF {continue}
-                    ds,rkind,dst_reg=o.data_set,o.register,o.dst_reg
+                if serial<0 || serial>=len(ctx.outputs) {
+                    niagara_vm_problem(w,"its VectorVM2 output register %d is outside the output remap table: skipped",dsts[j])
+                    continue
                 }
-                niagara_vm_output(w,ds,dst_reg,rkind,read_reg(w,ctx,const_base,input_base,srcs[j]))
+                o:=ctx.outputs[serial]
+                if o.dst_reg==0xFFFF {continue}
+                src_expr:=read_reg(w,ctx,const_base,input_base,srcs[j],&bad_reg)
+                if bad_reg {break}
+                niagara_vm_output(w,o.data_set,o.dst_reg,o.register,src_expr)
             }
         case .Acquire_Index:
             in_reg:=u16_at(code,at,&bad)
@@ -1189,7 +1238,7 @@ niagara_vm2_hlsl :: proc(w:^Niagara_Vm_Writer,ctx:^Niagara_Vm2,entry,map_name:st
             at+=3
             if bad {break}
             if ds==0 && w.vm.usage!=.System {
-                fmt.sbprintf(&w.body,"    %s = (%s != 0u);\n",niagara_vm_path(w,"DataInstance.Alive","bool"),read_reg(w,ctx,const_base,input_base,in_reg))
+                fmt.sbprintf(&w.body,"    %s = (%s != 0u);\n",niagara_vm_path(w,"DataInstance.Alive","bool"),read_reg(w,ctx,const_base,input_base,in_reg,&bad_reg))
             }
         case .Update_Id,.Acquire_Id:
             r0,r1:=u16_at(code,at,&bad),u16_at(code,at+2,&bad)
@@ -1197,7 +1246,7 @@ niagara_vm2_hlsl :: proc(w:^Niagara_Vm_Writer,ctx:^Niagara_Vm2,entry,map_name:st
             at+=5
             if bad {break}
             if op==.Acquire_Id {
-                fmt.sbprintf(&w.body,"    %s = asuint(niagara_id.x);\n    %s = asuint(niagara_id.y);\n",reg(w,r0),reg(w,r1))
+                fmt.sbprintf(&w.body,"    %s = asuint(niagara_id.x);\n    %s = asuint(niagara_id.y);\n",write_reg(w,ctx,r0,&bad_reg),write_reg(w,ctx,r1,&bad_reg))
             }
         case .External_Call:
             fi:=u16_at(code,at,&bad)
@@ -1212,16 +1261,16 @@ niagara_vm2_hlsl :: proc(w:^Niagara_Vm_Writer,ctx:^Niagara_Vm2,entry,map_name:st
             if fi<len(ctx.ext_fns) {n_in,n_out=ctx.ext_fns[fi].num_inputs,ctx.ext_fns[fi].num_outputs}
             if n_in<0 || n_out<0 || at+2*(n_in+n_out)>len(code) {bad=true;break}
             in_exprs:=make([]string,n_in,context.temp_allocator)
-            for k in 0..<n_in {in_exprs[k]=read_reg(w,ctx,const_base,input_base,u16_at(code,at+2*k,&bad))}
+            for k in 0..<n_in {in_exprs[k]=read_reg(w,ctx,const_base,input_base,u16_at(code,at+2*k,&bad),&bad_reg)}
             at+=2*n_in
             out_regs:=make([]int,n_out,context.temp_allocator)
             for k in 0..<n_out {
                 r:=u16_at(code,at+2*k,&bad)
                 out_regs[k]=r
-                if r!=0xFFFF {_=reg(w,r)}
+                if r!=0xFFFF {_=write_reg(w,ctx,r,&bad_reg)}
             }
             at+=2*n_out
-            if bad {break}
+            if bad || bad_reg {break}
             niagara_vm2_call(w,fn,in_exprs,out_regs)
         case:
             inputs:=niagara_op_inputs(op)
@@ -1231,14 +1280,18 @@ niagara_vm2_hlsl :: proc(w:^Niagara_Vm_Writer,ctx:^Niagara_Vm2,entry,map_name:st
                 return
             }
             args:[5]string
-            for i in 0..<inputs {args[i]=read_reg(w,ctx,const_base,input_base,u16_at(code,at+2*i,&bad))}
+            for i in 0..<inputs {args[i]=read_reg(w,ctx,const_base,input_base,u16_at(code,at+2*i,&bad),&bad_reg)}
             dst0:=u16_at(code,at+2*inputs,&bad)
             dst1:=outputs==2 ? u16_at(code,at+2*(inputs+1),&bad) : 0xFFFF
             at+=2*(inputs+outputs)
             if bad {break}
             e0,e1:=niagara_op_expressions(op,args[:inputs])
-            fmt.sbprintf(&w.body,"    %s = %s;\n",reg(w,dst0),e0)
-            if outputs==2 && dst1!=0xFFFF {fmt.sbprintf(&w.body,"    %s = %s;\n",reg(w,dst1),e1)}
+            fmt.sbprintf(&w.body,"    %s = %s;\n",write_reg(w,ctx,dst0,&bad_reg),e0)
+            if outputs==2 && dst1!=0xFFFF {fmt.sbprintf(&w.body,"    %s = %s;\n",write_reg(w,ctx,dst1,&bad_reg),e1)}
+        }
+        if bad_reg {
+            append(problems,fmt.tprintf("its VectorVM2 bytecode references an out-of-range register near byte %d: its script is not translated",at))
+            return
         }
         if bad {
             append(problems,fmt.tprintf("its bytecode ends inside an operation at byte %d: its script is not translated",at))

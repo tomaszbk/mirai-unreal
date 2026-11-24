@@ -661,20 +661,27 @@ niagara_renderer :: proc(c:^unreal_scene.Context,info:^effect.Particle_Info,rend
     case "NiagaraLightRendererProperties":
         radius_scale:=max(real(d,renderer,"RadiusScale",1),0)
         diffuse_scale:=max(real(d,renderer,"DiffuseScale",1),0)
-        color_add,_:=vector_of(d,renderer,"ColorAdd")
+        color_add,has_color_add:=vector_of(d,renderer,"ColorAdd")
         shadows,_:=level.bool_of(d,renderer,"bMegaLightsCastShadows",false)
-        light_range:=5.0*max(radius_scale,0.1)
-        light_intensity:=150.0*max(diffuse_scale,0.1)
-        info.light={
-            color={max(color_add.x,0),max(color_add.y,0),max(color_add.z,0)},
-            intensity=max(light_intensity,0),
-            range=max(light_range,0),
-            radius=min(max(info.size[0]*0.5,0),max(light_range,0)),
-            max_lights=1,
+        explicit_radius_cm:=max(real(d,renderer,"Radius",0),0)
+        explicit_intensity:=max(real(d,renderer,"Intensity",0),0)
+        scattering:=max(real(d,renderer,"VolumetricScatteringIntensity",1),0)
+        indirect:=max(real(d,renderer,"IndirectLightingIntensity",1),0)
+        info.light=niagara_particle_light({
+            radius_scale=radius_scale,
+            diffuse_scale=diffuse_scale,
+            color_add={max(color_add.x,0),max(color_add.y,0),max(color_add.z,0)},
+            has_color_add=has_color_add && (color_add.x>0 || color_add.y>0 || color_add.z>0),
+            particle_radius_cm=explicit_radius_cm,
+            explicit_intensity=explicit_intensity,
+            particle_scattering=-1,
+            renderer_scattering=scattering,
+            indirect=indirect,
             shadows=shadows,
-            indirect=1,
-            scattering=1,
-        }
+            max_lights=1,
+            fallback_sprite_size_m=info.size[0],
+            fallback_color=info.colors[0],
+        })
         return false
     case:
         unreal_scene.warn(c,"Mirai's effects have nothing for the renderer %s",class)

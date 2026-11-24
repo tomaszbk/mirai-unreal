@@ -2206,25 +2206,26 @@ a_grass_output_gives_each_grass_type_its_layers_rule_and_varieties :: proc(t:^te
     testing.expect(t,d.density==4 && d.cull=={100,100} && d.weights=={0,1} && d.scaling==.Uniform && d.casts_shadow,"the defaults of a variety")
 }
 
-// Solid Subsurface / PreintegratedSkin / SubsurfaceProfile wire to Mirai
-// Material_Subsurface (with Opacity as weight), while TwoSidedFoliage and
-// thin Subsurface wire to Material_Diffuse_Transmission.
+// Solid Subsurface / PreintegratedSkin (inverted Opacity: 1 - Opacity) and
+// SubsurfaceProfile (direct Opacity) wire to Mirai Material_Subsurface, while
+// TwoSidedFoliage and thin Subsurface wire to Material_Diffuse_Transmission.
 @(test)
 shading_models_wire_to_subsurface_and_diffuse_transmission :: proc(t:^testing.T) {
     Case :: struct {
         model:string,
         two_sided:bool,
         opacity:f32,
+        want_weight:f32,
         want_subsurface:bool,
         want_transmission:bool,
     }
     cases:=[]Case{
-        {"MSM_Subsurface",false,0.75,true,false},
-        {"MSM_PreintegratedSkin",false,0.6,true,false},
-        {"MSM_SubsurfaceProfile",false,0.8,true,false},
-        {"MSM_TwoSidedFoliage",false,1.0,false,true},
-        {"MSM_TwoSidedFoliage",true,1.0,false,true},
-        {"MSM_Subsurface",true,1.0,false,true},
+        {"MSM_Subsurface",false,0.25,0.75,true,false},
+        {"MSM_PreintegratedSkin",false,0.4,0.6,true,false},
+        {"MSM_SubsurfaceProfile",false,0.8,0.8,true,false},
+        {"MSM_TwoSidedFoliage",false,1.0,0,false,true},
+        {"MSM_TwoSidedFoliage",true,1.0,0,false,true},
+        {"MSM_Subsurface",true,1.0,0,false,true},
     }
     for tc in cases {
         b:=material_begin("M_SSS")
@@ -2243,7 +2244,7 @@ shading_models_wire_to_subsurface_and_diffuse_transmission :: proc(t:^testing.T)
         translated,ok:=translate_one(t,&lib,"/Game/M/M_SSS")
         if ok {
             if tc.want_subsurface {
-                testing.expectf(t,abs(translated.info.subsurface.weight-tc.opacity)<1e-4,"%s weight %v != %v",tc.model,translated.info.subsurface.weight,tc.opacity)
+                testing.expectf(t,abs(translated.info.subsurface.weight-tc.want_weight)<1e-4,"%s weight %v != %v",tc.model,translated.info.subsurface.weight,tc.want_weight)
                 testing.expectf(t,abs(translated.info.subsurface.color.x-0.9)<0.01,"%s color %v",tc.model,translated.info.subsurface.color)
                 testing.expectf(t,translated.info.subsurface.radius>0 && translated.info.subsurface.radius<=asset.MATERIAL_SUBSURFACE_RADIUS_MAX,"%s radius %v",tc.model,translated.info.subsurface.radius)
                 testing.expect_value(t,translated.info.diffuse_transmission.weight,f32(0))
@@ -2279,9 +2280,10 @@ shading_models_wire_to_subsurface_and_diffuse_transmission :: proc(t:^testing.T)
     program_compiles(t,translated.program)
 }
 
-// High-ROI Fortnite nodes: real view-vector Fresnel & ReflectionVectorWS,
-// TwoSidedSign, PerInstanceRandom, CurveAtlasRowParameter, and Particle* nodes
-// translate with 0 untranslated expressions and compile as valid Mirai Slang.
+// High-ROI Fortnite nodes: Fresnel & ReflectionVectorWS (with honest normal-incidence
+// notes), TwoSidedSign, render-origin-invariant PerInstanceRandom, CurveAtlasRowParameter,
+// and supported Particle* nodes translate cleanly; unavailable particle fields report
+// honestly as untranslated instead of aliasing wrong data.
 @(test)
 fortnite_nodes_translate_and_compile_to_slang :: proc(t:^testing.T) {
     b:=material_begin("M_Fortnite_Nodes")
@@ -2292,13 +2294,11 @@ fortnite_nodes_translate_and_compile_to_slang :: proc(t:^testing.T) {
     w=fx.writer(&b.p)
     inst_rand:=expression(&b,"PerInstanceRandom","IR",&w)
     w=fx.writer(&b.p)
-    p_rel_time:=expression(&b,"ParticleRelativeTime","PRT",&w)
-    w=fx.writer(&b.p)
-    p_pos:=expression(&b,"ParticlePositionWS","PP",&w)
+    p_rand:=expression(&b,"ParticleRandom","PR",&w)
     w=fx.writer(&b.p)
     p_size:=expression(&b,"ParticleSize","PS",&w)
     w=fx.writer(&b.p)
-    p_dir:=expression(&b,"ParticleDirection","PD",&w)
+    nrm:=expression(&b,"VertexNormalWS","VN",&w)
     w=fx.writer(&b.p)
     fx.object_put(&w,"Texture",sprite_tex)
     p_subuv:=expression(&b,"ParticleSubUV","PSU",&w)
@@ -2306,15 +2306,15 @@ fortnite_nodes_translate_and_compile_to_slang :: proc(t:^testing.T) {
     fx.name_property_put(&w,"ParameterName","ColorRow")
     fx.float_put(&w,"DefaultValue",2)
     fx.object_put(&w,"Atlas",atlas)
-    fx.input_put(&w,"InputTime","ExpressionInput",{expression=p_rel_time})
+    fx.input_put(&w,"InputTime","ExpressionInput",{expression=p_rand})
     curve_row:=expression(&b,"CurveAtlasRowParameter","CA",&w)
     w=fx.writer(&b.p)
     fx.input_put(&w,"BaseReflectFractionIn","ExpressionInput",{expression=inst_rand})
     fx.float_put(&w,"Exponent",3.5)
-    fx.input_put(&w,"Normal","ExpressionInput",{expression=p_dir})
+    fx.input_put(&w,"Normal","ExpressionInput",{expression=nrm})
     fresnel:=expression(&b,"Fresnel","Fr",&w)
     w=fx.writer(&b.p)
-    fx.input_put(&w,"CustomWorldNormal","ExpressionInput",{expression=p_dir})
+    fx.input_put(&w,"CustomWorldNormal","ExpressionInput",{expression=nrm})
     refl:=expression(&b,"ReflectionVectorWS","Refl",&w)
     w=fx.writer(&b.p)
     fx.input_put(&w,"A","ExpressionInput",{expression=curve_row})
@@ -2328,16 +2328,12 @@ fortnite_nodes_translate_and_compile_to_slang :: proc(t:^testing.T) {
     fx.input_put(&w,"A","ExpressionInput",{expression=fresnel})
     fx.input_put(&w,"B","ExpressionInput",{expression=two_sided})
     rough_mul:=expression(&b,"Multiply","RM",&w)
-    w=fx.writer(&b.p)
-    fx.input_put(&w,"A","ExpressionInput",{expression=p_size,mask={true,false,false,false}})
-    fx.input_put(&w,"B","ExpressionInput",{expression=p_pos,mask={true,false,false,false}})
-    met_add:=expression(&b,"Add","MA",&w)
 
     m:=fx.writer(&b.p)
     fx.input_put(&m,"BaseColor","ColorMaterialInput",{expression=color_mul})
     fx.input_put(&m,"EmissiveColor","ColorMaterialInput",{expression=emissive_add})
     fx.input_put(&m,"Roughness","ScalarMaterialInput",{expression=rough_mul})
-    fx.input_put(&m,"Metallic","ScalarMaterialInput",{expression=met_add})
+    fx.input_put(&m,"Metallic","ScalarMaterialInput",{expression=p_size,mask={true,false,false,false}})
     b.p.exports[0].data=fx.finish(&m)
     lib:Library
     library_with(&lib,{"/Game/M/M_Fortnite_Nodes",fx.package_bytes(&b.p,"/Game/M/M_Fortnite_Nodes")})
@@ -2347,9 +2343,26 @@ fortnite_nodes_translate_and_compile_to_slang :: proc(t:^testing.T) {
     defer translated_destroy(&translated)
     testing.expect_value(t,len(translated.untranslated),0)
     testing.expect(t,!translated_is_standard(&translated))
+    testing.expect(t,len(translated.notes)>=2,"Fresnel and ReflectionVectorWS emit honest normal-incidence notes")
     src:=translated.program.source
-    for snippet in ([]string{"unreal_fresnel(","unreal_view_vector(ctx)","unreal_two_sided_sign(ctx)","unreal_per_instance_random(ctx)","mirai_texture_size(","ctx.particle_radius*100.0","ctx.particle_data[3]"}) {
+    for snippet in ([]string{"unreal_fresnel(","unreal_view_vector(ctx)","unreal_two_sided_sign(ctx)","unreal_per_instance_random(ctx)","origin_lattice(ctx.origin,float3(100.0)","mirai_texture_size(","ctx.particle_radius*100.0"}) {
         testing.expectf(t,strings.contains(src,snippet),"missing %q in generated Slang:\n%s",snippet,src)
     }
     program_compiles(t,translated.program)
+
+    // Unavailable particle fields report honestly as untranslated instead of aliasing wrong data.
+    b2:=material_begin("M_Particle_Unsupported")
+    w2:=fx.writer(&b2.p)
+    prt:=expression(&b2,"ParticleRelativeTime","PRT",&w2)
+    m2:=fx.writer(&b2.p)
+    fx.input_put(&m2,"Roughness","ScalarMaterialInput",{expression=prt})
+    b2.p.exports[0].data=fx.finish(&m2)
+    lib2:Library
+    library_with(&lib2,{"/Game/M/M_Particle_Unsupported",fx.package_bytes(&b2.p,"/Game/M/M_Particle_Unsupported")})
+    defer library_destroy(&lib2)
+    mat2,_:=object_find(&lib2,"/Game/M/M_Particle_Unsupported")
+    t2,err2:=translate(&lib2,mat2)
+    testing.expect_value(t,err2.code,Error_Code.None)
+    defer translated_destroy(&t2)
+    testing.expect_value(t,len(t2.untranslated),1)
 }

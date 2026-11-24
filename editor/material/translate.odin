@@ -808,7 +808,10 @@ base_color_lit :: proc(e:^Evaluator,base,scattered:u32,roots:[Attribute]u32,conn
         color:=scattered!=NONE ? unary(g,.Saturate,convert(g,scattered,3)) : constant(g,ATTRIBUTE_DEFAULTS[.Subsurface_Color],3)
         weight:=scalar(g,1)
         if (blend==.Opaque || blend==.Masked) && connected[.Opacity] && roots[.Opacity]!=NONE {
-            weight=unary(g,.Saturate,convert(g,roots[.Opacity],1))
+            op:=unary(g,.Saturate,convert(g,roots[.Opacity],1))
+            // UE MSM_Subsurface and MSM_PreintegratedSkin invert Opacity (0 = max scatter, 1 = opaque);
+            // MSM_SubsurfaceProfile uses Opacity directly as scatter strength.
+            weight=shading==.Subsurface_Profile ? op : binary(g,.Sub,scalar(g,1),op)
         }
         radius:=scalar(g,shading==.Subsurface ? SUBSURFACE_RADIUS_DEFAULT : SUBSURFACE_SKIN_RADIUS)
         e.subsurface={color,weight,radius}

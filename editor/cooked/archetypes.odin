@@ -4,6 +4,7 @@ import "core:fmt"
 import "core:mem"
 import "core:strings"
 import "mirai:asset"
+import "mirai:std/base"
 
 // 6 Native Mirai Cooked Material Archetype Templates (`//! mirai surface`):
 //   1. Standard_SMR   - PBR .mat v6 with ORM/SMR, M.R AO, M.G cavity, M.B subsurface, +Y normals
@@ -107,24 +108,34 @@ cooked_material_apply_archetype :: proc(m:^Cooked_Material,archetype:Material_Ar
     diff_path:=m.texture_paths[.Base_Color]
     norm_path:=m.texture_paths[.Normal]
     orm_path:=m.texture_paths[.Metallic_Roughness]
-    if orm_path=="" {orm_path=find_tex_any(m.textures,{"SpecularMasks","SMR","ORM","MRA","SRM"})}
-    masks_path:=find_tex_any(m.textures,{"MasksTexture","MaskTexture","Masks","M","SubsurfaceMask","CavityMask"})
-    if masks_path=="" {masks_path=m.texture_paths[.Mask]}
+    if orm_path=="" {orm_path=find_tex_any(m.textures,{"SpecularMasks","Specular_Masks","SMR","SRM","ORM","MRA"})}
+    masks_path:=find_tex_any(m.textures,{"MasksTexture","MaskTexture","Masks","M","SubsurfaceMask","CavityMask","OpacityMask"})
+    if masks_path=="" && m.texture_paths[.Mask]!=orm_path {masks_path=m.texture_paths[.Mask]}
+
+    // Distinguish standard ORM (R=AO, G=Roughness, B=Metallic) from Fortnite SpecularMasks
+    // (R=Specular, G=Metallic, B=Roughness, or SwizzleRoughnessToGreen: R=Specular, G=Roughness, B=Metallic).
+    m.smr_layout=detect_smr_layout(m)
+    smr_mode:=f32(m.smr_layout)
 
     switch archetype {
     case .Standard_SMR:
         prog_name:=archetype_program_name("Cooked_Standard_SMR",m.name,allocator)
         sss_w:=m.info.subsurface.weight
         if sss_w==0 {
-            if sw,ok:=find_scalar_any(m.scalars,{"SubsurfaceWeight","SubsurfaceOpacity","SubsurfaceStrength"});ok && sw>0 {
+            if sw,ok:=find_scalar_any(m.scalars,{"SubsurfaceWeight","SubsurfaceStrength"});ok && sw>0 {
                 sss_w=clamp(sw,0,1)
+            } else if so,ok_op:=find_scalar_any(m.scalars,{"SubsurfaceOpacity"});ok_op {
+                sh:=short_enum_str(m.shading_model)
+                sss_w=sh=="MSM_SubsurfaceProfile"||sh=="SubsurfaceProfile" ? clamp(so,0,1) : clamp(1-so,0,1)
             }
         }
         sss_rad:=m.info.subsurface.radius>0 ? m.info.subsurface.radius : 0.015
-        sss_col:=m.info.subsurface.color!={} ? m.info.subsurface.color : [3]f32{1,1,1}
-        if masks_path!="" && sss_w==0 {sss_w=0.5}
+        sss_col:=clamp_rgb(m.info.subsurface.color!={} ? m.info.subsurface.color : [3]f32{1,1,1})
         if sss_w>0 {
+            m.info.diffuse_transmission={}
             m.info.subsurface={weight=sss_w,color=sss_col,radius=clamp(sss_rad,0,asset.MATERIAL_SUBSURFACE_RADIUS_MAX)}
+        } else {
+            m.info.subsurface={}
         }
         add_tex(&params,&ptexs,"t_diffuse",diff_path,allocator)
         add_tex(&params,&ptexs,"t_normal",norm_path,allocator)
@@ -133,7 +144,7 @@ cooked_material_apply_archetype :: proc(m:^Cooked_Material,archetype:Material_Ar
         add_vec4(&params,"base_tint",{m.info.base_color.x,m.info.base_color.y,m.info.base_color.z,m.info.opacity})
         add_vec4(&params,"sss_color",{sss_col.x,sss_col.y,sss_col.z,clamp(sss_rad,0,asset.MATERIAL_SUBSURFACE_RADIUS_MAX)})
         add_vec4(&params,"pbr_bounds",{r_min,r_max,m.info.metallic,sss_w})
-        add_vec4(&params,"cavity_ao",{m.info.occlusion_strength,0.5,m.info.normal_scale,1.0})
+        add_vec4(&params,"cavity_ao",{m.info.occlusion_strength,0.5,m.info.normal_scale,smr_mode})
         m.program_name=prog_name
         m.program_source=emit_standard_smr_slang(prog_name,allocator)
         asset.text_set(m.info.program[:],prog_name)
@@ -141,6 +152,7 @@ cooked_material_apply_archetype :: proc(m:^Cooked_Material,archetype:Material_Ar
     case .Foliage_3Color:
         prog_name:=archetype_program_name("Cooked_Foliage_3Color",m.name,allocator)
         m.info.two_sided=true
+        m.info.subsurface={}
         if m.info.alpha_mode==.Opaque {
             m.info.alpha_mode=.Mask
             if m.info.alpha_cutoff<=0 {m.info.alpha_cutoff=0.3333}
@@ -165,7 +177,7 @@ cooked_material_apply_archetype :: proc(m:^Cooked_Material,archetype:Material_Ar
         add_tex(&params,&ptexs,"t_normal",norm_path,allocator)
         add_tex(&params,&ptexs,"t_masks",masks_path,allocator)
         add_tex(&params,&ptexs,"t_orm",orm_path,allocator)
-        add_vec4(&params,"color1_base",{c1.x,c1.y,c1.z,1})
+        add_vec4(&params,"color1_base",{c1.x,c1.y,c1.z,smr_mode})
         add_vec4(&params,"color2_lit",{c2.x,c2.y,c2.z,1})
         add_vec4(&params,"color3_shadows",{c3.x,c3.y,c3.z,1})
         add_vec4(&params,"flower_color_mult",{flower_mult.x,flower_mult.y,flower_mult.z,is_flowers})
@@ -176,6 +188,7 @@ cooked_material_apply_archetype :: proc(m:^Cooked_Material,archetype:Material_Ar
 
     case .Layered_UV1:
         prog_name:=archetype_program_name("Cooked_Layered_UV1",m.name,allocator)
+        if m.info.subsurface.weight>0 && m.info.diffuse_transmission.weight>0 {m.info.diffuse_transmission={}}
         diffs,norms,orms,layer_count:=extract_uv1_layers(m.textures,diff_path,norm_path,orm_path)
         for i in 0..<6 {add_tex(&params,&ptexs,fmt.tprintf("t_diff_%d",i),diffs[i],allocator)}
         for i in 0..<6 {add_tex(&params,&ptexs,fmt.tprintf("t_norm_%d",i),norms[i],allocator)}
@@ -190,6 +203,7 @@ cooked_material_apply_archetype :: proc(m:^Cooked_Material,archetype:Material_Ar
 
     case .Toon:
         prog_name:=archetype_program_name("Cooked_Toon",m.name,allocator)
+        if m.info.subsurface.weight>0 && m.info.diffuse_transmission.weight>0 {m.info.diffuse_transmission={}}
         shadow_col:=[3]f32{m.info.base_color.x*0.45,m.info.base_color.y*0.45,m.info.base_color.z*0.55}
         if v,ok:=find_vec_any(m.vectors,{"ShadowColor","ShadowTint","Color3_Shadows","ToonShadowColor"});ok {shadow_col=clamp_rgb(v.xyz)}
         steps:f32=3
@@ -201,7 +215,7 @@ cooked_material_apply_archetype :: proc(m:^Cooked_Material,archetype:Material_Ar
         add_tex(&params,&ptexs,"t_orm",orm_path,allocator)
         add_vec4(&params,"base_tint",{m.info.base_color.x,m.info.base_color.y,m.info.base_color.z,steps})
         add_vec4(&params,"shadow_tint",{shadow_col.x,shadow_col.y,shadow_col.z,spec_thresh})
-        add_vec4(&params,"rim_params",{r_min,r_max,0.35,0.12})
+        add_vec4(&params,"rim_params",{r_min,r_max,0.35,smr_mode})
         m.program_name=prog_name
         m.program_source=emit_toon_slang(prog_name,allocator)
         asset.text_set(m.info.program[:],prog_name)
@@ -209,6 +223,8 @@ cooked_material_apply_archetype :: proc(m:^Cooked_Material,archetype:Material_Ar
     case .Glass:
         prog_name:=archetype_program_name("Cooked_Glass",m.name,allocator)
         m.info.alpha_mode=.Blend
+        m.info.subsurface={}
+        m.info.diffuse_transmission={}
         ior:=m.info.ior>1 ? m.info.ior : 1.5
         if s,ok:=find_scalar_any(m.scalars,{"IOR","Refraction","IndexOfRefraction"});ok && s>=1 {ior=clamp(s,1,2.5)}
         m.info.ior=ior
@@ -221,7 +237,7 @@ cooked_material_apply_archetype :: proc(m:^Cooked_Material,archetype:Material_Ar
         add_tex(&params,&ptexs,"t_normal",norm_path,allocator)
         add_tex(&params,&ptexs,"t_roughness",orm_path,allocator)
         add_vec4(&params,"glass_tint",{m.info.base_color.x,m.info.base_color.y,m.info.base_color.z,glass_op})
-        add_vec4(&params,"fresnel_params",{clamp(f0,0.01,0.5),fexp,ior,0.15})
+        add_vec4(&params,"fresnel_params",{clamp(f0,0.01,0.5),fexp,ior,smr_mode})
         add_vec4(&params,"rough_params",{r_min,min(r_max,0.35),m.info.normal_scale,m.info.transmission})
         m.program_name=prog_name
         m.program_source=emit_glass_slang(prog_name,allocator)
@@ -229,19 +245,20 @@ cooked_material_apply_archetype :: proc(m:^Cooked_Material,archetype:Material_Ar
 
     case .Skin_SSS:
         prog_name:=archetype_program_name("Cooked_Skin_SSS",m.name,allocator)
+        m.info.diffuse_transmission={}
         sss_w:=m.info.subsurface.weight>0 ? m.info.subsurface.weight : 0.85
-        sss_col:=m.info.subsurface.color!={} ? m.info.subsurface.color : [3]f32{0.95,0.35,0.2}
+        sss_col:=clamp_rgb(m.info.subsurface.color!={} ? m.info.subsurface.color : [3]f32{0.95,0.35,0.2})
         sss_rad:=m.info.subsurface.radius>0 ? m.info.subsurface.radius : 0.012
         m.info.subsurface={
             weight=clamp(sss_w,0.01,1),
-            color=clamp_rgb(sss_col),
+            color=sss_col,
             radius=clamp(sss_rad,0.001,asset.MATERIAL_SUBSURFACE_RADIUS_MAX),
         }
         add_tex(&params,&ptexs,"t_diffuse",diff_path,allocator)
         add_tex(&params,&ptexs,"t_normal",norm_path,allocator)
         add_tex(&params,&ptexs,"t_smr",orm_path,allocator)
         add_tex(&params,&ptexs,"t_masks",masks_path,allocator)
-        add_vec4(&params,"base_tint",{m.info.base_color.x,m.info.base_color.y,m.info.base_color.z,0.5})
+        add_vec4(&params,"base_tint",{m.info.base_color.x,m.info.base_color.y,m.info.base_color.z,smr_mode})
         add_vec4(&params,"sss_params",{sss_col.x,sss_col.y,sss_col.z,m.info.subsurface.radius})
         add_vec4(&params,"skin_bounds",{r_min,r_max,m.info.subsurface.weight,m.info.occlusion_strength})
         m.program_name=prog_name
@@ -264,6 +281,24 @@ NORMAL_HELPER :: `float3 cooked_normal_gl(Mirai_Surface_Context ctx, uint tex, M
     float3 b = ctx.tangent.w * cross(ctx.vertex_normal, ctx.tangent.xyz);
     return normalize(ctx.tangent.xyz * xy.x + b * xy.y + ctx.vertex_normal * z);
 }
+// Unpacks ORM (mode 0: R=AO, G=Roughness, B=Metallic), Fortnite SpecularMasks
+// (mode 1: R=Specular, G=Metallic, B=Roughness), or SwizzleRoughnessToGreen
+// (mode 2: R=Specular, G=Roughness, B=Metallic) without channel swaps.
+void cooked_unpack_smr(float4 tex, float mode, out float ao, out float spec, out float rough, out float metal) {
+    if (mode < 0.5) {
+        ao = tex.r; spec = 0.5; rough = tex.g; metal = tex.b;
+    } else if (mode < 1.5) {
+        ao = 1.0; spec = tex.r; metal = tex.g; rough = tex.b;
+    } else {
+        ao = 1.0; spec = tex.r; rough = tex.g; metal = tex.b;
+    }
+}
+void cooked_apply_specular(inout Mirai_Surface s, float specular, float cavity) {
+    float f0 = 0.08 * saturate(specular);
+    float r = sqrt(max(f0, 0.02));
+    s.specular_ior = (1.0 + r) / (1.0 - r);
+    s.specular_factor = saturate(min(f0 / 0.02, 1.0) * cavity);
+}
 `
 
 @(private="file")
@@ -277,7 +312,7 @@ emit_standard_smr_slang :: proc(name:string,allocator:mem.Allocator) -> string {
 //! parameter base_tint {"default":[1,1,1,1]}
 //! parameter sss_color {"default":[1,1,1,0.015]}
 //! parameter pbr_bounds {"default":[0,1,0,0]}
-//! parameter cavity_ao {"default":[1,0.5,1,1]}
+//! parameter cavity_ao {"default":[1,0.5,1,0]}
 `)
     fmt.sbprintf(&b,"namespace %s {{\n",name)
     strings.write_string(&b,`struct Parameters {
@@ -296,17 +331,20 @@ emit_standard_smr_slang :: proc(name:string,allocator:mem.Allocator) -> string {
     Mirai_Surface s = mirai_surface_default(ctx);
     Mirai_Dual2 uv = mirai_uv0(ctx);
     float4 diff = p.t_diffuse != 0xffffffffu ? mirai_sample_texture(ctx, p.t_diffuse, uv) : float4(1.0);
-    float4 smr = p.t_smr != 0xffffffffu ? mirai_sample_texture(ctx, p.t_smr, uv) : float4(0.5, 0.5, 0.0, 1.0);
+    float smr_ao = 1.0, smr_spec = 0.5, smr_rough = 0.5, smr_metal = 0.0;
+    if (p.t_smr != 0xffffffffu) {
+        cooked_unpack_smr(mirai_sample_texture(ctx, p.t_smr, uv), p.cavity_ao.w, smr_ao, smr_spec, smr_rough, smr_metal);
+    }
     float4 m = p.t_masks != 0xffffffffu ? mirai_sample_texture(ctx, p.t_masks, uv) : float4(1.0, 1.0, 0.0, 1.0);
-    float ao = lerp(1.0, m.r, saturate(p.cavity_ao.x));
+    float ao = lerp(1.0, m.r * smr_ao, saturate(p.cavity_ao.x));
     float cavity = lerp(1.0, m.g, saturate(p.cavity_ao.y));
     s.base_color = diff.rgb * p.base_tint.rgb * cavity;
     s.alpha = diff.a * p.base_tint.a;
     s.normal = cooked_normal_gl(ctx, p.t_normal, uv, p.cavity_ao.z);
-    s.roughness = saturate(lerp(p.pbr_bounds.x, p.pbr_bounds.y, smr.g));
-    s.metallic = saturate(max(smr.b, p.pbr_bounds.z));
+    s.roughness = saturate(lerp(p.pbr_bounds.x, p.pbr_bounds.y, smr_rough));
+    s.metallic = saturate(max(smr_metal, p.pbr_bounds.z));
     s.occlusion = saturate(ao);
-    s.specular_factor = saturate(cavity * max(p.cavity_ao.w, 0.0));
+    cooked_apply_specular(s, smr_spec, cavity);
     float sss_w = saturate(p.pbr_bounds.w * (p.t_masks != 0xffffffffu ? m.b : 1.0));
     if (sss_w > 0.0) {
         s.subsurface_weight = sss_w;
@@ -328,7 +366,7 @@ emit_foliage_3color_slang :: proc(name:string,allocator:mem.Allocator) -> string
 //! parameter t_normal {"kind":"texture","srgb":false,"normal":true}
 //! parameter t_masks {"kind":"texture","srgb":false,"normal":false}
 //! parameter t_orm {"kind":"texture","srgb":false,"normal":false}
-//! parameter color1_base {"default":[0.2,0.45,0.1,1]}
+//! parameter color1_base {"default":[0.2,0.45,0.1,0]}
 //! parameter color2_lit {"default":[0.35,0.65,0.15,1]}
 //! parameter color3_shadows {"default":[0.1,0.25,0.06,1]}
 //! parameter flower_color_mult {"default":[1,1,1,0]}
@@ -353,7 +391,10 @@ emit_foliage_3color_slang :: proc(name:string,allocator:mem.Allocator) -> string
     Mirai_Dual2 uv = mirai_uv0(ctx);
     float4 diff = p.t_diffuse != 0xffffffffu ? mirai_sample_texture(ctx, p.t_diffuse, uv) : float4(1.0);
     float4 masks = p.t_masks != 0xffffffffu ? mirai_sample_texture(ctx, p.t_masks, uv) : float4(diff.a, 1.0, 0.5, 1.0);
-    float4 orm = p.t_orm != 0xffffffffu ? mirai_sample_texture(ctx, p.t_orm, uv) : float4(1.0, 0.6, 0.0, 1.0);
+    float orm_ao = 1.0, orm_spec = 0.5, orm_rough = 0.6, orm_metal = 0.0;
+    if (p.t_orm != 0xffffffffu) {
+        cooked_unpack_smr(mirai_sample_texture(ctx, p.t_orm, uv), p.color1_base.a, orm_ao, orm_spec, orm_rough, orm_metal);
+    }
     // 3-color gradient driven by MasksTexture.b * 2.0 (Color1_Base -> Color2_Lit -> Color3_Shadows).
     float t = masks.b * 2.0;
     float3 grad = lerp(lerp(p.color1_base.rgb, p.color2_lit.rgb, saturate(t)), p.color3_shadows.rgb, saturate(t - 1.0));
@@ -366,9 +407,10 @@ emit_foliage_3color_slang :: proc(name:string,allocator:mem.Allocator) -> string
     s.base_color = saturate(albedo * backface_boost);
     s.alpha = masks.r;
     s.normal = cooked_normal_gl(ctx, p.t_normal, uv, 1.0);
-    s.roughness = saturate(lerp(p.foliage_params.x, p.foliage_params.y, orm.g));
+    s.roughness = saturate(lerp(p.foliage_params.x, p.foliage_params.y, orm_rough));
     s.metallic = 0.0;
-    s.occlusion = saturate(masks.g * orm.r);
+    s.occlusion = saturate(masks.g * orm_ao);
+    cooked_apply_specular(s, orm_spec, 1.0);
     s.diffuse_transmission_weight = saturate(p.foliage_params.w);
     s.diffuse_transmission_color = saturate(albedo * p.foliage_params.z);
     return s;
@@ -451,23 +493,26 @@ emit_toon_slang :: proc(name:string,allocator:mem.Allocator) -> string {
     Mirai_Surface s = mirai_surface_default(ctx);
     Mirai_Dual2 uv = mirai_uv0(ctx);
     float4 diff = p.t_diffuse != 0xffffffffu ? mirai_sample_texture(ctx, p.t_diffuse, uv) : float4(1.0);
-    float4 orm = p.t_orm != 0xffffffffu ? mirai_sample_texture(ctx, p.t_orm, uv) : float4(1.0, 0.4, 0.0, 1.0);
+    float orm_ao = 1.0, orm_spec = 0.5, orm_rough = 0.4, orm_metal = 0.0;
+    if (p.t_orm != 0xffffffffu) {
+        cooked_unpack_smr(mirai_sample_texture(ctx, p.t_orm, uv), p.rim_params.w, orm_ao, orm_spec, orm_rough, orm_metal);
+    }
     float3 n = cooked_normal_gl(ctx, p.t_normal, uv, 1.0);
     // Cel-shaded diffuse ramp quantized into discrete bands over surface elevation/AO.
-    float shade = saturate((n.y * 0.5 + 0.5) * orm.r);
+    float shade = saturate((n.y * 0.5 + 0.5) * orm_ao);
     float steps = max(floor(p.base_tint.a + 0.5), 1.0);
     float band = floor(shade * steps + 0.5) / steps;
     float3 lit_col = diff.rgb * p.base_tint.rgb;
     float3 cel = lerp(lit_col * p.shadow_tint.rgb, lit_col, band);
     // Crisp specular band via step threshold.
-    float spec_band = step(p.shadow_tint.a, 1.0 - orm.g);
+    float spec_band = step(p.shadow_tint.a, 1.0 - orm_rough);
     s.base_color = saturate(cel);
     s.alpha = diff.a;
     s.normal = n;
-    s.roughness = saturate(lerp(lerp(p.rim_params.x, p.rim_params.y, orm.g), p.rim_params.w, spec_band));
-    s.metallic = saturate(orm.b);
+    s.roughness = saturate(lerp(lerp(p.rim_params.x, p.rim_params.y, orm_rough), 0.12, spec_band));
+    s.metallic = saturate(orm_metal);
     s.specular_factor = lerp(0.25, 1.0, spec_band);
-    s.occlusion = saturate(orm.r);
+    s.occlusion = saturate(orm_ao);
     float rim = step(0.6, 1.0 - saturate(dot(n, normalize(ctx.vertex_normal))));
     s.emission = lit_col * (rim * p.rim_params.z);
     return s;
@@ -485,7 +530,7 @@ emit_glass_slang :: proc(name:string,allocator:mem.Allocator) -> string {
 //! parameter t_normal {"kind":"texture","srgb":false,"normal":true}
 //! parameter t_roughness {"kind":"texture","srgb":false,"normal":false}
 //! parameter glass_tint {"default":[0.9,0.97,1,0.35]}
-//! parameter fresnel_params {"default":[0.04,5,1.5,0.15]}
+//! parameter fresnel_params {"default":[0.04,5,1.5,0]}
 //! parameter rough_params {"default":[0.02,0.2,1,0.8]}
 `)
     fmt.sbprintf(&b,"namespace %s {{\n",name)
@@ -503,18 +548,21 @@ emit_glass_slang :: proc(name:string,allocator:mem.Allocator) -> string {
     Mirai_Surface s = mirai_surface_default(ctx);
     Mirai_Dual2 uv = mirai_uv0(ctx);
     float4 diff = p.t_diffuse != 0xffffffffu ? mirai_sample_texture(ctx, p.t_diffuse, uv) : float4(1.0);
-    float4 rm = p.t_roughness != 0xffffffffu ? mirai_sample_texture(ctx, p.t_roughness, uv) : float4(1.0, 0.1, 0.0, 1.0);
+    float rm_ao = 1.0, rm_spec = 0.5, rm_rough = 0.1, rm_metal = 0.0;
+    if (p.t_roughness != 0xffffffffu) {
+        cooked_unpack_smr(mirai_sample_texture(ctx, p.t_roughness, uv), p.fresnel_params.w, rm_ao, rm_spec, rm_rough, rm_metal);
+    }
     float3 n = cooked_normal_gl(ctx, p.t_normal, uv, p.rough_params.z);
     float ndv = saturate(dot(n, normalize(ctx.vertex_normal)));
     float fresnel = lerp(p.fresnel_params.x, 1.0, pow(saturate(1.0 - ndv), max(p.fresnel_params.y, 0.1)));
     s.base_color = saturate(diff.rgb * p.glass_tint.rgb);
     s.alpha = saturate(lerp(p.glass_tint.a * diff.a, 1.0, fresnel * (1.0 - p.rough_params.w * 0.5)));
     s.normal = n;
-    s.roughness = saturate(lerp(p.rough_params.x, p.rough_params.y, rm.g));
+    s.roughness = saturate(lerp(p.rough_params.x, p.rough_params.y, rm_rough));
     s.metallic = 0.0;
     s.specular_ior = max(p.fresnel_params.z, 1.0);
     s.specular_factor = saturate(0.5 + 0.5 * fresnel);
-    s.emission = s.base_color * (fresnel * p.fresnel_params.w);
+    s.emission = s.base_color * (fresnel * 0.15);
     return s;
 }
 }
@@ -530,7 +578,7 @@ emit_skin_sss_slang :: proc(name:string,allocator:mem.Allocator) -> string {
 //! parameter t_normal {"kind":"texture","srgb":false,"normal":true}
 //! parameter t_smr {"kind":"texture","srgb":false,"normal":false}
 //! parameter t_masks {"kind":"texture","srgb":false,"normal":false}
-//! parameter base_tint {"default":[1,1,1,0.5]}
+//! parameter base_tint {"default":[1,1,1,0]}
 //! parameter sss_params {"default":[0.95,0.35,0.2,0.012]}
 //! parameter skin_bounds {"default":[0.2,0.75,0.85,1]}
 `)
@@ -550,17 +598,20 @@ emit_skin_sss_slang :: proc(name:string,allocator:mem.Allocator) -> string {
     Mirai_Surface s = mirai_surface_default(ctx);
     Mirai_Dual2 uv = mirai_uv0(ctx);
     float4 diff = p.t_diffuse != 0xffffffffu ? mirai_sample_texture(ctx, p.t_diffuse, uv) : float4(1.0);
-    float4 smr = p.t_smr != 0xffffffffu ? mirai_sample_texture(ctx, p.t_smr, uv) : float4(0.5, 0.5, 0.0, 1.0);
+    float smr_ao = 1.0, smr_spec = 0.5, smr_rough = 0.5, smr_metal = 0.0;
+    if (p.t_smr != 0xffffffffu) {
+        cooked_unpack_smr(mirai_sample_texture(ctx, p.t_smr, uv), p.base_tint.a, smr_ao, smr_spec, smr_rough, smr_metal);
+    }
     float4 m = p.t_masks != 0xffffffffu ? mirai_sample_texture(ctx, p.t_masks, uv) : float4(1.0, 1.0, 1.0, 1.0);
-    float ao = lerp(1.0, m.r, saturate(p.skin_bounds.w));
-    float cavity = lerp(1.0, m.g, saturate(p.base_tint.a));
+    float ao = lerp(1.0, m.r * smr_ao, saturate(p.skin_bounds.w));
+    float cavity = lerp(1.0, m.g, 0.5);
     s.base_color = saturate(diff.rgb * p.base_tint.rgb * cavity);
     s.alpha = diff.a;
     s.normal = cooked_normal_gl(ctx, p.t_normal, uv, 1.0);
-    s.roughness = saturate(lerp(p.skin_bounds.x, p.skin_bounds.y, smr.g));
-    s.metallic = saturate(smr.b);
+    s.roughness = saturate(lerp(p.skin_bounds.x, p.skin_bounds.y, smr_rough));
+    s.metallic = saturate(smr_metal);
     s.occlusion = saturate(ao);
-    s.specular_factor = saturate(cavity);
+    cooked_apply_specular(s, smr_spec, cavity);
     s.subsurface_weight = saturate(p.skin_bounds.z * m.b);
     s.subsurface_color = saturate(p.sss_params.rgb);
     s.subsurface_radius = clamp(p.sss_params.a, 0.0, 0.1);
@@ -572,6 +623,30 @@ emit_skin_sss_slang :: proc(name:string,allocator:mem.Allocator) -> string {
 }
 
 // ---- Helpers ------------------------------------------------------------------------
+
+// Distinguishes ORM (R=AO, G=Roughness, B=Metallic) from Fortnite SpecularMasks
+// (R=Specular, G=Metallic, B=Roughness, or SwizzleRoughnessToGreen: R=Specular, G=Roughness, B=Metallic).
+@(private="file")
+detect_smr_layout :: proc(m:^Cooked_Material) -> SMR_Layout {
+    has_specular_masks:=false
+    is_srm_name:=false
+    for t in m.textures {
+        low:=strings.to_lower(t.name,context.temp_allocator)
+        if strings.contains(low,"specularmasks") || strings.contains(low,"specular_masks") || low=="smr" || strings.has_suffix(low,"_smr") {
+            has_specular_masks=true
+        }
+        if low=="srm" || strings.has_suffix(low,"_srm") {
+            has_specular_masks=true
+            is_srm_name=true
+        }
+    }
+    if !has_specular_masks {return .ORM}
+    if sw,ok:=find_switch_any(m.switches,{"SwizzleRoughnessToGreen","bSwizzleRoughnessToGreen","RoughnessInGreen"});ok && sw {
+        return .Fortnite_SRM_Green
+    }
+    if is_srm_name {return .Fortnite_SRM_Green}
+    return .Fortnite_SMR
+}
 
 @(private="file")
 archetype_program_name :: proc(prefix,mat_name:string,allocator:mem.Allocator) -> string {
@@ -585,7 +660,14 @@ archetype_program_name :: proc(prefix,mat_name:string,allocator:mem.Allocator) -
         }
     }
     text:=strings.to_string(b)
-    if len(text)>=asset.MATERIAL_NAME_BYTES {text=text[:asset.MATERIAL_NAME_BYTES-1]}
+    max_len:=asset.MATERIAL_NAME_BYTES-1
+    if len(text)>max_len {
+        full:=strings.concatenate({prefix,":",mat_name},context.temp_allocator)
+        h:=base.hash64(transmute([]u8)full)
+        // 17 bytes reserved for "_" + 16 hex chars so truncated long names never collide.
+        keep:=max(max_len-17,1)
+        return fmt.aprintf("%s_%016x",text[:keep],h,allocator=allocator)
+    }
     return strings.clone(text,allocator)
 }
 

@@ -7,6 +7,7 @@ import "core:strings"
 import "core:testing"
 import "mirai:asset"
 import shaders "mirai:cook/shaders"
+import "mirai:std/base"
 import "plugins:vfx/runtime/effect"
 
 // Cooked `ue5parse.niagara/2` JSON builds validated Mirai `.particle` bytes,
@@ -127,23 +128,27 @@ cooked_niagara_bridge_builds_particle_and_compiles_vfx_slang :: proc(t:^testing.
     testing.expect_value(t,view.info.render,effect.Particle_Render.Velocity)
     testing.expect_value(t,view.info.blend,effect.Particle_Blend.Additive)
 
-    // Verify generated Vfx Slang shader compiles cleanly with Mirai's slangc checker.
+    // Verify generated Vfx Slang shader has consistent age/lifetime seconds,
+    // KeepConditions evaluated AFTER particle.age assignment, and compiles with slangc.
     testing.expect(t,strings.contains(em.program_source,"//! mirai vfx Cooked_NS_Katana_Slash_SlashArc"))
     testing.expect(t,strings.contains(em.program_source,"visual.data[0]"))
     testing.expect(t,strings.contains(em.program_source,"ue_to_mirai_pos"))
+    age_idx:=strings.last_index(em.program_source,"particle.age = max(a.f_Age, 0.0);")
+    kill_idx:=strings.index(em.program_source,"particle.age = particle.lifetime;")
+    testing.expectf(t,age_idx>0 && kill_idx>age_idx,"kill condition must follow particle.age assignment (age=%d kill=%d):\n%s",age_idx,kill_idx,em.program_source)
+    testing.expect(t,!strings.contains(em.program_source,"saturate(a.f_Age / a.f_Lifetime)"))
+
     folder:=".mirai/tmp/cooked-vfx-test"
     _=os.make_directory_all(folder)
     shader_path,_:=filepath.join({folder,"Cooked_NS_Katana_Slash_SlashArc.slang"},context.temp_allocator)
     _=os.write_entire_file(shader_path,transmute([]u8)em.program_source)
     root,cwd_err:=os.get_working_directory(context.temp_allocator)
-    if cwd_err==nil {
+    if testing.expectf(t,cwd_err==nil,"cwd failed: %v",cwd_err) {
         vfx_dir,_:=filepath.join({root,"plugins","vfx","shaders"},context.temp_allocator)
         sources:=os.exists(vfx_dir) ? []shaders.Source{{name="vfx",folder=vfx_dir}} : nil
         res:=shaders.program_check({root=root,project=folder,sources=sources,path=shader_path},context.temp_allocator)
-        if !strings.contains(res.error,"slangc") {
-            testing.expectf(t,res.error=="" && res.errors==0,"Vfx Slang compile failed: %s %v",res.error,res.diagnostics)
-            if os.exists(vfx_dir) {testing.expectf(t,res.compiled,"Vfx Slang stages did not compile: %v",res.diagnostics)}
-        }
+        testing.expectf(t,res.error=="" && res.errors==0,"Vfx Slang compile failed: %s %v",res.error,res.diagnostics)
+        if os.exists(vfx_dir) {testing.expectf(t,res.compiled,"Vfx Slang stages did not compile: %v",res.diagnostics)}
     }
 }
 
@@ -226,4 +231,56 @@ cooked_niagara_bridge_emits_particle_v10_light :: proc(t:^testing.T) {
     view,verr:=effect.particle_view(&a,&types)
     testing.expect_value(t,verr,asset.Error.None)
     testing.expect_value(t,view.info.light,l)
+}
+
+// Verifies collision-free <= 63-byte program names, real bitwise/cast Slang ops,
+// and zero memory leaks under Odin's default tracking allocator.
+@(test)
+cooked_niagara_bridge_names_bitwise_and_zero_leaks :: proc(t:^testing.T) {
+    make_doc :: proc(em_name:string) -> string {
+        return strings.concatenate({`{
+          "Schema": "ue5parse.niagara/2",
+          "Name": "NS_VeryLongCookedFortniteNiagaraSystemAssetNameExceedingLimit",
+          "Emitters": [{
+            "Name": "`,em_name,`",
+            "Scripts": [{
+              "Usage": "ParticleSpawnScript",
+              "Outputs": [
+                {"Attribute": "Lifetime", "Value": {"Literal": 1.0}},
+                {"Attribute": "SubImageIndex", "Value": {"Op": "bit_and", "Args": [{"Op": "f2i", "Args": [{"Literal": 7.9}]}, {"Literal": 3.0}]}},
+                {"Attribute": "MaterialRandom", "Value": {"Op": "iasf", "Args": [{"Op": "bit_or", "Args": [{"Op": "fasi", "Args": [{"Literal": 0.5}]}, {"Literal": 0.0}]}]}}
+              ]
+            }]
+          }]
+        }`},context.temp_allocator)
+    }
+    sys_a,err_a:=cooked_niagara_build(make_doc("LongEmitterNameVariant_Alpha"))
+    defer cooked_vfx_system_destroy(&sys_a)
+    sys_b,err_b:=cooked_niagara_build(make_doc("LongEmitterNameVariant_Beta"))
+    defer cooked_vfx_system_destroy(&sys_b)
+    if !testing.expect(t,err_a==nil && err_b==nil) {return}
+    if !testing.expect(t,len(sys_a.emitters)==1 && len(sys_b.emitters)==1) {return}
+    pa,pb:=sys_a.emitters[0].program_name,sys_b.emitters[0].program_name
+    testing.expect(t,len(pa)<=effect.PARTICLE_NAME_BYTES-1)
+    testing.expect(t,len(pb)<=effect.PARTICLE_NAME_BYTES-1)
+    testing.expect(t,pa!=pb)
+    testing.expect_value(t,base.text_get(sys_a.emitters[0].info.program[:]),pa)
+    testing.expect_value(t,base.text_get(sys_b.emitters[0].info.program[:]),pb)
+    src:=sys_a.emitters[0].program_source
+    testing.expect(t,strings.contains(src,"int(") && strings.contains(src," & ") && strings.contains(src," | "))
+    testing.expect(t,strings.contains(src,"asint(") && strings.contains(src,"asfloat("))
+
+    // Compile the bitwise/cast Slang program via slangc.
+    folder:=".mirai/tmp/cooked-vfx-bitwise"
+    _=os.make_directory_all(folder)
+    shader_path,_:=filepath.join({folder,strings.concatenate({pa,".slang"},context.temp_allocator)},context.temp_allocator)
+    _=os.write_entire_file(shader_path,transmute([]u8)src)
+    root,cwd_err:=os.get_working_directory(context.temp_allocator)
+    if testing.expectf(t,cwd_err==nil,"cwd failed: %v",cwd_err) {
+        vfx_dir,_:=filepath.join({root,"plugins","vfx","shaders"},context.temp_allocator)
+        sources:=os.exists(vfx_dir) ? []shaders.Source{{name="vfx",folder=vfx_dir}} : nil
+        res:=shaders.program_check({root=root,project=folder,sources=sources,path=shader_path},context.temp_allocator)
+        testing.expectf(t,res.error=="" && res.errors==0,"bitwise Vfx Slang compile failed: %s %v",res.error,res.diagnostics)
+        if os.exists(vfx_dir) {testing.expectf(t,res.compiled,"bitwise Vfx Slang did not compile: %v",res.diagnostics)}
+    }
 }

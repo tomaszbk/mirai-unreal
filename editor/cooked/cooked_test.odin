@@ -9,6 +9,7 @@ import "core:strings"
 import "core:testing"
 import "mirai:asset"
 import shaders "mirai:cook/shaders"
+import "mirai:std/base"
 
 @(test)
 cooked_material_builds_native_v6_subsurface_and_foliage :: proc(t:^testing.T) {
@@ -27,9 +28,9 @@ cooked_material_builds_native_v6_subsurface_and_foliage :: proc(t:^testing.T) {
     cases:=[]Case{
         {
             json=`{"Name":"MI_Skin","BlendMode":"BLEND_Opaque","ShadingModel":"MSM_Subsurface","TwoSided":false,
-                "Scalars":{"Roughness":{"Value":0.45,"From":"MI_Skin"},"SubsurfaceOpacity":{"Value":0.8,"From":"MI_Skin"},"SubsurfaceRadius":{"Value":1.5,"From":"MI_Skin"}},
+                "Scalars":{"Roughness":{"Value":0.45,"From":"MI_Skin"},"SubsurfaceOpacity":{"Value":0.2,"From":"MI_Skin"},"SubsurfaceRadius":{"Value":1.5,"From":"MI_Skin"}},
                 "Vectors":{"BaseColor":{"Value":[0.8,0.6,0.5,1],"From":"MI_Skin"},"SubsurfaceColor":{"Value":[0.95,0.25,0.15,1],"From":"MI_Skin"}},
-                "Textures":{"DiffuseMap":{"Value":"/Game/T_Skin_D.T_Skin_D","From":"MI_Skin"},"NormalMap":{"Value":"/Game/T_Skin_N.T_Skin_N","From":"MI_Skin"}}}`,
+                "Textures":{"DiffuseMap":{"Value":"/Game/T_Skin_D.T_Skin_D","From":"MI_Skin"},"NormalMap":{"Value":"/Game/T_Skin_N.T_Skin_N","From":"MI_Skin"},"SpecularMasks":{"Value":"/Game/T_Skin_S.T_Skin_S","From":"MI_Skin"}}}`,
             alpha=.Opaque,want_sss=true,
         },
         {
@@ -51,11 +52,16 @@ cooked_material_builds_native_v6_subsurface_and_foliage :: proc(t:^testing.T) {
         testing.expect_value(t,cm.info.alpha_mode,tc.alpha)
         testing.expect_value(t,cm.info.unlit,tc.unlit)
         if tc.want_sss {
+            // UE MSM_Subsurface inverts Opacity: 1 - 0.2 = 0.8 scatter weight.
             testing.expectf(t,abs(cm.info.subsurface.weight-0.8)<1e-4,"sss weight %v",cm.info.subsurface.weight)
             testing.expectf(t,abs(cm.info.subsurface.radius-0.015)<1e-4,"sss radius %v",cm.info.subsurface.radius)
             testing.expectf(t,abs(cm.info.subsurface.color.x-0.95)<1e-4,"sss color %v",cm.info.subsurface.color)
             testing.expect_value(t,cm.texture_paths[.Base_Color],"/Game/T_Skin_D.T_Skin_D")
             testing.expect_value(t,cm.texture_paths[.Normal],"/Game/T_Skin_N.T_Skin_N")
+            // SpecularMasks MUST classify as Metallic_Roughness (never Mask) with Fortnite_SMR layout.
+            testing.expect_value(t,cm.texture_paths[.Metallic_Roughness],"/Game/T_Skin_S.T_Skin_S")
+            testing.expect_value(t,cm.texture_paths[.Mask],"")
+            testing.expect_value(t,cm.smr_layout,SMR_Layout.Fortnite_SMR)
         }
         if tc.want_dt {
             testing.expect(t,cm.info.diffuse_transmission.weight>0.5)
@@ -234,15 +240,115 @@ cooked_material_six_archetypes_roundtrip_and_compile_slang :: proc(t:^testing.T)
         testing.expect_value(t,len(view.parameters),len(cm.program_parameters))
         asset.asset_close(&a)
         asset.types_destroy(&types)
-        // Verify Slang compiles cleanly with Mirai's shader checker / slangc.
-        if cwd_err==nil {
+        // Verify Slang compiles cleanly with Mirai's shader checker / slangc (must actually run).
+        if testing.expectf(t,cwd_err==nil,"cwd failed: %v",cwd_err) {
             shader_path,_:=filepath.join({folder,fmt.tprintf("%s.slang",cm.program_name)},context.temp_allocator)
             _=os.write_entire_file(shader_path,transmute([]u8)cm.program_source)
             res:=shaders.program_check({root=root,project=folder,path=shader_path},context.temp_allocator)
-            if !strings.contains(res.error,"slangc") {
-                testing.expectf(t,res.error=="" && res.errors==0 && res.compiled,"%s Slang compile failed: %s %v",tc.label,res.error,res.diagnostics)
-            }
+            testing.expectf(t,res.error=="" && res.errors==0 && res.compiled,"%s Slang compile failed: %s %v",tc.label,res.error,res.diagnostics)
         }
+    }
+}
+
+// Verifies SpecularMasks vs ORM packing detection, no blind SSS on Standard_SMR,
+// strict mutual exclusivity between subsurface and diffuse_transmission,
+// collision-free <= 63-byte program names, active texture binding, nearest-later
+// marker pairing, and zero memory leaks under Odin's default tracking allocator.
+@(test)
+cooked_review_invariants_and_zero_leaks :: proc(t:^testing.T) {
+    // 1. Standard_SMR with MasksTexture + SpecularMasks (SwizzleRoughnessToGreen) must NOT blindly enable SSS.
+    std_json:=`{"name":"MI_Rock","BlendMode":"BLEND_Opaque","ShadingModel":"MSM_DefaultLit",
+        "StaticSwitches":{"SwizzleRoughnessToGreen":true},
+        "textures":{"Diffuse":"/Game/T_Rock_D","SpecularMasks":"/Game/T_Rock_S","MasksTexture":"/Game/T_Rock_M"}}`
+    cm,err:=cooked_material_parse(std_json)
+    defer cooked_material_destroy(&cm)
+    _,bad:=err.?
+    testing.expect(t,!bad)
+    testing.expect_value(t,cm.archetype,Material_Archetype.Standard_SMR)
+    testing.expect_value(t,cm.info.subsurface.weight,f32(0))
+    testing.expect_value(t,cm.smr_layout,SMR_Layout.Fortnite_SRM_Green)
+    testing.expect_value(t,cm.texture_paths[.Metallic_Roughness],"/Game/T_Rock_S")
+    testing.expect_value(t,cm.texture_paths[.Mask],"/Game/T_Rock_M")
+    testing.expect(t,strings.contains(cm.program_source,"cooked_unpack_smr("))
+
+    // Bind textures into both Material_Info.maps and program_parameters and round-trip .mat v6.
+    resolver :: proc(path:string,user:rawptr) -> base.Asset_Id {
+        return {base.hash64(transmute([]u8)path)|1,1}
+    }
+    cooked_material_bind_textures(&cm,resolver)
+    testing.expect(t,cm.info.maps.base_color.texture!={})
+    testing.expect(t,cm.info.maps.metallic_roughness.texture!={})
+    bound_params:=0
+    for p in cm.program_parameters {if p.kind==.Texture && p.texture!={} {bound_params+=1}}
+    testing.expect_value(t,bound_params,3)
+    raw,berr:=cooked_material_bytes(&cm)
+    defer delete(raw)
+    testing.expect_value(t,berr,asset.Error.None)
+
+    // 2. Mutual exclusivity: conflicting ShadingModel + archetype override still passes asset.material_check.
+    conflict_fol:=`{"name":"MI_Conflict_Fol","archetype":"foliage","ShadingModel":"MSM_Subsurface",
+        "Scalars":{"SubsurfaceOpacity":0.2},"Vectors":{"SubsurfaceColor":[0.9,0.2,0.1,1]}}`
+    cf,ferr:=cooked_material_parse(conflict_fol)
+    defer cooked_material_destroy(&cf)
+    testing.expect(t,ferr==nil)
+    testing.expect_value(t,cf.info.subsurface.weight,f32(0))
+    testing.expect(t,cf.info.diffuse_transmission.weight>0)
+    fraw,fberr:=cooked_material_bytes(&cf)
+    defer delete(fraw)
+    testing.expect_value(t,fberr,asset.Error.None)
+
+    conflict_skin:=`{"name":"MI_Conflict_Skin","archetype":"skin","ShadingModel":"MSM_TwoSidedFoliage",
+        "Vectors":{"SubsurfaceColor":[2.5,0.4,-0.2,1]}}`
+    cs,serr:=cooked_material_parse(conflict_skin)
+    defer cooked_material_destroy(&cs)
+    testing.expect(t,serr==nil)
+    testing.expect_value(t,cs.info.diffuse_transmission.weight,f32(0))
+    testing.expect(t,cs.info.subsurface.weight>0)
+    // Clamped SSS color in both Material_Info and sss_params.
+    testing.expect(t,cs.info.subsurface.color.x<=1 && cs.info.subsurface.color.z>=0)
+    for &p in cs.program_parameters {
+        if base.text_get(p.name[:])=="sss_params" {
+            testing.expect(t,p.value[0]<=1 && p.value[2]>=0)
+        }
+    }
+    sraw,sberr:=cooked_material_bytes(&cs)
+    defer delete(sraw)
+    testing.expect_value(t,sberr,asset.Error.None)
+
+    // 3. Long program names stay <= 63 bytes, match info.program verbatim, and never collide.
+    long_a:=`{"name":"MI_VeryLongFortniteMaterialAssetNameThatExceedsMiraiSixtyFourByteLimit_VariantA"}`
+    long_b:=`{"name":"MI_VeryLongFortniteMaterialAssetNameThatExceedsMiraiSixtyFourByteLimit_VariantB"}`
+    ca,_:=cooked_material_parse(long_a)
+    defer cooked_material_destroy(&ca)
+    cb,_:=cooked_material_parse(long_b)
+    defer cooked_material_destroy(&cb)
+    testing.expect(t,len(ca.program_name)<=asset.MATERIAL_NAME_BYTES-1)
+    testing.expect(t,len(cb.program_name)<=asset.MATERIAL_NAME_BYTES-1)
+    testing.expect(t,ca.program_name!=cb.program_name)
+    testing.expect_value(t,base.text_get(ca.info.program[:]),ca.program_name)
+    testing.expect_value(t,base.text_get(cb.info.program[:]),cb.program_name)
+
+    // 4. Sockets & anim events destroy cleanly with 0 leaks + unsorted multi-pair markers pair with nearest later end.
+    socks,_:=cooked_sockets_parse(`{"Sockets":[{"SocketName":"Tip","BoneName":"hand_r","RelativeLocation":{"X":10,"Y":0,"Z":0}}]}`)
+    defer cooked_sockets_destroy(socks)
+    testing.expect_value(t,len(socks),1)
+
+    ev,_:=cooked_anim_events_parse(`{"Name":"AM_Combo","SequenceLength":2.0,"Notifies":[
+        {"Name":"Trail_Off","Time":1.20},
+        {"Name":"Trail_On","Time":0.10},
+        {"Name":"Trail_On","Time":0.80},
+        {"Name":"Trail_Off","Time":0.40}
+    ],"SyncMarkers":[{"Name":"Step","Time":0.5}]}`)
+    defer cooked_anim_events_destroy(&ev)
+    markers:=cooked_anim_markers(&ev)
+    defer cooked_anim_markers_destroy(markers)
+    tl:=cooked_anim_timeline_events(&ev)
+    defer cooked_anim_timeline_events_destroy(tl)
+    paired:=cooked_anim_paired_spans(&ev)
+    defer cooked_anim_paired_spans_destroy(paired)
+    if testing.expect_value(t,len(paired),2) {
+        testing.expectf(t,math.abs(paired[0].start_time-0.10)<1e-4 && math.abs(paired[0].end_time-0.40)<1e-4,"pair0 %v",paired[0])
+        testing.expectf(t,math.abs(paired[1].start_time-0.80)<1e-4 && math.abs(paired[1].end_time-1.20)<1e-4,"pair1 %v",paired[1])
     }
 }
 
