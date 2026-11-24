@@ -1059,7 +1059,9 @@ niagara_op_expressions :: proc(op:Niagara_Op,args:[]string) -> (e0,e1:string) {
     case .Div_F2i: return f("int(%s)",divf(F(a),F(b))),""
     case .Div_Mul: return f("%s * %s",divf(F(a),F(b)),F(c)),""
     case .Muli_Addi: return f("%s * %s + %s",I(a),I(b),I(c)),""
-    case .Addi_Bit_Rshift: return f("(%s + %s) >> %s",I(a),I(b),I(c)),""
+    // UE6 VVMIntRShift performs unsigned logical right shift (uint32 >> uint32);
+    // Bit_Rshift, Addi_Bit_Rshift, and Bit_Rshift_Bit_And all match that exact shift.
+    case .Addi_Bit_Rshift: return fmt.tprintf("(asuint(%s + %s) >> %s)",I(a),I(b),c),""
     case .Addi_Muli: return f("(%s + %s) * %s",I(a),I(b),I(c)),""
     case .B2i_2x:
         v:=fmt.tprintf("(%s & 1u)",a)
@@ -1074,7 +1076,7 @@ niagara_op_expressions :: proc(op:Niagara_Op,args:[]string) -> (e0,e1:string) {
     case .F2i_Addi: return f("int(%s) + %s",F(a),I(b)),""
     case .Fmod_Add: return f("fmod(%s, %s) + %s",F(a),F(b),F(c)),""
     case .Bit_And_I2f: return f("float(asint(%s & %s))",a,b),""
-    case .Bit_Rshift_Bit_And: return fmt.tprintf("(asuint(%s >> %s) & %s)",I(a),I(b),c),""
+    case .Bit_Rshift_Bit_And: return fmt.tprintf("((%s >> %s) & %s)",a,b,c),""
     case .Neg_Cmplt: return mask("(-%s) < %s",F(a),F(b)),""
     case .Bit_Or_Muli: return f("asint(%s | %s) * %s",a,b,I(c)),""
     case .Bit_Lshift_Bit_Or: return fmt.tprintf("((%s << %s) | %s)",a,b,c),""

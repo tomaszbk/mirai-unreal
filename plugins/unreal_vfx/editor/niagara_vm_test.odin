@@ -572,4 +572,21 @@ niagara_vvm2_validation_and_edge_cases :: proc(t:^testing.T) {
     probs_e:=make([dynamic]string,context.temp_allocator)
     _,dec_e:=niagara_vm_hlsl(&vm_e,&probs_e)
     testing.expectf(t,dec_e && len(probs_e)>0,"expected warning for short external call args: %v",probs_e[:])
+
+    // 9. Consistent unsigned logical right shift across Bit_Rshift, Addi_Bit_Rshift, and Bit_Rshift_Bit_And
+    //    matching UE6 VVMIntRShift (negative 0xFFFFFFF0u shifted logically, not sign-extended).
+    neg_val:="0xfffffff0u"
+    shift_amt:="0x00000002u"
+    mask_val:="0x000000ffu"
+    zero_val:="0x00000000u"
+    r_plain,_:=niagara_op_expressions(.Bit_Rshift,{neg_val,shift_amt})
+    r_addi,_:=niagara_op_expressions(.Addi_Bit_Rshift,{neg_val,zero_val,shift_amt})
+    r_and,_:=niagara_op_expressions(.Bit_Rshift_Bit_And,{neg_val,shift_amt,mask_val})
+    testing.expect_value(t,r_plain,"0xfffffff0u >> 0x00000002u")
+    testing.expect_value(t,r_addi,"(asuint(asint(0xfffffff0u) + asint(0x00000000u)) >> 0x00000002u)")
+    testing.expect_value(t,r_and,"((0xfffffff0u >> 0x00000002u) & 0x000000ffu)")
+    // None of the three right-shift ops may cast the shifted LHS to signed int (asint).
+    testing.expect(t,!strings.contains(r_plain,"asint("))
+    testing.expect(t,!strings.contains(r_and,"asint("))
+    testing.expect(t,strings.contains(r_addi,"asuint("))
 }

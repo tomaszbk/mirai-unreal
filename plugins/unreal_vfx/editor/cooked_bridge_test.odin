@@ -221,11 +221,30 @@ cooked_niagara_bridge_emits_particle_v10_light :: proc(t:^testing.T) {
     // No explicit LightColor / ColorAdd -> {0,0,0} so Mirai uses the particle's color.
     testing.expect_value(t,l.color,[3]f32{0,0,0})
 
-    // Without explicit intensity or ColorAdd, intensity stays at Mirai's default (0; no made-up 100 cd).
-    bare_light:=niagara_particle_light({radius_scale=2.0,diffuse_scale=1.0,particle_scattering=-1,renderer_scattering=1,indirect=1,max_lights=1})
-    testing.expect_value(t,bare_light.intensity,effect.PARTICLE_DEFAULTS.light.intensity)
-    testing.expect_value(t,bare_light.color,[3]f32{0,0,0})
-    testing.expectf(t,abs(bare_light.range-2.0)<1e-4,"range %v",bare_light.range)
+    // UE6 simple-light calibration: inverse-squared divides UE cm^2 radiance by 10000;
+    // non-inverse-squared windowed falloff matches at half its radius (peak * 0.75^exp * (R/2)^2).
+    inv_sq:=niagara_particle_light({
+        radius_scale=2.0,diffuse_scale=1.0,inverse_squared=true,
+        color_add={50000,25000,10000},has_color_add=true,
+        particle_scattering=-1,renderer_scattering=1,indirect=1,max_lights=1,
+    })
+    testing.expectf(t,abs(inv_sq.intensity-5.0)<1e-4,"inv_sq cd %v",inv_sq.intensity)
+    testing.expectf(t,abs(inv_sq.color.x-1.0)<1e-4 && abs(inv_sq.color.y-0.5)<1e-4 && abs(inv_sq.color.z-0.2)<1e-4,"inv_sq normalized color %v",inv_sq.color)
+    testing.expectf(t,abs(inv_sq.range-2.0)<1e-4,"range %v",inv_sq.range)
+
+    windowed:=niagara_particle_light({
+        radius_scale=4.0,diffuse_scale=1.0,inverse_squared=false,default_exponent=1.0,
+        fallback_color={1,0.5,0.2,1},fallback_color_intensity=10.0,
+        particle_scattering=-1,renderer_scattering=1,indirect=1,max_lights=1,
+    })
+    // range = 4m, half = 2m -> 10 * 0.75^1 * 2^2 = 30 cd; color stays {0,0,0} (uses particle color).
+    testing.expectf(t,abs(windowed.intensity-30.0)<1e-4,"windowed cd %v",windowed.intensity)
+    testing.expect_value(t,windowed.color,[3]f32{0,0,0})
+
+    // Zero-intensity black light stays disabled (intensity == 0).
+    dark:=niagara_particle_light({radius_scale=2.0,diffuse_scale=1.0,inverse_squared=true,particle_scattering=-1,renderer_scattering=1,indirect=1,max_lights=1})
+    testing.expect_value(t,dark.intensity,f32(0))
+    testing.expect_value(t,dark.color,[3]f32{0,0,0})
 
     // Binary .particle v10 round-trip preserves Particle_Light verbatim.
     types:asset.Types

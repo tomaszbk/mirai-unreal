@@ -64,13 +64,16 @@ cooked_vfx_system_destroy :: proc(sys:^Cooked_Vfx_System,allocator:=context.allo
 Niagara_Light_Params :: struct {
     radius_scale:f32,          // UNiagaraLightRendererProperties::RadiusScale (default 1.0)
     diffuse_scale:f32,         // UNiagaraLightRendererProperties::DiffuseScale (default 1.0)
+    inverse_squared:bool,      // UNiagaraLightRendererProperties::bUseInverseSquaredFalloff (default true)
+    default_exponent:f32,      // UNiagaraLightRendererProperties::DefaultExponent (default 1.0)
+    alpha_scales_brightness:bool, // UNiagaraLightRendererProperties::bAlphaScalesBrightness
     color_add:[3]f32,          // UNiagaraLightRendererProperties::ColorAdd
     has_color_add:bool,
     explicit_range_m:f32,      // explicit light range in metres (>0 overrides radius_cm)
-    explicit_intensity:f32,    // explicit intensity in cd (>0 overrides fallback)
+    explicit_intensity:f32,    // explicit intensity in cd (>0 overrides UE simple-light derivation)
     explicit_source_radius_m:f32,
     particle_radius_cm:f32,    // Particles.LightRadius (cm) when known
-    particle_intensity:f32,    // Particles.LightIntensity / LightBrightness when known
+    particle_intensity:f32,    // Particles.LightIntensity / LightBrightness (cd) when known
     particle_color:[3]f32,     // Particles.LightColor when known
     has_particle_color:bool,
     particle_scattering:f32,   // >=0 when explicitly specified
@@ -80,10 +83,14 @@ Niagara_Light_Params :: struct {
     max_lights:u16,            // default 1
     fallback_sprite_size_m:f32,
     fallback_color:[4]f32,
+    fallback_color_intensity:f32, // Particle_Info.intensity multiplying fallback_color.rgb
 }
 
-// Builds a native Mirai effect.Particle_Light from extracted Niagara light renderer
-// properties, using Mirai's defaults when source properties are absent.
+// Builds a native Mirai effect.Particle_Light from extracted UNiagaraLightRendererProperties
+// using UE6's exact simple-light irradiance calibration:
+//   SimpleLight.Color = ParticleColor * Brightness + ColorAdd
+//   - Inverse squared (UE6 default): Irradiance = Color * DiffuseScale / d_cm^2 -> cd = peak / 10000
+//   - Non-inverse squared (windowed exponent): matched at half radius -> cd = peak * 0.75^exp * (R/2)^2
 @(private)
 niagara_particle_light :: proc(p:Niagara_Light_Params) -> effect.Particle_Light {
     radius_scale:=p.radius_scale>0 ? p.radius_scale : 1.0
@@ -97,24 +104,40 @@ niagara_particle_light :: proc(p:Niagara_Light_Params) -> effect.Particle_Light 
             lrange=1.0*max(radius_scale,0.1)
         }
     }
+    brightness:=p.alpha_scales_brightness ? clamp(p.fallback_color.w,0,1) : f32(1)
+    p_scale:=p.fallback_color_intensity>0 ? p.fallback_color_intensity : f32(1)
+    base_rgb:[3]f32
+    if p.has_particle_color {
+        base_rgb={max(p.particle_color.x,0),max(p.particle_color.y,0),max(p.particle_color.z,0)}
+    } else {
+        base_rgb={max(p.fallback_color.x,0)*p_scale,max(p.fallback_color.y,0)*p_scale,max(p.fallback_color.z,0)*p_scale}
+    }
+    ue_color:=base_rgb*brightness+{max(p.color_add.x,0),max(p.color_add.y,0),max(p.color_add.z,0)}
+    ue_peak:=max(ue_color.x,max(ue_color.y,ue_color.z))*max(diffuse_scale,0)
+
     lintensity:=p.explicit_intensity
     if lintensity<=0 {lintensity=p.particle_intensity}
-    if lintensity<=0 {
-        // When no explicit intensity is authored, use ColorAdd brightness scaled by DiffuseScale
-        // if present; otherwise keep Mirai's default (0 = disabled unless authored).
-        add_max:=max(p.color_add.x,max(p.color_add.y,p.color_add.z))
-        if p.has_color_add && add_max>0 {
-            lintensity=add_max*max(diffuse_scale,0)
+    if lintensity<=0 && ue_peak>0 {
+        if p.inverse_squared {
+            // UE simple lights divide by d_cm^2 = 10000 * d_m^2; Mirai divides by d_m^2.
+            lintensity=ue_peak/10000.0
         } else {
-            lintensity=effect.PARTICLE_DEFAULTS.light.intensity
+            // Windowed radial falloff matched at half its attenuation radius (same as unreal_scene.light_convert).
+            half:=lrange*0.5
+            lintensity=ue_peak*math.pow(f32(0.75),max(p.default_exponent,0))*half*half
         }
     }
+
     // Keep {0,0,0} when source does not override light color (Mirai uses the particle's color).
     lcolor:[3]f32
-    if p.has_particle_color {
-        lcolor={max(p.particle_color.x,0),max(p.particle_color.y,0),max(p.particle_color.z,0)}
-    } else if p.has_color_add {
-        lcolor={max(p.color_add.x,0),max(p.color_add.y,0),max(p.color_add.z,0)}
+    if p.has_particle_color || p.has_color_add {
+        c:=p.has_particle_color ? base_rgb : [3]f32{max(p.color_add.x,0),max(p.color_add.y,0),max(p.color_add.z,0)}
+        cmax:=max(c.x,max(c.y,c.z))
+        if cmax>1 {
+            lcolor=c/cmax
+        } else {
+            lcolor=c
+        }
     }
     lradius:=p.explicit_source_radius_m>0 ? p.explicit_source_radius_m : min(max(p.fallback_sprite_size_m*0.5,0),max(lrange,0))
     lscatter:=p.particle_scattering>=0 ? p.particle_scattering : max(p.renderer_scattering,0)
@@ -274,6 +297,9 @@ build_cooked_emitter :: proc(
     has_light_renderer:=false
     light_radius_scale:f32=1
     light_diffuse_scale:f32=1
+    light_inverse_squared:=true
+    light_default_exponent:f32=1
+    light_alpha_scales:=false
     light_color_add:[3]f32
     light_shadows:=false
     light_max:u16=1
@@ -292,6 +318,9 @@ build_cooked_emitter :: proc(
                 has_light_renderer=true
                 if rs,ok:=jf32(robj["RadiusScale"]);ok && rs>0 {light_radius_scale=rs}
                 if ds,ok:=jf32(robj["DiffuseScale"]);ok && ds>0 {light_diffuse_scale=ds}
+                light_inverse_squared=jbool(robj["bUseInverseSquaredFalloff"],true)
+                if de,ok:=jf32(robj["DefaultExponent"]);ok && de>=0 {light_default_exponent=de}
+                light_alpha_scales=jbool(robj["bAlphaScalesBrightness"],false)
                 if ca,ok:=jvec3(robj["ColorAdd"]);ok {light_color_add={max(ca.x,0),max(ca.y,0),max(ca.z,0)}}
                 if c_val,ok:=jvec3(robj["Color"]);ok && (c_val.x>0||c_val.y>0||c_val.z>0) {
                     light_color_add={max(c_val.x,0),max(c_val.y,0),max(c_val.z,0)}
@@ -415,6 +444,9 @@ build_cooked_emitter :: proc(
         out.info.light=niagara_particle_light({
             radius_scale=light_radius_scale,
             diffuse_scale=light_diffuse_scale,
+            inverse_squared=light_inverse_squared,
+            default_exponent=light_default_exponent,
+            alpha_scales_brightness=light_alpha_scales,
             color_add=light_color_add,
             has_color_add=light_color_add!={},
             explicit_range_m=light_explicit_range,
@@ -431,7 +463,11 @@ build_cooked_emitter :: proc(
             max_lights=light_max,
             fallback_sprite_size_m=out.info.size[0],
             fallback_color=out.info.colors[0],
+            fallback_color_intensity=out.info.intensity,
         })
+        if out.info.light.intensity<=0 || out.info.light.range<=0 {
+            append(&warns,strings.clone("NiagaraLightRendererProperties: particle light has zero intensity or range and is disabled",allocator))
+        }
     }
 
     // Ensure non-zero spawn activity if emitter had neither rate nor bursts in EmitterScripts.

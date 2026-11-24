@@ -418,7 +418,6 @@ emit_foliage_3color_slang :: proc(name:string,allocator:mem.Allocator) -> string
         albedo = lerp(albedo, diff.rgb * p.flower_color_mult.rgb, saturate(masks.b));
     }
     s.base_color = saturate(albedo);
-    s.alpha = diff.a;
     s.normal = cooked_normal_gl(ctx, p.t_normal, uv, 1.0);
     s.roughness = saturate(lerp(p.foliage_params.x, p.foliage_params.y, orm_rough));
     s.metallic = 0.0;
@@ -468,7 +467,6 @@ emit_layered_uv1_slang :: proc(name:string,allocator:mem.Allocator) -> string {
     float4 diff = td != 0xffffffffu ? mirai_sample_texture(ctx, td, uv) : float4(1.0);
     float4 orm = to != 0xffffffffu ? mirai_sample_texture(ctx, to, uv) : float4(1.0, 0.5, 0.0, 1.0);
     s.base_color = diff.rgb * p.tint.rgb;
-    s.alpha = diff.a;
     s.normal = cooked_normal_gl(ctx, tn, uv, 1.0);
     s.occlusion = saturate(orm.r);
     s.roughness = saturate(lerp(p.layer_params.y, p.layer_params.z, orm.g));
@@ -520,7 +518,6 @@ emit_toon_slang :: proc(name:string,allocator:mem.Allocator) -> string {
     // Crisp specular band via step threshold.
     float spec_band = step(p.shadow_tint.a, 1.0 - orm_rough);
     s.base_color = saturate(cel);
-    s.alpha = diff.a;
     s.normal = n;
     s.roughness = saturate(lerp(lerp(p.rim_params.x, p.rim_params.y, orm_rough), 0.12, spec_band));
     s.metallic = saturate(orm_metal);
@@ -613,7 +610,6 @@ emit_skin_sss_slang :: proc(name:string,allocator:mem.Allocator) -> string {
     float ao = lerp(1.0, m.r * smr_ao, saturate(p.skin_bounds.w));
     float cavity = lerp(1.0, m.g, 0.5);
     s.base_color = saturate(diff.rgb * p.base_tint.rgb * cavity);
-    s.alpha = diff.a;
     s.normal = cooked_normal_gl(ctx, p.t_normal, uv, 1.0);
     s.roughness = saturate(lerp(p.skin_bounds.x, p.skin_bounds.y, smr_rough));
     s.metallic = saturate(smr_metal);

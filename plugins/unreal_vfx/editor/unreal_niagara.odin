@@ -659,15 +659,21 @@ niagara_renderer :: proc(c:^unreal_scene.Context,info:^effect.Particle_Info,rend
             }
         }
     case "NiagaraLightRendererProperties":
-        // UNiagaraLightRendererProperties stores RadiusScale, DiffuseScale, ColorAdd,
-        // and bMegaLightsCastShadows (radius itself comes from Particles.LightRadius * RadiusScale).
+        // UNiagaraLightRendererProperties stores bUseInverseSquaredFalloff, DefaultExponent,
+        // bAlphaScalesBrightness, RadiusScale, DiffuseScale, ColorAdd, and bMegaLightsCastShadows.
         radius_scale:=max(real(d,renderer,"RadiusScale",1),0)
         diffuse_scale:=max(real(d,renderer,"DiffuseScale",1),0)
+        inverse_squared,_:=level.bool_of(d,renderer,"bUseInverseSquaredFalloff",true)
+        default_exponent:=max(real(d,renderer,"DefaultExponent",1),0)
+        alpha_scales,_:=level.bool_of(d,renderer,"bAlphaScalesBrightness",false)
         color_add,has_color_add:=vector_of(d,renderer,"ColorAdd")
         shadows,_:=level.bool_of(d,renderer,"bMegaLightsCastShadows",false)
         info.light=niagara_particle_light({
             radius_scale=radius_scale,
             diffuse_scale=diffuse_scale,
+            inverse_squared=inverse_squared,
+            default_exponent=default_exponent,
+            alpha_scales_brightness=alpha_scales,
             color_add={max(color_add.x,0),max(color_add.y,0),max(color_add.z,0)},
             has_color_add=has_color_add && (color_add.x>0 || color_add.y>0 || color_add.z>0),
             particle_scattering=-1,
@@ -677,7 +683,11 @@ niagara_renderer :: proc(c:^unreal_scene.Context,info:^effect.Particle_Info,rend
             max_lights=1,
             fallback_sprite_size_m=info.size[0],
             fallback_color=info.colors[0],
+            fallback_color_intensity=info.intensity,
         })
+        if info.light.intensity<=0 || info.light.range<=0 {
+            unreal_scene.warn(c,"NiagaraLightRendererProperties: particle light has zero intensity or range and is disabled in Mirai")
+        }
         return false
     case:
         unreal_scene.warn(c,"Mirai's effects have nothing for the renderer %s",class)
