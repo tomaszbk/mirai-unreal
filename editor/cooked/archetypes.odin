@@ -80,6 +80,7 @@ cooked_material_apply_archetype :: proc(m:^Cooked_Material,archetype:Material_Ar
     m.archetype=archetype
     params:=make([dynamic]asset.Material_Parameter,allocator)
     ptexs:=make([dynamic]Cooked_Program_Texture,allocator)
+    notes:=make([dynamic]string,allocator)
 
     add_tex :: proc(params:^[dynamic]asset.Material_Parameter,ptexs:^[dynamic]Cooked_Program_Texture,name,path:string,alloc:mem.Allocator) {
         p:asset.Material_Parameter
@@ -172,7 +173,18 @@ cooked_material_apply_archetype :: proc(m:^Cooked_Material,archetype:Material_Ar
         if s,ok:=find_scalar_any(m.scalars,{"BackfaceBoost","SubsurfaceBoost"});ok && s>0 {backface_boost=s}
         dt_w:=m.info.diffuse_transmission.weight>0 ? m.info.diffuse_transmission.weight : 0.5
         m.info.diffuse_transmission={weight=clamp(dt_w,0.01,1),color=c2}
-        if masks_path!="" && m.texture_paths[.Mask]=="" {m.texture_paths[.Mask]=masks_path}
+        // Mirai masked coverage reads maps.mask.a (Surface programs never decide masked cut-out).
+        // When Fortnite packs leaf cut-out in MasksTexture.R, record mask_alpha_channel = 0 so
+        // texture import/cooking swizzles R -> A before binding maps.mask.
+        opacity_mask_path:=find_tex_any(m.textures,{"OpacityMask","AlphaMask","Opacity"})
+        if opacity_mask_path!="" {
+            m.texture_paths[.Mask]=opacity_mask_path
+            m.mask_alpha_channel=3
+        } else if masks_path!="" {
+            m.texture_paths[.Mask]=masks_path
+            m.mask_alpha_channel=0
+            append(&notes,strings.clone("foliage MasksTexture stores alpha cut-out in R; swizzle R->A into maps.mask.a for Mirai masked coverage",allocator))
+        }
         add_tex(&params,&ptexs,"t_diffuse",diff_path,allocator)
         add_tex(&params,&ptexs,"t_normal",norm_path,allocator)
         add_tex(&params,&ptexs,"t_masks",masks_path,allocator)
@@ -215,7 +227,8 @@ cooked_material_apply_archetype :: proc(m:^Cooked_Material,archetype:Material_Ar
         add_tex(&params,&ptexs,"t_orm",orm_path,allocator)
         add_vec4(&params,"base_tint",{m.info.base_color.x,m.info.base_color.y,m.info.base_color.z,steps})
         add_vec4(&params,"shadow_tint",{shadow_col.x,shadow_col.y,shadow_col.z,spec_thresh})
-        add_vec4(&params,"rim_params",{r_min,r_max,0.35,smr_mode})
+        add_vec4(&params,"rim_params",{r_min,r_max,0.0,smr_mode})
+        append(&notes,strings.clone("toon view-dependent rim is omitted: Mirai surface programs do not see the camera",allocator))
         m.program_name=prog_name
         m.program_source=emit_toon_slang(prog_name,allocator)
         asset.text_set(m.info.program[:],prog_name)
@@ -230,15 +243,15 @@ cooked_material_apply_archetype :: proc(m:^Cooked_Material,archetype:Material_Ar
         m.info.ior=ior
         if m.info.transmission<=0 {m.info.transmission=clamp(1-m.info.opacity*0.5,0.2,0.95)}
         glass_op:=clamp(m.info.opacity,0.05,1)
-        f0:=((ior-1)/(ior+1))*((ior-1)/(ior+1))
-        fexp:f32=5
-        if s,ok:=find_scalar_any(m.scalars,{"FresnelExponent","FresnelPower"});ok && s>0 {fexp=clamp(s,0.1,16)}
+        if _,has_fe:=find_scalar_any(m.scalars,{"FresnelExponent","FresnelPower"});has_fe {
+            append(&notes,strings.clone("glass uses Mirai physical IOR Fresnel: custom FresnelExponent is not evaluated in surface programs",allocator))
+        }
         add_tex(&params,&ptexs,"t_diffuse",diff_path,allocator)
         add_tex(&params,&ptexs,"t_normal",norm_path,allocator)
         add_tex(&params,&ptexs,"t_roughness",orm_path,allocator)
         add_vec4(&params,"glass_tint",{m.info.base_color.x,m.info.base_color.y,m.info.base_color.z,glass_op})
-        add_vec4(&params,"fresnel_params",{clamp(f0,0.01,0.5),fexp,ior,smr_mode})
-        add_vec4(&params,"rough_params",{r_min,min(r_max,0.35),m.info.normal_scale,m.info.transmission})
+        add_vec4(&params,"glass_params",{ior,m.info.transmission,m.info.normal_scale,smr_mode})
+        add_vec4(&params,"rough_params",{r_min,min(r_max,0.35),1.0,1.0})
         m.program_name=prog_name
         m.program_source=emit_glass_slang(prog_name,allocator)
         asset.text_set(m.info.program[:],prog_name)
@@ -268,6 +281,7 @@ cooked_material_apply_archetype :: proc(m:^Cooked_Material,archetype:Material_Ar
 
     m.program_parameters=params[:]
     m.program_textures=ptexs[:]
+    m.notes=notes[:]
 }
 
 // ---- Clean-room Mirai Surface Slang templates --------------------------------------
@@ -403,9 +417,8 @@ emit_foliage_3color_slang :: proc(name:string,allocator:mem.Allocator) -> string
     if (p.flower_color_mult.a > 0.5) {
         albedo = lerp(albedo, diff.rgb * p.flower_color_mult.rgb, saturate(masks.b));
     }
-    float backface_boost = dot(ctx.normal, ctx.vertex_normal) < 0.0 ? p.foliage_params.z : 1.0;
-    s.base_color = saturate(albedo * backface_boost);
-    s.alpha = masks.r;
+    s.base_color = saturate(albedo);
+    s.alpha = diff.a;
     s.normal = cooked_normal_gl(ctx, p.t_normal, uv, 1.0);
     s.roughness = saturate(lerp(p.foliage_params.x, p.foliage_params.y, orm_rough));
     s.metallic = 0.0;
@@ -513,8 +526,6 @@ emit_toon_slang :: proc(name:string,allocator:mem.Allocator) -> string {
     s.metallic = saturate(orm_metal);
     s.specular_factor = lerp(0.25, 1.0, spec_band);
     s.occlusion = saturate(orm_ao);
-    float rim = step(0.6, 1.0 - saturate(dot(n, normalize(ctx.vertex_normal))));
-    s.emission = lit_col * (rim * p.rim_params.z);
     return s;
 }
 }
@@ -530,8 +541,8 @@ emit_glass_slang :: proc(name:string,allocator:mem.Allocator) -> string {
 //! parameter t_normal {"kind":"texture","srgb":false,"normal":true}
 //! parameter t_roughness {"kind":"texture","srgb":false,"normal":false}
 //! parameter glass_tint {"default":[0.9,0.97,1,0.35]}
-//! parameter fresnel_params {"default":[0.04,5,1.5,0]}
-//! parameter rough_params {"default":[0.02,0.2,1,0.8]}
+//! parameter glass_params {"default":[1.5,0.8,1,0]}
+//! parameter rough_params {"default":[0.02,0.2,1,1]}
 `)
     fmt.sbprintf(&b,"namespace %s {{\n",name)
     strings.write_string(&b,`struct Parameters {
@@ -539,7 +550,7 @@ emit_glass_slang :: proc(name:string,allocator:mem.Allocator) -> string {
     uint t_normal;
     uint t_roughness;
     float4 glass_tint;
-    float4 fresnel_params;
+    float4 glass_params;
     float4 rough_params;
 };
 `)
@@ -550,19 +561,15 @@ emit_glass_slang :: proc(name:string,allocator:mem.Allocator) -> string {
     float4 diff = p.t_diffuse != 0xffffffffu ? mirai_sample_texture(ctx, p.t_diffuse, uv) : float4(1.0);
     float rm_ao = 1.0, rm_spec = 0.5, rm_rough = 0.1, rm_metal = 0.0;
     if (p.t_roughness != 0xffffffffu) {
-        cooked_unpack_smr(mirai_sample_texture(ctx, p.t_roughness, uv), p.fresnel_params.w, rm_ao, rm_spec, rm_rough, rm_metal);
+        cooked_unpack_smr(mirai_sample_texture(ctx, p.t_roughness, uv), p.glass_params.w, rm_ao, rm_spec, rm_rough, rm_metal);
     }
-    float3 n = cooked_normal_gl(ctx, p.t_normal, uv, p.rough_params.z);
-    float ndv = saturate(dot(n, normalize(ctx.vertex_normal)));
-    float fresnel = lerp(p.fresnel_params.x, 1.0, pow(saturate(1.0 - ndv), max(p.fresnel_params.y, 0.1)));
     s.base_color = saturate(diff.rgb * p.glass_tint.rgb);
-    s.alpha = saturate(lerp(p.glass_tint.a * diff.a, 1.0, fresnel * (1.0 - p.rough_params.w * 0.5)));
-    s.normal = n;
+    s.alpha = saturate(p.glass_tint.a * diff.a);
+    s.normal = cooked_normal_gl(ctx, p.t_normal, uv, p.glass_params.z);
     s.roughness = saturate(lerp(p.rough_params.x, p.rough_params.y, rm_rough));
     s.metallic = 0.0;
-    s.specular_ior = max(p.fresnel_params.z, 1.0);
-    s.specular_factor = saturate(0.5 + 0.5 * fresnel);
-    s.emission = s.base_color * (fresnel * 0.15);
+    s.specular_ior = max(p.glass_params.x, 1.0);
+    s.specular_factor = 1.0;
     return s;
 }
 }

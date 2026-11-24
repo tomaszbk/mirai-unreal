@@ -175,7 +175,7 @@ cooked_material_six_archetypes_roundtrip_and_compile_slang :: proc(t:^testing.T)
                     "FlowerColorMult":[0.95,0.4,0.6,1],"IsFlowers":true,"RoughnessMin":0.3,"RoughnessMax":0.8},
                 "textures":{"Diffuse":"/Game/T_Leaf_D.T_Leaf_D","Normal":"/Game/T_Leaf_N.T_Leaf_N","MasksTexture":"/Game/T_Leaf_M.T_Leaf_M"}}`,
             want_arch=.Foliage_3Color,want_alpha=.Mask,want_two_sided=true,want_dt=true,
-            want_snippets={"//! mirai surface Cooked_Foliage_3Color","masks.b * 2.0","flower_color_mult","s.diffuse_transmission_color","s.alpha = masks.r"},
+            want_snippets={"//! mirai surface Cooked_Foliage_3Color","masks.b * 2.0","flower_color_mult","s.diffuse_transmission_color"},
         },
         {
             label="layered_uv1",
@@ -200,7 +200,7 @@ cooked_material_six_archetypes_roundtrip_and_compile_slang :: proc(t:^testing.T)
                 "parameters":{"BaseColor":[0.85,0.95,1.0,1],"Opacity":0.3,"IOR":1.52,"FresnelExponent":4.0},
                 "textures":{"Normal":"/Game/T_Glass_N.T_Glass_N"}}`,
             want_arch=.Glass,want_alpha=.Blend,
-            want_snippets={"//! mirai surface Cooked_Glass","fresnel","s.specular_ior"},
+            want_snippets={"//! mirai surface Cooked_Glass","glass_params","s.specular_ior"},
         },
         {
             label="skin_sss",
@@ -256,7 +256,8 @@ cooked_material_six_archetypes_roundtrip_and_compile_slang :: proc(t:^testing.T)
 // marker pairing, and zero memory leaks under Odin's default tracking allocator.
 @(test)
 cooked_review_invariants_and_zero_leaks :: proc(t:^testing.T) {
-    // 1. Standard_SMR with MasksTexture + SpecularMasks (SwizzleRoughnessToGreen) must NOT blindly enable SSS.
+    // 1. Standard_SMR with MasksTexture + SpecularMasks (SwizzleRoughnessToGreen) must NOT blindly enable SSS,
+    //    and opaque PBR MasksTexture binds to program t_masks rather than alpha-cutout maps.mask.
     std_json:=`{"name":"MI_Rock","BlendMode":"BLEND_Opaque","ShadingModel":"MSM_DefaultLit",
         "StaticSwitches":{"SwizzleRoughnessToGreen":true},
         "textures":{"Diffuse":"/Game/T_Rock_D","SpecularMasks":"/Game/T_Rock_S","MasksTexture":"/Game/T_Rock_M"}}`
@@ -268,8 +269,42 @@ cooked_review_invariants_and_zero_leaks :: proc(t:^testing.T) {
     testing.expect_value(t,cm.info.subsurface.weight,f32(0))
     testing.expect_value(t,cm.smr_layout,SMR_Layout.Fortnite_SRM_Green)
     testing.expect_value(t,cm.texture_paths[.Metallic_Roughness],"/Game/T_Rock_S")
-    testing.expect_value(t,cm.texture_paths[.Mask],"/Game/T_Rock_M")
+    testing.expect_value(t,cm.texture_paths[.Mask],"")
     testing.expect(t,strings.contains(cm.program_source,"cooked_unpack_smr("))
+
+    // Word-boundary token matching: "T_Uniform_D", "T_Storm_D", "T_Transform_D" must stay Base_Color, never ORM.
+    for uname in ([]string{"T_Uniform_D","T_Storm_D","T_Transform_D"}) {
+        kind,matched:=classify_texture_slot(uname)
+        testing.expectf(t,matched && kind==.Base_Color,"%s misclassified as %v",uname,kind)
+    }
+    orm_kind,orm_ok:=classify_texture_slot("T_Prop_ORM")
+    testing.expect(t,orm_ok && orm_kind==.Metallic_Roughness)
+
+    // Foliage MasksTexture records mask_alpha_channel=0 (R->A swizzle note) and omits dead s.alpha = masks.r / fake backface hack.
+    fol_json:=`{"name":"MI_Foliage_Test","archetype":"foliage","BlendMode":"BLEND_Masked","ShadingModel":"MSM_TwoSidedFoliage",
+        "textures":{"Diffuse":"/Game/T_Leaf_D","MasksTexture":"/Game/T_Leaf_M"}}`
+    cm_fol,fol_err:=cooked_material_parse(fol_json)
+    defer cooked_material_destroy(&cm_fol)
+    testing.expect(t,fol_err==nil)
+    testing.expect_value(t,cm_fol.mask_alpha_channel,u8(0))
+    testing.expect(t,len(cm_fol.notes)>0)
+    testing.expect(t,!strings.contains(cm_fol.program_source,"s.alpha = masks.r"))
+    testing.expect(t,!strings.contains(cm_fol.program_source,"dot(ctx.normal, ctx.vertex_normal)"))
+
+    // Toon & Glass emit honest notes without fake dot(n, vertex_normal) view hacks or 0.15 emission.
+    glass_json:=`{"name":"MI_CleanGlass","archetype":"glass","parameters":{"IOR":1.52,"FresnelExponent":4.0}}`
+    cm_glass,g_err:=cooked_material_parse(glass_json)
+    defer cooked_material_destroy(&cm_glass)
+    testing.expect(t,g_err==nil && len(cm_glass.notes)>0)
+    testing.expect(t,!strings.contains(cm_glass.program_source,"dot(n, normalize(ctx.vertex_normal))"))
+    testing.expect(t,!strings.contains(cm_glass.program_source,"s.emission"))
+
+    toon_json:=`{"name":"MI_CleanToon","archetype":"toon"}`
+    cm_toon,t_err:=cooked_material_parse(toon_json)
+    defer cooked_material_destroy(&cm_toon)
+    testing.expect(t,t_err==nil && len(cm_toon.notes)>0)
+    testing.expect(t,!strings.contains(cm_toon.program_source,"dot(n, normalize(ctx.vertex_normal))"))
+    testing.expect(t,!strings.contains(cm_toon.program_source,"s.emission"))
 
     // Bind textures into both Material_Info.maps and program_parameters and round-trip .mat v6.
     resolver :: proc(path:string,user:rawptr) -> base.Asset_Id {

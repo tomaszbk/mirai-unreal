@@ -451,7 +451,17 @@ niagara_vvm2_validation_and_edge_cases :: proc(t:^testing.T) {
     testing.expect(t,ok_out && len(probs_out)>0)
     testing.expect(t,!strings.contains(out_text,"OutputDataFloat"))
 
-    // 4. Stat scopes + Fasi/Iasf + no-advance input + raw ScriptLiterals blob decompile cleanly.
+    // 4. Unstripped Fasi/Iasf in VectorVM2 bytecode are rejected cleanly (VVM2 optimizer strips them).
+    for cast_op in ([2]Niagara_Op{.Fasi,.Iasf}) {
+        cast_bc:=[]u8{u8(cast_op),0,0,0,0,u8(Niagara_Op.Done)}
+        ctx_cast,_:=niagara_vm2_parse(vvm2_blob(cast_bc,2,nil,nil,nil,nil,nil,nil),context.temp_allocator)
+        vm_cast:=Niagara_Vm{vvm2=ctx_cast,usage=.Update,attributes=attrs}
+        probs_cast:=make([dynamic]string,context.temp_allocator)
+        _,ok_cast:=niagara_vm_hlsl(&vm_cast,&probs_cast)
+        testing.expectf(t,!ok_cast && len(probs_cast)>0,"VVM2 must reject unstripped %v",cast_op)
+    }
+
+    // 5. Stat scopes + no-advance input + raw ScriptLiterals blob decompile cleanly.
     raw_lit:=make([]u8,4,context.temp_allocator)
     endian.put_u32(raw_lit,.Little,0x40000000) // 2.0f
     lit_blob:=slice.clone([]Niagara_Variable{{name="ScriptLiterals",data=raw_lit}},context.temp_allocator)
@@ -459,8 +469,6 @@ niagara_vvm2_validation_and_edge_cases :: proc(t:^testing.T) {
     // inputs [2..3) -> no-advance float reg 3 (Age); dup [3..4); outputs [4..5) -> serial 0 (Age).
     code:=make([dynamic]u8,context.temp_allocator)
     append(&code,u8(Niagara_Op.Enter_Stat_Scope));u16le(&code,7)
-    append(&code,u8(Niagara_Op.Fasi))
-    append(&code,u8(Niagara_Op.Iasf))
     append(&code,u8(Niagara_Op.Add));u16le(&code,2);u16le(&code,1);u16le(&code,0)
     append(&code,u8(Niagara_Op.Exit_Stat_Scope))
     append(&code,u8(Niagara_Op.Output_Float),1,0);u16le(&code,0);u16le(&code,4)
@@ -474,4 +482,94 @@ niagara_vvm2_validation_and_edge_cases :: proc(t:^testing.T) {
     testing.expectf(t,decompiled && len(probs_ok)==0,"edge-case VVM2 failed: %v",probs_ok[:])
     testing.expect(t,strings.contains(text_ok,"0x40000000u"))
     testing.expect(t,strings.contains(text_ok,"Context.Map.Particles.Age = InputDataFloat(0, 3);"))
+
+    // 6. Real cooked VectorVM2 bytecode slice (NS_Katana_Dash SpawnScript_0: exec_indexf, mad_sub1,
+    //    cmplt_select, acquireindex, acquire_id, outputdata_int32, done) + UE6 Golden temp-to-output
+    //    aliasing (mul_mul_same_input: NumTempRegisters=0 writing/reading output reg 6).
+    attrs_id:=slice.clone([]Niagara_Variable{
+        variable("Particles.Position","Vector3f"),
+        variable("Particles.Age","NiagaraFloat"),
+        variable("Particles.ID","NiagaraID"),
+    },context.temp_allocator)
+    katana_lits:=slice.clone([]Niagara_Variable{
+        variable("L0","NiagaraFloat",2),variable("L1","NiagaraFloat",3),variable("L2","NiagaraFloat",10),
+        variable("L3","NiagaraFloat",0),variable("L4","NiagaraFloat",1),variable("L5","NiagaraFloat",5),
+    },context.temp_allocator)
+    // temps [0..56), consts [56..62) -> dwords 160..165, inputs [62..62), outputs [62..63) -> ID.AcquireTag (int reg 1).
+    katana_bc:=[]u8{
+        98, 0,0,                                     // exec_indexf -> r0
+        132, 56,0, 0,0, 57,0, 58,0, 54,0,            // mad_sub1(c0, r0, c1, c2) -> r54
+        100, 54,0, 59,0, 60,0, 61,0, 0,0,            // cmplt_select(r54, c3, c4, c5) -> r0
+        86, 0,0, 0,                                  // acquireindex r0, ds0
+        94, 30,0, 29,0, 0,                           // acquire_id r30, r29, ds0
+        84, 1,0, 29,0, 62,0,                         // outputdata_int32 1, ds0, r29 -> out0
+        0,                                           // done
+    }
+    ctx_k,ok_k:=niagara_vm2_parse(vvm2_blob(katana_bc,56,{160,161,162,163,164,165},nil,nil,{0},{1},{1}),context.temp_allocator)
+    testing.expect(t,ok_k)
+    vm_k:=Niagara_Vm{vvm2=ctx_k,usage=.Spawn,attributes=attrs_id,literals=katana_lits}
+    probs_k:=make([dynamic]string,context.temp_allocator)
+    text_k,dec_k:=niagara_vm_hlsl(&vm_k,&probs_k)
+    testing.expectf(t,dec_k && len(probs_k)==0,"real Katana VVM2 slice failed: %v",probs_k[:])
+    testing.expect(t,strings.contains(text_k,"Context.MapSpawn.DataInstance.Alive = (v0 != 0u);"))
+    testing.expect(t,strings.contains(text_k,"Context.MapSpawn.Particles.ID.AcquireTag = asint(v29);"))
+
+    // Exact UE6 Golden Step13/mul_mul_same_input bytes: NumTempRegisters=0, Consts=1, Inputs=2, Outputs=2 (output_base=5).
+    // Note mul writes directly into aliased output register 6 (output_base+1) and outputdata_float reads 6!
+    golden_bc:=[]u8{
+        0x56, 0x00, 0x00, 0x00,
+        0x03, 0x01, 0x00, 0x02, 0x00, 0x06, 0x00,
+        0x53, 0x01, 0x00, 0x06, 0x00, 0x05, 0x00,
+        0x03, 0x01, 0x00, 0x02, 0x00, 0x06, 0x00,
+        0x53, 0x01, 0x00, 0x06, 0x00, 0x06, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    }
+    golden_in_offsets:=[]u16{0,2,2,2,2,2,2,0}
+    ctx_g,ok_g:=niagara_vm2_parse(vvm2_blob(golden_bc,0,{160},{0,1},golden_in_offsets,{0,0},{0,0},{0,1}),context.temp_allocator)
+    testing.expect(t,ok_g)
+    vm_g:=Niagara_Vm{vvm2=ctx_g,usage=.Update,attributes=attrs,literals=katana_lits}
+    probs_g:=make([dynamic]string,context.temp_allocator)
+    text_g,dec_g:=niagara_vm_hlsl(&vm_g,&probs_g)
+    testing.expectf(t,dec_g && len(probs_g)==0,"UE6 golden temp-to-output aliasing failed: %v",probs_g[:])
+    testing.expect(t,strings.contains(text_g,"OutputDataFloat(0, 0, TmpWriteIndex, Context.Map.Particles.Position.x);"))
+    testing.expect(t,strings.contains(text_g,"OutputDataFloat(0, 1, TmpWriteIndex, Context.Map.Particles.Position.y);"))
+
+    // 7. In-place register aliasing on 2-output ops (Sin_Cos & Mul_2x with dst0 == in0) snapshots temporaries cleanly.
+    alias_bc:=[]u8{
+        u8(Niagara_Op.Exec_Indexf), 0,0,
+        u8(Niagara_Op.Sin_Cos), 0,0, 0,0, 1,0,
+        u8(Niagara_Op.Mul_2x), 0,0, 1,0, 0,0, 1,0,
+        u8(Niagara_Op.Output_Float), 1,0, 1,0, 2,0,
+        u8(Niagara_Op.Done),
+    }
+    ctx_a,ok_a:=niagara_vm2_parse(vvm2_blob(alias_bc,2,nil,nil,nil,{0},{0},{3}),context.temp_allocator)
+    testing.expect(t,ok_a)
+    vm_a:=Niagara_Vm{vvm2=ctx_a,usage=.Update,attributes=attrs}
+    probs_a:=make([dynamic]string,context.temp_allocator)
+    text_a,dec_a:=niagara_vm_hlsl(&vm_a,&probs_a)
+    testing.expectf(t,dec_a && len(probs_a)==0,"2-output aliasing failed: %v",probs_a[:])
+    testing.expect(t,strings.contains(text_a,"{ uint _t0 = asuint(sin(asfloat(v0))); uint _t1 = asuint(cos(asfloat(v0))); v0 = _t0; v1 = _t1; }"))
+    testing.expect(t,strings.contains(text_a,"{ uint _t = asuint(asfloat(v0) * asfloat(v1)); v0 = _t; v1 = _t; }"))
+
+    // 8. External call with fewer input registers than signature components reports a problem.
+    t_f,_:=niagara_type_named("NiagaraFloat")
+    fn_short:=Niagara_Vm_Function{
+        name="Sample",owner="Curve",symbol="Sample_Curve",inputs=2,outputs=1,ins=2,found=true,
+        params=slice.clone([]Niagara_Variable{{name="A",type=t_f},{name="B",type=t_f},{name="Out",type=t_f}},context.temp_allocator),
+    }
+    ext_bc:=[]u8{u8(Niagara_Op.External_Call),0,0, 0,0, 1,0, u8(Niagara_Op.Done)}
+    // Inject ext_fn metadata with only 1 input (fewer than 2 signature components) + 1 output.
+    ext_blob:=make([dynamic]u8,context.temp_allocator)
+    append(&ext_blob,..vvm2_blob(ext_bc,2,nil,nil,nil,nil,nil,nil))
+    endian.put_u32(ext_blob[26:],.Little,1) // num_ext_fns = 1
+    ext_entry:[16]u8
+    endian.put_i32(ext_entry[8:],.Little,1)  // num_inputs = 1 (< 2)
+    endian.put_i32(ext_entry[12:],.Little,1) // num_outputs = 1
+    append(&ext_blob,..ext_entry[:])
+    ctx_e,ok_e:=niagara_vm2_parse(ext_blob[:],context.temp_allocator)
+    testing.expect(t,ok_e)
+    vm_e:=Niagara_Vm{vvm2=ctx_e,usage=.Update,attributes=attrs,functions=slice.clone([]Niagara_Vm_Function{fn_short},context.temp_allocator)}
+    probs_e:=make([dynamic]string,context.temp_allocator)
+    _,dec_e:=niagara_vm_hlsl(&vm_e,&probs_e)
+    testing.expectf(t,dec_e && len(probs_e)>0,"expected warning for short external call args: %v",probs_e[:])
 }

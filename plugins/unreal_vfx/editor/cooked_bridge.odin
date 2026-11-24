@@ -83,7 +83,7 @@ Niagara_Light_Params :: struct {
 }
 
 // Builds a native Mirai effect.Particle_Light from extracted Niagara light renderer
-// properties, using sensible defaults only when a property is absent.
+// properties, using Mirai's defaults when source properties are absent.
 @(private)
 niagara_particle_light :: proc(p:Niagara_Light_Params) -> effect.Particle_Light {
     radius_scale:=p.radius_scale>0 ? p.radius_scale : 1.0
@@ -100,22 +100,22 @@ niagara_particle_light :: proc(p:Niagara_Light_Params) -> effect.Particle_Light 
     lintensity:=p.explicit_intensity
     if lintensity<=0 {lintensity=p.particle_intensity}
     if lintensity<=0 {
-        // When no explicit intensity is authored, derive candela from ColorAdd / HDR particle color.
-        cmax:=max(p.fallback_color.x,max(p.fallback_color.y,p.fallback_color.z))
+        // When no explicit intensity is authored, use ColorAdd brightness scaled by DiffuseScale
+        // if present; otherwise keep Mirai's default (0 = disabled unless authored).
         add_max:=max(p.color_add.x,max(p.color_add.y,p.color_add.z))
-        drive:=max(max(cmax,add_max),1.0)
-        lintensity=100.0*max(diffuse_scale,0.1)*drive
+        if p.has_color_add && add_max>0 {
+            lintensity=add_max*max(diffuse_scale,0)
+        } else {
+            lintensity=effect.PARTICLE_DEFAULTS.light.intensity
+        }
     }
+    // Keep {0,0,0} when source does not override light color (Mirai uses the particle's color).
     lcolor:[3]f32
     if p.has_particle_color {
         lcolor={max(p.particle_color.x,0),max(p.particle_color.y,0),max(p.particle_color.z,0)}
     } else if p.has_color_add {
         lcolor={max(p.color_add.x,0),max(p.color_add.y,0),max(p.color_add.z,0)}
-    } else if p.fallback_color.x>0 || p.fallback_color.y>0 || p.fallback_color.z>0 {
-        cmax:=max(p.fallback_color.x,max(p.fallback_color.y,p.fallback_color.z))
-        if cmax>1e-4 {lcolor={p.fallback_color.x/cmax,p.fallback_color.y/cmax,p.fallback_color.z/cmax}}
     }
-    if lcolor=={} {lcolor={1,1,1}}
     lradius:=p.explicit_source_radius_m>0 ? p.explicit_source_radius_m : min(max(p.fallback_sprite_size_m*0.5,0),max(lrange,0))
     lscatter:=p.particle_scattering>=0 ? p.particle_scattering : max(p.renderer_scattering,0)
     return {

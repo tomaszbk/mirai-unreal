@@ -53,12 +53,17 @@ Cooked_Material :: struct {
     shading_model:string,
     archetype:Material_Archetype,
     smr_layout:SMR_Layout,
+    // Channel (0=R..3=A) of the source mask texture holding masked opacity cut-out.
+    // Standard Mirai maps.mask reads .A (3); Fortnite MasksTexture stores cut-out in .R (0)
+    // and must be swizzled to .A when importing/cooking the mask texture.
+    mask_alpha_channel:u8,
     info:asset.Material_Info,
     texture_paths:[asset.Material_Map_Kind]string,
     program_name:string,
     program_source:string, // generated `//! mirai surface` Slang shader
     program_parameters:[]asset.Material_Parameter,
     program_textures:[]Cooked_Program_Texture,
+    notes:[]string,
     scalars:[]Cooked_Scalar,
     vectors:[]Cooked_Vector,
     textures:[]Cooked_Texture,
@@ -82,6 +87,8 @@ cooked_material_destroy :: proc(m:^Cooked_Material,allocator:=context.allocator)
         delete(pt.path,allocator)
     }
     delete(m.program_textures,allocator)
+    for n in m.notes {delete(n,allocator)}
+    delete(m.notes,allocator)
     for s in m.scalars {delete(s.name,allocator);delete(s.from,allocator)}
     delete(m.scalars,allocator)
     for v in m.vectors {delete(v.name,allocator);delete(v.from,allocator)}
@@ -135,6 +142,7 @@ cooked_material_parse :: proc(json_text:string,allocator:=context.allocator) -> 
     if !ok {return {},Error{"material","root JSON value must be an object"}}
 
     m.info=asset.MATERIAL_DEFAULTS
+    m.mask_alpha_channel=3 // standard .A channel on Mirai maps.mask
     m.name=strings.clone(json_str(obj["Name"],json_str(obj["name"])),allocator)
     m.path=strings.clone(json_str(obj["Path"],json_str(obj["path"])),allocator)
     m.parent=strings.clone(json_str(obj["Parent"],json_str(obj["parent"])),allocator)
@@ -396,8 +404,13 @@ cooked_material_parse :: proc(json_text:string,allocator:=context.allocator) -> 
     }
 
     // Classify cooked texture parameter names onto Mirai Material_Map_Kind slots.
+    // On opaque materials, Fortnite multi-channel MasksTexture (AO/Cavity/SSS) belongs
+    // only to the Surface program's t_masks slot, not to Mirai's alpha-cutout maps.mask.
     for tex in m.textures {
         if kind,matched:=classify_texture_slot(tex.name);matched && m.texture_paths[kind]=="" {
+            if kind==.Mask && m.info.alpha_mode==.Opaque && is_pbr_data_mask_name(tex.name) {
+                continue
+            }
             m.texture_paths[kind]=tex.path
         }
     }
@@ -474,7 +487,31 @@ find_vector :: proc(list:[]Cooked_Vector,names:[]string) -> ([4]f32,bool) {
     return {},false
 }
 
+// True when `token` appears in `low` bounded by non-letters (start/end or delimiters
+// like '_', '-', '.', '/', ' ', digits), preventing substrings like "uniform" or "storm"
+// from matching short acronyms such as "orm".
 @(private="file")
+has_token :: proc(low,token:string) -> bool {
+    is_letter :: proc(b:u8) -> bool {return (b>='a' && b<='z') || (b>='A' && b<='Z')}
+    n:=len(token)
+    if n==0 || len(low)<n {return false}
+    for i:=0;i+n<=len(low);i+=1 {
+        if low[i:i+n]!=token {continue}
+        left_ok:=i==0 || !is_letter(low[i-1])
+        right_ok:=i+n==len(low) || !is_letter(low[i+n])
+        if left_ok && right_ok {return true}
+    }
+    return false
+}
+
+@(private="file")
+is_pbr_data_mask_name :: proc(name:string) -> bool {
+    low:=strings.to_lower(name,context.temp_allocator)
+    return low=="maskstexture" || low=="masktexture" || low=="masks" || low=="m" ||
+           strings.contains(low,"cavitymask") || strings.contains(low,"subsurfacemask")
+}
+
+@(private)
 classify_texture_slot :: proc(name:string) -> (asset.Material_Map_Kind,bool) {
     low:=strings.to_lower(name,context.temp_allocator)
     switch {
@@ -482,20 +519,21 @@ classify_texture_slot :: proc(name:string) -> (asset.Material_Map_Kind,bool) {
         return .Normal,true
     case strings.contains(low,"emissive") || strings.contains(low,"emission") || strings.contains(low,"glow"):
         return .Emission,true
-    case strings.contains(low,"subsurface") || strings.contains(low,"sss"):
+    case strings.contains(low,"subsurface") || has_token(low,"sss"):
         return .Subsurface,true
     // Check packed PBR channel maps (SpecularMasks, SRM, SMR, ORM, MRA) BEFORE generic "mask"
-    // so SpecularMasks is never misclassified as an opacity mask.
+    // so SpecularMasks is never misclassified as an opacity mask. Short acronyms require
+    // token boundaries so names like "T_Uniform_D" or "T_Storm_D" are not misclassified.
     case strings.contains(low,"specularmasks") || strings.contains(low,"specular_masks") ||
-         strings.contains(low,"srm") || strings.contains(low,"smr") ||
-         strings.contains(low,"orm") || strings.contains(low,"mra") ||
+         has_token(low,"srm") || has_token(low,"smr") ||
+         has_token(low,"orm") || has_token(low,"mra") ||
          strings.contains(low,"rough") || strings.contains(low,"metal"):
         return .Metallic_Roughness,true
     case strings.contains(low,"specular") || strings.has_suffix(low,"_s"):
         return .Specular,true
     case strings.contains(low,"opacity") || strings.contains(low,"alpha") || strings.contains(low,"mask"):
         return .Mask,true
-    case strings.contains(low,"ao") || strings.contains(low,"occlusion"):
+    case has_token(low,"ao") || strings.contains(low,"occlusion"):
         return .Occlusion,true
     case strings.contains(low,"diffuse") || strings.contains(low,"albedo") || strings.contains(low,"basecolor") || strings.contains(low,"base_color") || strings.contains(low,"color") || strings.has_suffix(low,"_d"):
         return .Base_Color,true

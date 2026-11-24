@@ -1059,7 +1059,7 @@ niagara_op_expressions :: proc(op:Niagara_Op,args:[]string) -> (e0,e1:string) {
     case .Div_F2i: return f("int(%s)",divf(F(a),F(b))),""
     case .Div_Mul: return f("%s * %s",divf(F(a),F(b)),F(c)),""
     case .Muli_Addi: return f("%s * %s + %s",I(a),I(b),I(c)),""
-    case .Addi_Bit_Rshift: return fmt.tprintf("(asuint(%s + %s) >> %s)",I(a),I(b),c),""
+    case .Addi_Bit_Rshift: return f("(%s + %s) >> %s",I(a),I(b),I(c)),""
     case .Addi_Muli: return f("(%s + %s) * %s",I(a),I(b),I(c)),""
     case .B2i_2x:
         v:=fmt.tprintf("(%s & 1u)",a)
@@ -1074,7 +1074,7 @@ niagara_op_expressions :: proc(op:Niagara_Op,args:[]string) -> (e0,e1:string) {
     case .F2i_Addi: return f("int(%s) + %s",F(a),I(b)),""
     case .Fmod_Add: return f("fmod(%s, %s) + %s",F(a),F(b),F(c)),""
     case .Bit_And_I2f: return f("float(asint(%s & %s))",a,b),""
-    case .Bit_Rshift_Bit_And: return fmt.tprintf("((%s >> %s) & %s)",a,b,c),""
+    case .Bit_Rshift_Bit_And: return fmt.tprintf("(asuint(%s >> %s) & %s)",I(a),I(b),c),""
     case .Neg_Cmplt: return mask("(-%s) < %s",F(a),F(b)),""
     case .Bit_Or_Muli: return f("asint(%s | %s) * %s",a,b,I(c)),""
     case .Bit_Lshift_Bit_Or: return fmt.tprintf("((%s << %s) | %s)",a,b,c),""
@@ -1111,6 +1111,9 @@ niagara_vm2_call :: proc(w:^Niagara_Vm_Writer,fn:^Niagara_Vm_Function,in_exprs:[
     strings.write_string(&w.body,"    {\n")
     in_components:=0
     for p in fn.params[:fn.ins] {in_components+=len(p.type.components)}
+    if len(in_exprs)<in_components {
+        niagara_vm_problem(w,"%s.%s receives %d input registers, fewer than its %d signature components: missing inputs read zero",fn.owner,fn.name,len(in_exprs),in_components)
+    }
     // Skip leading data-interface instance register(s) when present before parameter components.
     k:=len(in_exprs)>in_components ? len(in_exprs)-in_components : 0
     for p,i in fn.params {
@@ -1146,6 +1149,13 @@ niagara_vm2_hlsl :: proc(w:^Niagara_Vm_Writer,ctx:^Niagara_Vm2,entry,map_name:st
     }
     code:=ctx.bytecode
     at:=0
+    // VectorVM2 unified RegPtrTable layout:
+    //   [0 .. const_base)               : temp registers (VVM_RT_TEMPREG)
+    //   [const_base .. input_base)      : remapped constants (VVM_RT_CONST)
+    //   [input_base .. input_base+N_in) : active per-chunk input pointers (VVM_RT_INPUT)
+    //   [input_base+N_in .. output_base): runtime-only base input pointers (never in bytecode)
+    //   [output_base .. output_base+N_o): output buffer pointers (VVM_RT_OUTPUT), which the
+    //                                     optimizer may also alias as scratch temp registers.
     const_base:=ctx.num_temp_regs
     input_base:=const_base+len(ctx.const_remap)
     output_base:=input_base+len(ctx.inputs)*2
@@ -1155,15 +1165,22 @@ niagara_vm2_hlsl :: proc(w:^Niagara_Vm_Writer,ctx:^Niagara_Vm2,entry,map_name:st
         v,_:=endian.get_u16(code[at:],.Little)
         return int(v)
     }
-    write_reg :: proc(w:^Niagara_Vm_Writer,ctx:^Niagara_Vm2,index:int,bad_reg:^bool) -> string {
-        if index<0 || index>=ctx.num_temp_regs {
+    // Maps a temp register or an optimizer-aliased output register to a local vN slot.
+    slot_of :: proc(ctx:^Niagara_Vm2,output_base,index:int) -> (slot:int,valid:bool) {
+        if index>=0 && index<ctx.num_temp_regs {return index,true}
+        if s:=index-output_base;s>=0 && s<len(ctx.outputs) {return ctx.num_temp_regs+s,true}
+        return 0,false
+    }
+    write_reg :: proc(w:^Niagara_Vm_Writer,ctx:^Niagara_Vm2,output_base,index:int,bad_reg:^bool) -> string {
+        slot,valid:=slot_of(ctx,output_base,index)
+        if !valid {
             bad_reg^=true
             return "v0"
         }
-        w.registers=max(w.registers,index+1)
-        return fmt.tprintf("v%d",index)
+        w.registers=max(w.registers,slot+1)
+        return fmt.tprintf("v%d",slot)
     }
-    read_reg :: proc(w:^Niagara_Vm_Writer,ctx:^Niagara_Vm2,const_base,input_base:int,r:int,bad_reg:^bool) -> string {
+    read_reg :: proc(w:^Niagara_Vm_Writer,ctx:^Niagara_Vm2,const_base,input_base,output_base,r:int,bad_reg:^bool) -> string {
         if r==0xFFFF {return "0u"}
         if r>=0 && r<ctx.num_temp_regs {
             w.registers=max(w.registers,r+1)
@@ -1175,6 +1192,11 @@ niagara_vm2_hlsl :: proc(w:^Niagara_Vm_Writer,ctx:^Niagara_Vm2,entry,map_name:st
         if r>=input_base && r<input_base+len(ctx.inputs) {
             inp:=ctx.inputs[r-input_base]
             return niagara_vm_input(w,inp.data_set,inp.index,inp.register)
+        }
+        if s:=r-output_base;s>=0 && s<len(ctx.outputs) {
+            slot:=ctx.num_temp_regs+s
+            w.registers=max(w.registers,slot+1)
+            return fmt.tprintf("v%d",slot)
         }
         bad_reg^=true
         return "0u"
@@ -1195,18 +1217,23 @@ niagara_vm2_hlsl :: proc(w:^Niagara_Vm_Writer,ctx:^Niagara_Vm2,entry,map_name:st
         case .Enter_Stat_Scope:
             if at+2>len(code) {bad=true;break}
             at+=2
-        case .Exit_Stat_Scope,.Fasi,.Iasf:
-            // Stripped / no-op in frozen VectorVM2 bytecode.
+        case .Exit_Stat_Scope:
+            // Stat scopes have no effect on value semantics.
+        case .Fasi,.Iasf:
+            // The VectorVM2 optimizer always removes fasi/iasf casts during SSA remapping;
+            // their presence in frozen VectorVM2 bytecode indicates malformed/unoptimized input.
+            append(problems,fmt.tprintf("its VectorVM2 bytecode has an unstripped cast operation %v at byte %d: its script is not translated",op,at-1))
+            return
         case .Exec_Index:
             dst:=u16_at(code,at,&bad)
             at+=2
             if bad {break}
-            fmt.sbprintf(&w.body,"    %s = asuint(ExecIndex());\n",write_reg(w,ctx,dst,&bad_reg))
+            fmt.sbprintf(&w.body,"    %s = asuint(ExecIndex());\n",write_reg(w,ctx,output_base,dst,&bad_reg))
         case .Exec_Indexf:
             dst:=u16_at(code,at,&bad)
             at+=2
             if bad {break}
-            fmt.sbprintf(&w.body,"    %s = asuint(float(ExecIndex()));\n",write_reg(w,ctx,dst,&bad_reg))
+            fmt.sbprintf(&w.body,"    %s = asuint(float(ExecIndex()));\n",write_reg(w,ctx,output_base,dst,&bad_reg))
         case .Output_Float,.Output_Int,.Output_Half,.Output_Float_From_Half,.Output_Half_From_Half:
             if at+2>len(code) {bad=true;break}
             num_loops:=int(code[at])
@@ -1227,7 +1254,7 @@ niagara_vm2_hlsl :: proc(w:^Niagara_Vm_Writer,ctx:^Niagara_Vm2,entry,map_name:st
                 }
                 o:=ctx.outputs[serial]
                 if o.dst_reg==0xFFFF {continue}
-                src_expr:=read_reg(w,ctx,const_base,input_base,srcs[j],&bad_reg)
+                src_expr:=read_reg(w,ctx,const_base,input_base,output_base,srcs[j],&bad_reg)
                 if bad_reg {break}
                 niagara_vm_output(w,o.data_set,o.dst_reg,o.register,src_expr)
             }
@@ -1238,7 +1265,7 @@ niagara_vm2_hlsl :: proc(w:^Niagara_Vm_Writer,ctx:^Niagara_Vm2,entry,map_name:st
             at+=3
             if bad {break}
             if ds==0 && w.vm.usage!=.System {
-                fmt.sbprintf(&w.body,"    %s = (%s != 0u);\n",niagara_vm_path(w,"DataInstance.Alive","bool"),read_reg(w,ctx,const_base,input_base,in_reg,&bad_reg))
+                fmt.sbprintf(&w.body,"    %s = (%s != 0u);\n",niagara_vm_path(w,"DataInstance.Alive","bool"),read_reg(w,ctx,const_base,input_base,output_base,in_reg,&bad_reg))
             }
         case .Update_Id,.Acquire_Id:
             r0,r1:=u16_at(code,at,&bad),u16_at(code,at+2,&bad)
@@ -1246,7 +1273,7 @@ niagara_vm2_hlsl :: proc(w:^Niagara_Vm_Writer,ctx:^Niagara_Vm2,entry,map_name:st
             at+=5
             if bad {break}
             if op==.Acquire_Id {
-                fmt.sbprintf(&w.body,"    %s = asuint(niagara_id.x);\n    %s = asuint(niagara_id.y);\n",write_reg(w,ctx,r0,&bad_reg),write_reg(w,ctx,r1,&bad_reg))
+                fmt.sbprintf(&w.body,"    %s = asuint(niagara_id.x);\n    %s = asuint(niagara_id.y);\n",write_reg(w,ctx,output_base,r0,&bad_reg),write_reg(w,ctx,output_base,r1,&bad_reg))
             }
         case .External_Call:
             fi:=u16_at(code,at,&bad)
@@ -1261,13 +1288,19 @@ niagara_vm2_hlsl :: proc(w:^Niagara_Vm_Writer,ctx:^Niagara_Vm2,entry,map_name:st
             if fi<len(ctx.ext_fns) {n_in,n_out=ctx.ext_fns[fi].num_inputs,ctx.ext_fns[fi].num_outputs}
             if n_in<0 || n_out<0 || at+2*(n_in+n_out)>len(code) {bad=true;break}
             in_exprs:=make([]string,n_in,context.temp_allocator)
-            for k in 0..<n_in {in_exprs[k]=read_reg(w,ctx,const_base,input_base,u16_at(code,at+2*k,&bad),&bad_reg)}
+            for k in 0..<n_in {in_exprs[k]=read_reg(w,ctx,const_base,input_base,output_base,u16_at(code,at+2*k,&bad),&bad_reg)}
             at+=2*n_in
             out_regs:=make([]int,n_out,context.temp_allocator)
             for k in 0..<n_out {
                 r:=u16_at(code,at+2*k,&bad)
-                out_regs[k]=r
-                if r!=0xFFFF {_=write_reg(w,ctx,r,&bad_reg)}
+                if r!=0xFFFF {
+                    slot,valid:=slot_of(ctx,output_base,r)
+                    if !valid {bad_reg=true;break}
+                    w.registers=max(w.registers,slot+1)
+                    out_regs[k]=slot
+                } else {
+                    out_regs[k]=0xFFFF
+                }
             }
             at+=2*n_out
             if bad || bad_reg {break}
@@ -1280,14 +1313,33 @@ niagara_vm2_hlsl :: proc(w:^Niagara_Vm_Writer,ctx:^Niagara_Vm2,entry,map_name:st
                 return
             }
             args:[5]string
-            for i in 0..<inputs {args[i]=read_reg(w,ctx,const_base,input_base,u16_at(code,at+2*i,&bad),&bad_reg)}
+            for i in 0..<inputs {args[i]=read_reg(w,ctx,const_base,input_base,output_base,u16_at(code,at+2*i,&bad),&bad_reg)}
             dst0:=u16_at(code,at+2*inputs,&bad)
             dst1:=outputs==2 ? u16_at(code,at+2*(inputs+1),&bad) : 0xFFFF
             at+=2*(inputs+outputs)
             if bad {break}
             e0,e1:=niagara_op_expressions(op,args[:inputs])
-            fmt.sbprintf(&w.body,"    %s = %s;\n",write_reg(w,ctx,dst0,&bad_reg),e0)
-            if outputs==2 && dst1!=0xFFFF {fmt.sbprintf(&w.body,"    %s = %s;\n",write_reg(w,ctx,dst1,&bad_reg),e1)}
+            if outputs==2 {
+                // Snapshot both results into temporaries before writing dst0/dst1 so in-place
+                // register aliasing (dst0 == input) cannot corrupt the second result.
+                // Mul_2x and B2i_2x compute one shared value copied to both outputs; Random_2x
+                // and Sin_Cos compute two distinct outputs.
+                d0:=dst0!=0xFFFF ? write_reg(w,ctx,output_base,dst0,&bad_reg) : ""
+                d1:=dst1!=0xFFFF ? write_reg(w,ctx,output_base,dst1,&bad_reg) : ""
+                if op==.Mul_2x || op==.B2i_2x {
+                    fmt.sbprintf(&w.body,"    {{ uint _t = %s;",e0)
+                    if d0!="" {fmt.sbprintf(&w.body," %s = _t;",d0)}
+                    if d1!="" {fmt.sbprintf(&w.body," %s = _t;",d1)}
+                    strings.write_string(&w.body," }\n")
+                } else {
+                    fmt.sbprintf(&w.body,"    {{ uint _t0 = %s; uint _t1 = %s;",e0,e1)
+                    if d0!="" {fmt.sbprintf(&w.body," %s = _t0;",d0)}
+                    if d1!="" {fmt.sbprintf(&w.body," %s = _t1;",d1)}
+                    strings.write_string(&w.body," }\n")
+                }
+            } else {
+                fmt.sbprintf(&w.body,"    %s = %s;\n",write_reg(w,ctx,output_base,dst0,&bad_reg),e0)
+            }
         }
         if bad_reg {
             append(problems,fmt.tprintf("its VectorVM2 bytecode references an out-of-range register near byte %d: its script is not translated",at))

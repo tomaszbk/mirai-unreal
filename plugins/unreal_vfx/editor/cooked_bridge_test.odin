@@ -218,7 +218,14 @@ cooked_niagara_bridge_emits_particle_v10_light :: proc(t:^testing.T) {
     testing.expect(t,l.shadows)
     testing.expectf(t,abs(l.indirect-0.8)<1e-3,"indirect %v",l.indirect)
     testing.expectf(t,abs(l.scattering-1.5)<1e-3,"scattering %v",l.scattering)
-    testing.expectf(t,abs(l.color.x-0.4)<1e-3 && abs(l.color.y-0.8)<1e-3 && abs(l.color.z-1.0)<1e-3,"color %v",l.color)
+    // No explicit LightColor / ColorAdd -> {0,0,0} so Mirai uses the particle's color.
+    testing.expect_value(t,l.color,[3]f32{0,0,0})
+
+    // Without explicit intensity or ColorAdd, intensity stays at Mirai's default (0; no made-up 100 cd).
+    bare_light:=niagara_particle_light({radius_scale=2.0,diffuse_scale=1.0,particle_scattering=-1,renderer_scattering=1,indirect=1,max_lights=1})
+    testing.expect_value(t,bare_light.intensity,effect.PARTICLE_DEFAULTS.light.intensity)
+    testing.expect_value(t,bare_light.color,[3]f32{0,0,0})
+    testing.expectf(t,abs(bare_light.range-2.0)<1e-4,"range %v",bare_light.range)
 
     // Binary .particle v10 round-trip preserves Particle_Light verbatim.
     types:asset.Types
