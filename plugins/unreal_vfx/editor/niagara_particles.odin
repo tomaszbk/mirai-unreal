@@ -3,103 +3,11 @@ package unreal_vfx_editor
 import "core:fmt"
 import "core:strings"
 
-// The bodies of the functions that read the particles of another emitter
-// (ParticleRead) and of the grids of neighbors (NeighborGrid3D).
-//
-// An index of another emitter is the slot of a particle in its range, and
-// its number of particles the slots of the range, of which those not alive
-// are not valid; an id is its slot and its seed. The attributes Mirai's
-// particle keeps (Position, Velocity) come from it, the others from the
-// words of the Attributes of the other program, laid out for the system.
+// The bodies of the functions of the grids of neighbors (NeighborGrid3D),
+// scene collision queries (CollisionQuery) and GBuffer queries.
 //
 // A cell of a grid of neighbors keeps how many there are in its first word
 // and the index of each, plus one, in those after it: a cell at zero has none.
-
-@(private)
-niagara_read_body :: proc(w:^Niagara_Writer,di:^Niagara_Di,base,specifier:string,params:[]Hlsl_Field) -> (body:string,ok:bool) {
-    ins,outs:=niagara_split(params)
-    R:=di.resource
-    b:=strings.builder_make(context.temp_allocator)
-    out_ :: proc(list:[]Hlsl_Field,i:int) -> string {return i<len(list)?list[i].name:"niagara_unused"}
-    in_ :: proc(list:[]Hlsl_Field,i:int) -> string {return i<len(list)?list[i].name:"0"}
-    // A slot from the input: an index, or an id whose tag is the seed of the particle.
-    by_id:=len(ins)>0 && ins[0].type=="NiagaraID"
-    slot:=by_id?fmt.tprintf("niagara_read_slot(%s, %s.Index, %s.AcquireTag)",R,in_(ins,0),in_(ins,0)):fmt.tprintf("niagara_read_slot(%s, %s, -1)",R,in_(ins,0))
-    switch base {
-    case "GetNumParticles":
-        fmt.sbprintf(&b,"    %s = int(mirai_vfx_emitter_capacity(niagara_ctx, %s));\n",out_(outs,0),R)
-        return strings.to_string(b),true
-    case "GetNumSpawnedParticles":
-        fmt.sbprintf(&b,"    %s = int(mirai_vfx_emitter_births(niagara_ctx, %s).y);\n",out_(outs,0),R)
-        return strings.to_string(b),true
-    case "GetParticleIndex","GetParticleIndexFromIDTable":
-        fmt.sbprintf(&b,"    int slot = %s;\n",slot)
-        if len(outs)>=2 {
-            fmt.sbprintf(&b,"    %s = slot >= 0;\n    %s = slot;\n",outs[0].name,outs[1].name)
-        } else {
-            fmt.sbprintf(&b,"    %s = slot;\n",out_(outs,0))
-        }
-        return strings.to_string(b),true
-    case "GetIDAtSpawnIndex","GetSpawnedIDAtIndex":
-        // The id of a particle started this frame, which may not have started yet: its birth.
-        fmt.sbprintf(&b,"    uint2 births = mirai_vfx_emitter_births(niagara_ctx, %s);\n    uint seed;\n",R)
-        fmt.sbprintf(&b,"    %s = %s >= 0 && uint(%s) < births.y;\n",out_(outs,0),in_(ins,0),in_(ins,0))
-        fmt.sbprintf(&b,"    mirai_vfx_emitter_birth(niagara_ctx, %s, births.x + uint(max(%s, 0)), seed);\n",R,in_(ins,0))
-        fmt.sbprintf(&b,"    %s.Index = %s ? -2 - int(births.x + uint(%s)) : -1; %s.AcquireTag = int(seed);\n",out_(outs,1),out_(outs,0),in_(ins,0),out_(outs,1))
-        return strings.to_string(b),true
-    }
-    if !strings.has_prefix(base,"Get") || (!strings.has_suffix(base,"ByIndex") && !strings.has_suffix(base,"ByID")) || len(outs)<2 {return}
-    name:=niagara_attribute_named(specifier)
-    target:=outs[1]
-    type:=strings.trim_prefix(target.type,"out ")
-    fmt.sbprintf(&b,"    int slot = %s;\n    %s = slot >= 0;\n",slot,outs[0].name)
-    switch name {
-    case "Position":
-        fmt.sbprintf(&b,"    %s = niagara_read_position(%s, slot, %v);\n",target.name,R,w.local)
-    case "Velocity":
-        fmt.sbprintf(&b,"    %s = niagara_read_velocity(%s, slot, %v);\n",target.name,R,w.local)
-    case "ID":
-        fmt.sbprintf(&b,"    %s.Index = slot; %s.AcquireTag = niagara_read_seed(%s, slot);\n",target.name,target.name,R)
-    case "UniqueID":
-        fmt.sbprintf(&b,"    %s = niagara_read_seed(%s, slot);\n",target.name,R)
-    case:
-        other:=w.system.emitters[di.other] if di.other!="" else nil
-        if other==nil || other.source==nil {
-            fmt.sbprintf(&b,"    %s = (%s)0;\n",target.name,type)
-            if di.other=="" {
-                append(&w.problems,fmt.tprintf("%s reads %s of an emitter it does not name: it gives zero",di.name,name))
-            } else {
-                append(&w.problems,fmt.tprintf("%s reads %s of %s, which is not translated: it gives zero",di.name,name,di.other))
-            }
-            return strings.to_string(b),true
-        }
-        word,kind,found:=niagara_attr_word(other.source.attributes,name)
-        if !found {
-            fmt.sbprintf(&b,"    %s = (%s)0;\n",target.name,type)
-            append(&w.problems,fmt.tprintf("%s reads %s, which %s does not keep: it gives zero",di.name,name,di.other))
-            return strings.to_string(b),true
-        }
-        scalar,count:=niagara_components(kind)
-        if type=="NiagaraID" {
-            fmt.sbprintf(&b,"    %s.Index = asint(niagara_read_word(%s, slot, %d)); %s.AcquireTag = asint(niagara_read_word(%s, slot, %d));\n",target.name,R,word,target.name,R,word+1)
-            break
-        }
-        value:=strings.builder_make(context.temp_allocator)
-        if count>1 {fmt.sbprintf(&value,"%s(",kind)}
-        for i in 0..<count {
-            if i>0 {strings.write_string(&value,", ")}
-            switch scalar {
-            case "float": fmt.sbprintf(&value,"asfloat(niagara_read_word(%s, slot, %d))",R,word+i)
-            case "int": fmt.sbprintf(&value,"asint(niagara_read_word(%s, slot, %d))",R,word+i)
-            case "bool": fmt.sbprintf(&value,"(niagara_read_word(%s, slot, %d) != 0u)",R,word+i)
-            case: fmt.sbprintf(&value,"niagara_read_word(%s, slot, %d)",R,word+i)
-            }
-        }
-        if count>1 {strings.write_byte(&value,')')}
-        fmt.sbprintf(&b,"    %s = (%s)(%s);\n",target.name,type,strings.to_string(value))
-    }
-    return strings.to_string(b),true
-}
 
 @(private)
 niagara_neighbors_body :: proc(w:^Niagara_Writer,di:^Niagara_Di,base,specifier:string,params:[]Hlsl_Field,written:bool) -> (body:string,ok:bool) {

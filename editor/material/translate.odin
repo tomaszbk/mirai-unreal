@@ -609,8 +609,7 @@ translate_values :: proc(t:^Translated_Material,e:^Evaluator,roots:[Attribute]u3
     case .Masked:info.alpha_mode=.Mask;info.alpha_cutoff=clamp(clip,0,1)
     case .Translucent,.Alpha_Composite,.Colored_Transmittance:info.alpha_mode=.Blend
     case .Additive:
-        info.alpha_mode=.Blend
-        note(e,"additive blending is taken as a layer that covers nothing and adds its light")
+        info.alpha_mode=.Additive
     case .Modulate,.Alpha_Holdout:
         info.alpha_mode=.Blend
         note(e,"blend mode %v has no Mirai equivalent; it is drawn as a blended layer",blend)
@@ -665,15 +664,15 @@ translate_values :: proc(t:^Translated_Material,e:^Evaluator,roots:[Attribute]u3
     // gets the same light whichever way it faces: a card that lets half of
     // what it scatters through has that mean over the ways it can face a
     // light, and shows the light behind it.
-    if around && info.alpha_mode==.Blend && shading!=.Unlit && e.diffuse_transmission[0]==NONE {
+    if around && asset.alpha_blended(info.alpha_mode) && shading!=.Unlit && e.diffuse_transmission[0]==NONE {
         color:=base_color!=NONE?convert(g,base_color,3):constant(g,ATTRIBUTE_DEFAULTS[.Base_Color],3)
         e.diffuse_transmission={unary(g,.Saturate,color),scalar(g,0.5)}
     }
 
     alpha_root:=NONE
     if info.alpha_mode==.Mask {alpha_root=roots[.Opacity_Mask]}
-    if info.alpha_mode==.Blend {alpha_root=roots[.Opacity]}
-    if blend==.Additive || collapsed {alpha_root=scalar(g,0)}
+    if asset.alpha_blended(info.alpha_mode) {alpha_root=roots[.Opacity]}
+    if collapsed {alpha_root=scalar(g,0)}
     // A mask that keeps every point (unconnected, it is one) tests nothing: the surface is opaque.
     if info.alpha_mode==.Mask && !collapsed {
         kept,constant:=[4]f32{1,1,1,1},alpha_root==NONE

@@ -5,7 +5,6 @@ import "core:testing"
 import fixture "project:plugins/unreal/editor/fixture/files"
 import "project:plugins/unreal/editor/level"
 import unreal "project:plugins/unreal/editor/package"
-import "mirai:cook/textures"
 
 @(test)
 niagara_names_are_the_symbols_its_translator_writes :: proc(t:^testing.T) {
@@ -44,26 +43,21 @@ a_2d_grid_is_flat_along_y :: proc(t:^testing.T) {
     testing.expect_value(t,niagara_grid_key(&w,&e,&named),niagara_grid_key(&w,&e,&own))
 }
 
-// A texture is a grid flat along y of one cell a texel, resampled down to
-// NIAGARA_TEXTURE_CELLS, that SampleTexture2D samples by its uv.
+// A texture or vector field is bound as a texture parameter of the Vfx program
+// and sampled through mirai_vfx_texture.
 @(test)
-a_texture_is_baked_into_a_grid_its_program_samples :: proc(t:^testing.T) {
-    small:=[]u8{0,0,0,255, 255,0,0,255, 0,255,0,255, 0,0,255,255}
-    cells,values,ok:=niagara_texture_cells(textures.rgba8(small,2,2),false)
-    testing.expect(t,ok && cells==[2]int{2,2})
-    testing.expect_value(t,values[1*4+0],f32(1)) // the second texel of the first row: red
-    testing.expect_value(t,values[2*4+1],f32(1)) // the first of the second row: green
-    wide:=make([]u8,(NIAGARA_TEXTURE_CELLS*2)*4*4,context.temp_allocator)
-    for i in 0..<NIAGARA_TEXTURE_CELLS*2*4 {wide[i*4]=u8(255*(i%2))}
-    cells,values,ok=niagara_texture_cells(textures.rgba8(wide,NIAGARA_TEXTURE_CELLS*2,4),false)
-    testing.expect(t,ok && cells==[2]int{NIAGARA_TEXTURE_CELLS,2})
-    testing.expect(t,abs(values[0]-0.5)<1e-4,"two texels in a cell are their average")
+a_texture_and_vector_field_sample_through_texture_parameters :: proc(t:^testing.T) {
     w:Niagara_Writer
-    di:=Niagara_Di{kind=.Texture,resource="di_logo",texture={cells={64,32}}}
+    di:=Niagara_Di{kind=.Texture,param="niagara_param_tex_0",texture={cells={64,32},mips=4}}
     body,sampled:=niagara_texture_body(&w,&di,"SampleTexture2D",{{"float2","UV"},{"out float4","Value"}})
-    testing.expect(t,sampled && strings.contains(body,"Value = niagara_texture_sample(di_logo, UV);"),body)
+    testing.expect(t,sampled && strings.contains(body,"Value = niagara_texture_sample(niagara_param_tex_0, UV);"),body)
     body,sampled=niagara_texture_body(&w,&di,"GetTextureDimensions",{{"int","Mip"},{"out float2","Size"}})
     testing.expect(t,sampled && strings.contains(body,"Size = float2(64, 32);"),body)
+    body,sampled=niagara_texture_body(&w,&di,"GetNumMipLevels",{{"out int","Mips"}})
+    testing.expect(t,sampled && strings.contains(body,"Mips = 4;"),body)
+    vf:=Niagara_Di{kind=.Vector_Field,param="niagara_param_vf_0",field={cells={8,4,2},low={-10,-10,-10},high={10,10,10}},tile={true,false,true}}
+    body,sampled=niagara_vector_field_body(&w,&vf,"SampleField",{{"float3","Pos"},{"out float3","Vel"}})
+    testing.expect(t,sampled && strings.contains(body,"niagara_field_sample(niagara_param_vf_0, int3(8, 4, 2), Pos,"),body)
 }
 
 @(test)
@@ -103,7 +97,7 @@ niagara_event_handlers_say_what_to_use_instead :: proc(t:^testing.T) {
     f:=level.Found{pkg=level.library_package(&lib,index),origin=.Authored}
     problems:=niagara_event_handlers(&d,ref,f,&held.list)
     if !testing.expect_value(t,len(problems),1) {return}
-    for part in ([]string{"EventHandler_Location","LocationEvent","Data Channel","Particle Attribute Reader"}) {
+    for part in ([]string{"EventHandler_Location","LocationEvent","sub_particle","Particle_Channel"}) {
         testing.expectf(t,strings.contains(problems[0],part),"the problem names %s: %s",part,problems[0])
     }
 }

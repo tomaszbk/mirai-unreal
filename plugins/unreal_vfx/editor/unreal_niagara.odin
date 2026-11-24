@@ -449,8 +449,9 @@ niagara_values :: proc(c:^unreal_scene.Context,e:^Unreal_Emitter,v:^Niagara_Valu
 }
 
 // The size of InitializeParticle by its mode of what (Sprite Size, Mesh
-// Scale): uniform, one value; else the first axis of a vector; each a
-// constant or a range. scale: centimetres in one of the value.
+// Scale): uniform, one value; non-uniform, size carries the largest axis and
+// info.scale carries the per-axis ratios (2D for sprites, Unreal XYZ -> Mirai
+// YZX for meshes). scale: centimetres in one of the value.
 @(private)
 niagara_size :: proc(v:^Niagara_Values,info:^effect.Particle_Info,what,uniform,vector:string,scale:f32,switched:^[dynamic]string) {
     key :: proc(parts:..string) -> string {return strings.concatenate(parts,context.temp_allocator)}
@@ -460,6 +461,31 @@ niagara_size :: proc(v:^Niagara_Values,info:^effect.Particle_Info,what,uniform,v
     axes,has_axes:=niagara_vector(v,key("InitializeParticle.",vector))
     axes_low,has_axes_low:=niagara_vector(v,key("InitializeParticle.",vector," Min"))
     axes_high,has_axes_high:=niagara_vector(v,key("InitializeParticle.",vector," Max"))
+    mesh:=what=="Mesh Scale"
+    non_uniform_set :: proc(info:^effect.Particle_Info,lo,hi:[4]f32,mesh:bool,scale:f32) {
+        if mesh {
+            mlo:=[3]f32{max(lo.y,0),max(lo.z,0),max(lo.x,0)}
+            mhi:=[3]f32{max(hi.y,0),max(hi.z,0),max(hi.x,0)}
+            mean:=(mlo+mhi)*0.5
+            peak:=max(mean.x,mean.y,mean.z)
+            if peak>0 {
+                info.size={max(mlo.x,mlo.y,mlo.z),max(mhi.x,mhi.y,mhi.z)}*scale*CENTIMETRE
+                info.scale={mean.x/peak,mean.y/peak,mean.z/peak}
+                return
+            }
+        } else {
+            slo:=[2]f32{max(lo.x,0),max(lo.y,0)}
+            shi:=[2]f32{max(hi.x,0),max(hi.y,0)}
+            mean:=(slo+shi)*0.5
+            peak:=max(mean.x,mean.y)
+            if peak>0 {
+                info.size={max(slo.x,slo.y),max(shi.x,shi.y)}*scale*CENTIMETRE
+                info.scale={mean.x/peak,mean.y/peak,1}
+                return
+            }
+        }
+        info.size={max(lo.x,0),max(hi.x,0)}*scale*CENTIMETRE
+    }
     size:[2]f32
     switch niagara_mode(v,key("InitializeParticle.",what," Mode"),"Unset","Uniform","Random Uniform","Non-Uniform","Random Non-Uniform") {
     case 0:return
@@ -471,17 +497,21 @@ niagara_size :: proc(v:^Niagara_Values,info:^effect.Particle_Info,what,uniform,v
         size={low,high}
     case 3:
         if !has_axes {return}
-        size={axes.x,axes.x}
+        non_uniform_set(info,axes,axes,mesh,scale)
+        return
     case 4:
         if !has_axes_low || !has_axes_high {return}
-        size={axes_low.x,axes_high.x}
+        non_uniform_set(info,axes_low,axes_high,mesh,scale)
+        return
     case:
         // A graph without the switch: only the sprite size, as before modes.
         if what!="Sprite Size" {return}
         switch {
         case has_low && has_high:size={low,high}
         case has_one:size={one,one}
-        case has_axes:size={axes.x,axes.x}
+        case has_axes:
+            non_uniform_set(info,axes,axes,false,scale)
+            return
         case:return
         }
         if has_low && has_one {append(switched,what)}
@@ -574,16 +604,39 @@ niagara_renderer :: proc(c:^unreal_scene.Context,info:^effect.Particle_Info,rend
         if drawn {return false}
         material_set(c,info,renderer,"Material")
         info.render=.Ribbon
+        if uv0:=struct_at(d,renderer,"UV0Settings");uv0.ok {
+            dist,_:=level.value_enum(uv0.p,struct_field(&uv0,"DistributionMode"),"")
+            if dist=="TiledOverLength" || dist=="TiledFromStartOverLength" {
+                if tile,ok:=level.value_real(uv0.p,struct_field(&uv0,"TilingLength"),0);ok && tile>0 {
+                    info.ribbon_tile=f32(tile)*CENTIMETRE
+                }
+            }
+        }
+        if facing,_:=level.enum_of(d,renderer,"FacingMode","Screen");facing=="Custom" || facing=="CustomSideVector" {
+            info.ribbon_axis=.Emitter_Up
+        }
     case "NiagaraMeshRendererProperties":
         if drawn {return false}
         info.render=.Mesh
+        facing,_:=level.enum_of(d,renderer,"FacingMode","Default")
+        switch facing {
+        case "Velocity": info.facing=.Velocity
+        case "Default": if info.spin=={} {info.facing=.Emitter}
+        }
         f,error:=level.property(d,renderer,"Meshes")
         if error.code==.None && f.property!=nil {
             if view,view_error:=unreal.property_array(f.pkg,f.property);view_error.code==.None {
-                if meshes,meshes_error:=unreal.array_tagged_structs(f.pkg,view,true,context.temp_allocator);meshes_error.code==.None && len(meshes.items)>0 {
-                    if object:=value_object(f.pkg,unreal.property_find(f.pkg,&meshes.items[0],"Mesh"));object!=0 {
-                        if path,path_error:=level.object_path(d,renderer,object,context.temp_allocator);path_error.code==.None {
-                            if m,imported:=unreal_scene.mesh_import(c,path);imported {info.meshes[0]=m.id}
+                if meshes,meshes_error:=unreal.array_tagged_structs(f.pkg,view,true,context.temp_allocator);meshes_error.code==.None {
+                    slot:=0
+                    for &item in meshes.items {
+                        if slot>=effect.PARTICLE_MESHES {break}
+                        if object:=value_object(f.pkg,unreal.property_find(f.pkg,&item,"Mesh"));object!=0 {
+                            if path,path_error:=level.object_path(d,renderer,object,context.temp_allocator);path_error.code==.None {
+                                if m,imported:=unreal_scene.mesh_import(c,path);imported {
+                                    info.meshes[slot]=m.id
+                                    slot+=1
+                                }
+                            }
                         }
                     }
                 }

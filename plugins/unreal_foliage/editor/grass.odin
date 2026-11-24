@@ -6,7 +6,7 @@ import "core:math/linalg"
 import "core:slice"
 import "core:strings"
 import render "mirai:engine/render"
-import ufoliage "project:plugins/unreal/editor/foliage"
+import volume "mirai:engine/volume"
 import "project:plugins/unreal/editor/landscape"
 import "project:plugins/unreal/editor/level"
 import material "project:plugins/unreal/editor/material"
@@ -15,14 +15,15 @@ import unreal_scene "project:plugins/unreal/editor/scene"
 import "mirai:std/base"
 import mm "mirai:std/math"
 import foliage "plugins:foliage/runtime"
+import pcg "plugins:pcg/runtime"
 
-// The grass of the landscapes of a level, in the source of the scene of the
-// map: each variety of each grass type their materials name is a type the
-// generator scatters, its rule on the layers of the terrain whose weight its
-// input reads (by their materials), on the slopes and from the least weight
-// of the rule closest to the input (material.Grass_Fit), as dense as they
-// weigh there; the cells where those layers are painted generate. An input
-// a rule cannot fit grows as densely as its layers alone.
+// The grass of the landscapes of a level, as a .pcg source for the scene of
+// the map: each variety of each grass type their materials name is a Scatter
+// layer (Micro on the GPU when it casts no shadows, Meso on the CPU when it
+// does), its ground rule on the layers of the terrain whose weight its input
+// reads (by their materials), on the slopes and from the least weight of the
+// rule closest to the input (material.Grass_Fit), bounded by a Volume over
+// the quads where those layers are painted.
 
 // What a variety shows.
 Grass_Look :: struct {
@@ -40,27 +41,32 @@ Grass_Landscape :: struct {
 }
 
 Grass_Result :: struct {
-    types:int,     // generated types added
-    cells:int,     // cells that came to generate
-    unlayered:int, // varieties on layers its terrain shows without a material, left out
-    folded:int,    // varieties on more layers than a rule names: they grow on those of most weight
-    weighed:int,   // varieties whose input no rule fits: they grow as densely as its layers
+    layers:int,       // generated layers added
+    unlayered:int,    // varieties on layers its terrain shows without a material, left out
+    folded:int,       // varieties on more layers than a rule names: they grow on those of most weight
+    weighed:int,      // varieties whose input no rule fits: they grow as densely as its layers
+    overridden:int,   // varieties with slot material overrides a .pcg mesh layer cannot carry
+    shadows:bool,     // some added layer casts shadows (Meso tier)
+    wind,flutter:f32, // density-weighted wind and flutter for the Foliage sink
+    bounds:mm.Aabb,   // world bounds of the growing quads, relative to origin
+    bounded:bool,     // whether bounds holds at least one growing quad
 }
 
-// Adds the grass of the landscapes to s, where they are from origin. Once a
-// cell generates, the types s held before have density 0: what Unreal placed
-// of them is all there is. False past TYPES_MAX or CELLS_MAX.
-grass_add :: proc(s:^foliage.Source,landscapes:[]Grass_Landscape,origin:[3]f32) -> (result:Grass_Result,ok:bool) {
-    held:=len(s.types)
+// Adds the grass of the landscapes to s as Scatter layers, and computes the
+// bounding box of the quads where their driving layers weigh from origin.
+// False past pcg.LAYERS_MAX.
+grass_add :: proc(s:^pcg.Pcg_Source,landscapes:[]Grass_Landscape,origin:[3]f32) -> (result:Grass_Result,ok:bool) {
+    if s.info.next_layer==0 {pcg.source_init(s)}
+    held:=len(s.layers)
     Candidate :: struct {material:base.Asset_Id,coverage:f32,layer:int}
+    wind_sum,flutter_sum,weight_sum:f64
+    result.bounds={min={max(f32),max(f32),max(f32)},max={-max(f32),-max(f32),-max(f32)}}
     for gl in landscapes {
         l:=gl.landscape
         // The layers of the landscape whose weight some grass reads; all of it when one reads none.
         driving:=make([]bool,len(l.layers),context.temp_allocator)
         everywhere:=false
         for g,i in gl.grass {
-            _,object:=unreal_scene.object_split(g.type)
-            name:=unreal.asset_name(object)
             for v,j in g.varieties {
                 look:=i<len(gl.looks) && j<len(gl.looks[i])?gl.looks[i][j]:Grass_Look{}
                 // Unreal grows none of a variety without a mesh, a density or a reach.
@@ -79,64 +85,89 @@ grass_add :: proc(s:^foliage.Source,landscapes:[]Grass_Landscape,origin:[3]f32) 
                     continue
                 }
                 slice.sort_by(candidates[:],proc(a,b:Candidate) -> bool {return a.coverage>b.coverage})
-                t:=foliage.FOLIAGE_TYPE_DEFAULT
-                t.mesh,t.materials=look.mesh,look.materials
-                scaling:=ufoliage.Scaling.Uniform
-                switch v.scaling {
-                case .Uniform:
-                case .Free:scaling=.Free
-                case .Lock_XY:scaling=.Lock_XY
-                }
-                type_from(&t,{density=v.density,scale=v.scale,scaling=scaling,random_yaw=v.random_rotation,align_to_normal=v.align,cull=v.cull,casts_shadow=v.casts_shadow})
-                t.wind,t.flutter=look.wind,look.flutter
-                t.rule.weight=clamp(v.weights[0],0,1)
+                params:=grass_layer_params(v,look.mesh)
+                params.ground_rule.weight=clamp(v.weights[0],0,1)
                 if g.fit.ok {
-                    t.rule.slope=g.fit.slope
-                    t.rule.weight=max(t.rule.weight,clamp(g.fit.weight,0,1))
+                    lo:=clamp(g.fit.slope[0],0,math.PI/2)
+                    hi:=clamp(max(g.fit.slope[1],lo),lo,math.PI/2)
+                    params.ground_rule.slope={lo,hi}
+                    params.ground_rule.weight=max(params.ground_rule.weight,clamp(g.fit.weight,0,1))
                 }
-                t.rule.enabled=len(candidates)>0 || t.rule.slope!=foliage.FOLIAGE_TYPE_DEFAULT.rule.slope
+                params.ground_rule.enabled=len(candidates)>0 || params.ground_rule.slope!=pcg.PCG_LAYER_DEFAULT.ground_rule.slope
                 kept:=0
                 for candidate in candidates {
-                    if slice.contains(t.rule.layers[:kept],candidate.material) {driving[candidate.layer]=true;continue}
-                    if kept==foliage.RULE_LAYERS {continue}
-                    t.rule.layers[kept]=candidate.material
+                    if slice.contains(params.ground_rule.layers[:kept],candidate.material) {driving[candidate.layer]=true;continue}
+                    if kept==pcg.GROUND_RULE_LAYERS {continue}
+                    params.ground_rule.layers[kept]=candidate.material
                     kept+=1
                     driving[candidate.layer]=true
                 }
-                for candidate in candidates {if !slice.contains(t.rule.layers[:kept],candidate.material) {result.folded+=1;break}}
+                for candidate in candidates {if !slice.contains(params.ground_rule.layers[:kept],candidate.material) {result.folded+=1;break}}
                 everywhere||=len(candidates)==0
                 if !g.fit.ok {result.weighed+=1}
-                // Equal varieties of the landscapes of one material are one type.
+                if look.materials!={} {result.overridden+=1}
+                // Equal varieties of the landscapes of one material are one layer.
                 same:=false
-                for existing in s.types[held:] {
-                    alike:=t
-                    alike.id,alike.name=existing.id,existing.name
-                    if alike==existing {same=true;break}
+                for existing in s.layers[held:] {
+                    alike:=params
+                    alike.id=existing.id
+                    if alike==existing.params {same=true;break}
                 }
                 if same {continue}
-                if len(s.types)>=foliage.TYPES_MAX {return}
-                added:=foliage.source_type_add(s,len(g.varieties)>1?fmt.tprintf("%s_%d",name,j+1):name,t.mesh)
+                if len(s.layers)>=pcg.LAYERS_MAX {return}
+                added:=pcg.source_layer_add(s,.Scatter,params.tier)
                 if added==nil {return}
-                t.id,t.name=added.id,added.name
-                added^=t
-                result.types+=1
+                params.id=added.id
+                added.params=params
+                result.layers+=1
+                result.shadows||=v.casts_shadow
+                w:=f64(params.density)
+                wind_sum+=f64(look.wind)*w
+                flutter_sum+=f64(look.flutter)*w
+                weight_sum+=w
             }
         }
-        cells:=grass_cells(s,l,driving,everywhere,origin) or_return
-        result.cells+=cells
+        grass_bounds_grow(&result.bounds,&result.bounded,l,driving,everywhere,origin)
     }
-    if result.cells>0 {for &t in s.types[:held] {t.density=0}}
+    if weight_sum>0 {
+        result.wind=f32(wind_sum/weight_sum)
+        result.flutter=f32(flutter_sum/weight_sum)
+    }
     return result,true
 }
 
-// Turns on the generator of the cells over the quads of the landscape where
-// a driving layer weighs at a corner, or of every quad when everywhere,
-// holes left out. How many came to generate; false past CELLS_MAX.
 @(private)
-grass_cells :: proc(s:^foliage.Source,l:^landscape.Landscape,driving:[]bool,everywhere:bool,origin:[3]f32) -> (cells:int,ok:bool) {
+grass_layer_params :: proc(v:material.Grass_Variety,mesh:base.Asset_Id) -> (p:pcg.Pcg_Layer_Params) {
+    p=pcg.PCG_LAYER_DEFAULT
+    p.tier=v.casts_shadow?.Meso:.Micro
+    p.kind=.Scatter
+    p.asset=mesh
+    p.density=clamp(v.density,0,pcg.DENSITY_MAX)
+    p.radius=0
+    across:=v.scale[0]
+    height:=[2]f32{1,1}
+    if v.scaling!=.Uniform {
+        z:=v.scale[2]
+        height={max(z[0],1e-3)/max(across[1],1e-3),max(z[1],1e-3)/max(across[0],1e-3)}
+    }
+    p.scale={clamp(across[0],1e-3,1000),clamp(max(across[1],across[0]),1e-3,1000)}
+    p.height={clamp(height[0],1e-3,1000),clamp(max(height[1],height[0]),1e-3,1000)}
+    p.yaw=v.random_rotation?2*math.PI:0
+    p.tilt=0
+    p.align=v.align?1:0
+    p.fade_distance,p.cull_distance=v.cull[1],v.cull[1]
+    p.filler=true
+    p.collides=false
+    return
+}
+
+// Expands bounds to cover the quads of l where a driving layer weighs at a
+// corner (or every quad when everywhere), holes left out, relative to origin.
+@(private)
+grass_bounds_grow :: proc(bounds:^mm.Aabb,bounded:^bool,l:^landscape.Landscape,driving:[]bool,everywhere:bool,origin:[3]f32) {
     n:=l.samples
     count:=n.x*n.y
-    if n.x<2 || n.y<2 || !(l.spacing>0) || !everywhere && !slice.contains(driving,true) {return 0,true}
+    if n.x<2 || n.y<2 || !(l.spacing>0) || !everywhere && !slice.contains(driving,true) {return}
     weighed:=make([]bool,count,context.temp_allocator)
     for &w,k in weighed {
         w=everywhere
@@ -146,54 +177,34 @@ grass_cells :: proc(s:^foliage.Source,l:^landscape.Landscape,driving:[]bool,ever
         }
     }
     quads:=[2]int{n.x-1,n.y-1}
-    grows:=make([]bool,quads.x*quads.y,context.temp_allocator)
+    half:=[2]f32{f32(quads.x),f32(quads.y)}*0.5
+    has_heights:=len(l.heights)==count
     for j in 0..<quads.y {for i in 0..<quads.x {
         q:=i+quads.x*j
-        if len(l.holes)==len(grows) && l.holes[q]!=0 {continue}
+        if len(l.holes)==quads.x*quads.y && l.holes[q]!=0 {continue}
         k:=i+n.x*j
-        grows[q]=weighed[k] || weighed[k+1] || weighed[k+n.x] || weighed[k+n.x+1]
-    }}
-    // Samples are spacing apart about the place of the landscape, as its terrain lays them.
-    half:=[2]f32{f32(quads.x),f32(quads.y)}*0.5
-    low,high:=[3]f32{max(f32),0,max(f32)},[3]f32{-max(f32),0,-max(f32)}
-    for corner in ([4][2]f32{{0,0},{1,0},{0,1},{1,1}}) {
-        local:=[3]f32{(corner.x*f32(quads.x)-half.x)*l.spacing,0,(corner.y*f32(quads.y)-half.y)*l.spacing}
-        p:=mm.transform_point(l.transform,local)-origin
-        low,high=linalg.min(low,p),linalg.max(high,p)
-    }
-    if !(low.x>=-foliage.POSITION_MAX && high.x<=foliage.POSITION_MAX && low.z>=-foliage.POSITION_MAX && high.z<=foliage.POSITION_MAX) {return}
-    first,_:=foliage.cell_of(low)
-    last,_:=foliage.cell_of(high)
-    if i64(last.x-first.x+1)*i64(last.y-first.y+1)>i64(foliage.CELLS_MAX) {return}
-    for z in first.y..=last.y {for x in first.x..=last.x {
-        // The quads under the cell: those between its corners in the coordinates of the landscape.
-        at:=foliage.cell_corner({x,z})+origin
-        at.y=l.transform.position.y
-        u_low,u_high:=[2]f32{max(f32),max(f32)},[2]f32{-max(f32),-max(f32)}
-        for corner in ([4][2]f32{{0,0},{1,0},{0,1},{1,1}}) {
-            local:=mm.transform_inverse_point(l.transform,at+{corner.x,0,corner.y}*foliage.CELL_SIZE)
-            u:=[2]f32{local.x/l.spacing,local.z/l.spacing}+half
-            u_low,u_high=linalg.min(u_low,u),linalg.max(u_high,u)
+        if !(weighed[k] || weighed[k+1] || weighed[k+n.x] || weighed[k+n.x+1]) {continue}
+        for c in ([4][2]int{{i,j},{i+1,j},{i,j+1},{i+1,j+1}}) {
+            h:=has_heights?l.heights[c.x+n.x*c.y]:0
+            local:=[3]f32{(f32(c.x)-half.x)*l.spacing,h,(f32(c.y)-half.y)*l.spacing}
+            p:=mm.transform_point(l.transform,local)-origin
+            bounds.min=linalg.min(bounds.min,p)
+            bounds.max=linalg.max(bounds.max,p)
+            if !has_heights {
+                bounds.min.y=min(bounds.min.y,p.y-500)
+                bounds.max.y=max(bounds.max.y,p.y+500)
+            }
+            bounded^=true
         }
-        i0,i1:=max(int(math.floor(u_low.x)),0),min(int(math.ceil(u_high.x)),quads.x)
-        j0,j1:=max(int(math.floor(u_low.y)),0),min(int(math.ceil(u_high.y)),quads.y)
-        found:=false
-        for j in j0..<j1 {
-            if found {break}
-            for i in i0..<i1 {if grows[i+quads.x*j] {found=true;break}}
-        }
-        if found && foliage.source_cell_generate(s,{x,z},true) {cells+=1}
     }}
-    return cells,true
 }
 
 FIT_NOTED :: f32(0.01) // of the density, a fit off by more than which the import tells
 
-// The grass of the landscapes of the level into s, the source of the scene
-// of the map, where they are from origin; their meshes and the materials of
-// their slots imported as the other meshes of the level.
+// The grass of the landscapes of the level as a .pcg source in the scene of
+// the map, shown by an entity with Pcg_Graph, Foliage and its bounding Volume.
 @(private)
-grass_translate :: proc(c:^unreal_scene.Context,s:^foliage.Source,origin:[3]f32,winds:^Winds) -> (result:Grass_Result) {
+grass_translate :: proc(c:^unreal_scene.Context,origin:[3]f32,winds:^Winds) -> (result:Grass_Result) {
     d:=c.d
     by_material:=make(map[string][]material.Landscape_Grass,context.temp_allocator)
     some:=false
@@ -238,12 +249,43 @@ grass_translate :: proc(c:^unreal_scene.Context,s:^foliage.Source,origin:[3]f32,
         }
         append(&inputs,Grass_Landscape{&l,grass,layers,looks})
     }
+    s:pcg.Pcg_Source
+    pcg.source_init(&s)
+    defer pcg.source_destroy(&s)
     ok:bool
-    result,ok=grass_add(s,inputs[:],origin)
-    if !ok {unreal_scene.warn(c,"the grass of the landscapes does not fit in a .foliage (%d types, %d cells at most); some is left out",foliage.TYPES_MAX,foliage.CELLS_MAX)}
+    result,ok=grass_add(&s,inputs[:],origin)
+    if !ok {unreal_scene.warn(c,"the grass of the landscapes does not fit in a .pcg (%d layers at most); some is left out",pcg.LAYERS_MAX)}
     unreal_scene.tally(c,"varieties of landscape grass grow on paint layers whose terrain layer has no material, and are left out",result.unlayered)
-    unreal_scene.tally(c,fmt.tprintf("varieties of landscape grass read more paint layers than the %d a foliage rule names, and grow on those of most weight",foliage.RULE_LAYERS),result.folded)
-    unreal_scene.tally(c,"varieties of landscape grass read what a foliage rule does not see (time, the camera, noise), and grow as densely as their paint layers alone",result.weighed)
+    unreal_scene.tally(c,fmt.tprintf("varieties of landscape grass read more paint layers than the %d a ground rule names, and grow on those of most weight",pcg.GROUND_RULE_LAYERS),result.folded)
+    unreal_scene.tally(c,"varieties of landscape grass read what a ground rule does not see (time, the camera, noise), and grow as densely as their paint layers alone",result.weighed)
+    unreal_scene.tally(c,"varieties of landscape grass override materials on their mesh: a .pcg mesh layer draws the mesh's own materials",result.overridden)
+    if len(s.layers)==0 {return}
+    unreal_scene.zone(c,"foliage.grass_write")
+    if !pcg.source_valid(&s) {
+        unreal_scene.warn(c,"Grass: %d layers do not make a valid .pcg; landscape grass is left out",len(s.layers))
+        return
+    }
+    id,path,info:=unreal_scene.asset_place(c,pcg.PCG_KIND,"Grass",0,pcg.PCG_EXTENSION)
+    bytes,bytes_error:=pcg.source_bytes(&s,id,c.types,context.allocator,&info)
+    if bytes_error!=.None {
+        unreal_scene.warn(c,"Grass: its .pcg could not be written (%v)",bytes_error)
+        return
+    }
+    defer delete(bytes)
+    if !unreal_scene.asset_write(c,id,"Grass",path,bytes,fmt.tprintf("%d layers of grass",len(s.layers))) {return}
+    place:=origin
+    if result.bounded {place=(result.bounds.min+result.bounds.max)*0.5+origin}
+    e,made:=unreal_scene.entity_make(c,0,"foliage|grass","Grass",{place,1,{1,1,1}})
+    if !made {return}
+    graph:=pcg.Pcg_Graph{source=id,world_anchored=true}
+    unreal_scene.component_set(c,e,"Pcg_Graph",&graph)
+    if result.bounded {
+        half:=linalg.max((result.bounds.max-result.bounds.min)*0.5+1,[3]f32{1,1,1})
+        box:=volume.box(half)
+        unreal_scene.component_set(c,e,"Volume",&box)
+    }
+    shown:=foliage.Foliage{wind=result.wind,flutter=result.flutter,shadows=result.shadows,rays=false}
+    unreal_scene.component_set(c,e,"Foliage",&shown)
     return
 }
 
@@ -258,6 +300,7 @@ grass_look :: proc(c:^unreal_scene.Context,v:material.Grass_Variety,winds:^Winds
     _,object:=unreal_scene.object_split(v.mesh)
     sway:=mesh_wind(c,winds,unreal.asset_name(object),v.mesh,v.materials)
     look.wind,look.flutter=sway.wind,sway.flutter
+    if sway.wind>0 {winds_count(winds,sway,1)}
     for path,index in v.materials {
         if path=="" {continue}
         row,found:=slice.linear_search(m.slot_ids,u32(index+1))

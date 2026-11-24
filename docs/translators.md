@@ -78,24 +78,22 @@ shows it.
 ## Foliage (`unreal_foliage`)
 
 InstancedFoliageActor, with the components that draw its ISM actor types, and the instanced
-components of each scene. `foliage.odin` writes into a source what
-[`foliage`](unreal.md#foliage-foliage) gives and the instances of a level's instanced components,
-in the space of an entity at the scene origin.
+components of each scene. `foliage.odin` places artist-placed foliage instances as entities under a
+`Foliage` group at the scene origin, and `grass.odin` writes procedural landscape grass as a `.pcg`
+source with `Pcg_Graph`, `Volume` and `Foliage`.
 
-- **InstancedFoliageActor** (`foliage_source`, `foliage_add`): one type per Unreal static mesh
-  type, with the `.mesh` and the wind the caller gives per type, and collision is a box of the
-  mesh bounds. Each instance is manual in the cell where it
-  falls, `INSTANCE_GROUNDED` if placed on something. An actor type is not a type: its actors are
-  level actors, which the scene translates like the others (an instance without its actor is a
-  warning). An ISM actors type is not one either: the actor's instanced components that draw it
-  (`Foliage.components`) are batches like those below.
-- **Instanced components** (`instanced_add`): `InstancedStaticMeshComponent`, the hierarchical one
-  and the foliage one, also those baked by PCG and by packed level actors. One type per mesh,
-  materials of its slots, cull distance (`InstanceEndCullDistance`), shadows, rays and collision:
-  a box of the mesh bounds if the component collides, nothing if not. No generator; instances are
-  manual, where they are. A `StaticMeshComponent` whose materials sway in the wind stays its
-  entity, with its transform and collision, and gets a `Foliage_Sway` of the wind they give
-  (`mesh_sway`): it sways as foliage of that wind does.
+- **InstancedFoliageActor** (`foliage_collect`): each valid instance of a static mesh type becomes a
+  child entity under `Foliage` with exact 3D `Transform`, `Mesh_Renderer`, `Foliage_Sway` when its
+  materials sway in the wind, and a box `Collider` of the mesh bounds when colliding. An actor type
+  is not collected: its actors are level actors, which the scene translates like the others (an
+  instance without its actor is a warning). An ISM actors type's drawing components
+  (`Foliage.components`) are collected like the instanced components below.
+- **Instanced components** (`instanced_collect`): `InstancedStaticMeshComponent`, the hierarchical
+  one and the foliage one, also those baked by PCG and by packed level actors. Each valid instance
+  becomes a child entity under `Foliage` with its mesh, slot material overrides, per-instance custom
+  data material variants (`PerInstanceSMCustomData`), shadows, `Foliage_Sway`, and box `Collider`
+  when colliding. A `StaticMeshComponent` whose materials sway in the wind stays its entity, with
+  its transform and collision, and gets a `Foliage_Sway` of the wind they give (`mesh_sway`).
 - **Wind** (`wind.odin`). Unreal sways foliage with the `WorldPositionOffset` of its materials,
   Mirai with the wind of each type where a `Wind` blows and the flutter of its leaves on top.
   `material.offset_read` tells wind (it moves with time and a function or parameter that feeds it is
@@ -118,31 +116,20 @@ in the space of an entity at the scene origin.
   texture, and the way and pace of each material (Mirai's wind has one of each where it blows).
 - **Cull distances.** Unreal fades an instance between its start and end cull distances only in
   a material that reads `PerInstanceFadeAmount`; otherwise it draws whole up to the end and is
-  gone there. Every type of foliage starts its fade at its cull distance.
-- **Reimporting** keeps the ids: the translator reads the `.foliage` it replaces and
-  `foliage_ids_keep` gives each type the id of the equal one or of the one with its name, mesh,
-  prefab and materials, and each manual instance the id of the nearest of its type in its cell
-  within `KEEP_DISTANCE`, `KEEP_TURN` and `KEEP_SCALE`, one to one; the rest take ids the previous
-  file never gave, so a save with tombstones does not bring back others. If the previous file
-  cannot be read, the import warns and numbers from 1.
-- With different X and Y scales an instance takes their geometric mean (`averaged`); a zero,
-  negative or out-of-range scale drops it (`dropped`). A material the level stores inside an actor
-  is written on request (`instanced_material`), because no entity takes it when the level ends;
-  the instances of each set of per-instance floats (`PerInstanceSMCustomData`) are a batch showing
-  the variant, with those values, of the materials that read them (the wall color of a blueprint).
+  gone there. Every grass layer starts its fade at its cull distance.
+- A zero, negative or out-of-range scale drops an instance (`dropped`). A material the level stores
+  inside an actor is written on request (`instanced_material`), because no entity takes it when the
+  level ends; the instances of each set of per-instance floats (`PerInstanceSMCustomData`) share a
+  batch showing the variant, with those values, of the materials that read them.
 - **Landscape grass** (`grass_add`, `grass.odin`): in the map's scene, each variety of each grass
-  type of a landscape material ([grass](unreal.md#translation)) is a generated type of its mesh, its
-  rule on the terrain layers (by material) whose paint layers its input reads, at most `RULE_LAYERS`
-  of most coverage, on the slopes and from the least weight the input fits, and as dense as they
-  weigh, as Unreal keeps a point where a chance is under the weight. A fit more than `FIT_NOTED` off
-  is a warning with its slopes, weight and error; an input that reads what a rule does not see
-  (time, the camera, noise) grows as densely as its layers alone. The cells over quads where those
-  layers weigh, holes left out, generate, and then the other types of the source have density 0:
-  what Unreal placed of them is all there is. Equal varieties of landscapes of one material are one
-  type.
-- **When importing a level**, the `Foliage_Unreal` translator writes per scene a `.foliage` in the
-  folder of the map's import with its `Import_Info`, named after the World Partition cell (`Foliage`
-  in the map's scene), and a `Foliage` entity at its origin.
+  type of a landscape material ([grass](unreal.md#translation)) is a `Scatter` layer of `Grass.pcg`
+  (`Micro` tier on the GPU when `casts_shadow` is false, `Meso` tier when true), its `ground_rule`
+  on the terrain layers (by material) whose paint layers its input reads, at most
+  `GROUND_RULE_LAYERS` of most coverage, on the slopes and from the least weight the input fits, as
+  dense as they weigh. A fit more than `FIT_NOTED` off is a warning with its slopes, weight and
+  error; an input that reads what a rule does not see (time, the camera, noise) grows as densely as
+  its layers alone. Equal varieties across landscapes of one material are one layer, bounded by a
+  box `Volume` over the growing quads on a `Grass` entity with `Pcg_Graph` and `Foliage`.
 
 ## Physics (`unreal_physics`)
 
@@ -273,12 +260,14 @@ which uses `shaders/unreal_noise.slang`.
   `Scale*SizeBySpeed`, `Speed_Size`, and an effect runs a single program: the second is a warning.
   Those that make no sense in Mirai (offset toward the camera, per-particle material parameters,
   decals, owner scale) are warned per class with the reason.
-- The emitter's material is the translation of Unreal's (its `BlendMode` gives `blend` and the
-  `Unlit` model, `lit`); what Mirai lacks (modules, renderers, approximated lights) is an emitter
-  warning. The `DynamicMaterialParameter` (and `1` to `3`) stored by the particles of a compiled
-  emitter are the data `render` gives the material of its sprites, the index of each being that of
-  the `DynamicParameter` that reads them; its `MaterialRandom` is the random value `ParticleRandom`
-  reads, 0 if the emitter does not store it, as in Unreal.
+- The emitter's material is the translation of Unreal's (its `BlendMode` gives `blend`, including
+  `Additive` and `Multiply`, and the `Unlit` model, `lit`); non-uniform sprite/mesh sizes go into
+  `scale`, ribbon `TilingLength` into `ribbon_tile`, mesh facing into `facing`, and up to
+  `PARTICLE_MESHES` meshes are imported. What Mirai lacks (modules, renderers, approximated lights)
+  is an emitter warning. The `DynamicMaterialParameter` (and `1` to `3`) stored by the particles of
+  a compiled emitter are the data `render` gives the material of its sprites, the index of each
+  being that of the `DynamicParameter` that reads them; its `MaterialRandom` is the random value
+  `ParticleRandom` reads, 0 if the emitter does not store it, as in Unreal.
 - A mesh data interface (`StaticMesh`, `SkeletalMesh`) that the component points at a level actor
   (`SoftSourceActor`, also that of a `User.` parameter) is the surface of that actor's entity, by
   the name of its object with its number (`Statue_2`): the posed skin of a skeleton moved by its
@@ -289,31 +278,20 @@ which uses `shaders/unreal_noise.slang`.
   kept in the map's build and bound by address. `niagara_program.odin` builds the frame and
   `niagara.slang` is its prelude (Unreal space, random numbers, ids). The system scripts
   give each emitter's state and its births (`//! births`); each data interface is a body over the
-  Vfx resources (`niagara_interfaces.odin`, `niagara_grids.odin`, `niagara_particles.odin`,
-  `niagara_channels.odin`). A data interface is the symbol the HLSL calls it by: its name with the
-  dots as `_`, or without them in a save before UE5. What a function does not translate gives zero
-  and a warning that names it; an interface the scripts never call warns of nothing. A 2D grid or
-  render target is flat along y, like a world texture: its cell (x, y) is the grid's (x, 0, y), and
-  the bodies and thread of its stages give the script Niagara's order. A `Texture`'s texture is
-  baked into a `.grid` flat along y, one cell per texel as Unreal reads it (up to
-  `NIAGARA_TEXTURE_CELLS` per axis, resampled), from which an effect grid starts: `SampleTexture2D`
-  samples it between texels, repeating (`niagara_textures.odin`). Each part writes only what its
-  frame reaches from the functions it calls (functions, structs, statics, data interfaces and engine
-  parameters its code reads, `hlsl_reached`); a data interface nobody calls is still translated for
-  what it says about the program (the channel of its births). The translated channels keep the
-  asset's variables in its order, with Unreal's values.
-- **Births from a data channel.** Each `SpawnConditional` of the system scripts that names the
-  emitter (its `Emitter ID` is the index of its handle) leaves in `prepare` words whether it ran,
-  its mode, its operator, its counts and the values of its conditions. `births` gives each channel
-  entry the most they ask for; `GetNDCSpawnData` distributes the particles per entry, and those of
-  an entry that fails the conditions (the value against the variable of its name) or that asked for
-  fewer end in `initialize`, before their first step. Without `SpawnConditional`, each entry
-  initiates what `SpawnFromNDC` asks for.
-- **Events between emitters.** Mirai has none and they are not translated: a script that writes an
-  event (its `WriteDataSets`) and each event handler of an emitter are a warning naming the script
-  and event and asking to carry what the event carries through a data channel (`DataChannelWrite`
-  where it is generated, `SpawnConditional` and `GetNDCSpawnData` where it is handled) or to read
-  the other emitter's particles with a Particle Attribute Reader.
+  Vfx resources (`niagara_interfaces.odin`, `niagara_grids.odin`, `niagara_particles.odin`). A data
+  interface is the symbol the HLSL calls it by: its name with the dots as `_`, or without them in a
+  save before UE5. What a function does not translate gives zero and a warning that names it; an
+  interface the scripts never call warns of nothing. A 2D grid or render target is flat along y,
+  like a world texture: its cell (x, y) is the grid's (x, 0, y), and the bodies and thread of its
+  stages give the script Niagara's order. A `Texture` or `VectorField` is written as a `.tex`
+  texture parameter (`//! parameter ... {"kind":"texture"}`) sampled with `mirai_vfx_texture`
+  (`niagara_textures.odin`, `niagara_vector_fields.odin`). Each part writes only what its frame
+  reaches from the functions it calls (functions, structs, statics, data interfaces and engine
+  parameters its code reads, `hlsl_reached`).
+- **Events, cross-emitter reads and GPU data channels.** Mirai VFX v9 has no cross-emitter
+  `ParticleRead` or GPU data-channel resources: scripts that write events, event handlers, or data
+  interfaces that read another emitter or a Niagara data channel emit a warning pointing to
+  `sub_particle` triggers or `core.Births` + `Particle_Channel`.
 - **Component render targets.** A 2D render target whose `RenderTargetUserParameter` names a
   parameter to which the component gives a `TextureRenderTarget2D` (`InstanceParameterOverrides`)
   is a grid with `Particle_World_Texture`: the materials the level stores that sample that texture
@@ -351,12 +329,11 @@ the area the Blueprint simulates; at 1, those of the mesh. `PressureDivergenceBu
   `a_landscape_maps_the_world_to_its_coordinates_and_its_layers_to_those_of_the_terrain` and
   `a_landscape_of_unequal_scales_is_a_square_heightfield_on_a_stretched_entity`.
 - Tests of `plugins/unreal_foliage/editor`:
-  `unreal_foliage_becomes_manual_instances_of_its_cells_with_their_ground`,
-  `instanced_components_are_one_type_for_each_mesh_and_materials_with_instances_from_the_origin`,
-  `a_reimported_level_keeps_the_ids_of_the_foliage_it_had`,
+  `unreal_foliage_collects_placed_static_mesh_instances_with_exact_scale_and_bounds`,
+  `instanced_components_collect_materials_bounds_and_transforms_from_origin`,
   `unreal_foliage_of_actors_adds_only_its_static_mesh_types`,
   `a_placed_mesh_that_sways_stays_an_entity_with_the_wind_of_its_mesh` and
-  `landscape_grass_is_a_generated_type_on_its_layer_over_the_cells_where_it_is_painted`; the
+  `landscape_grass_is_a_pcg_layer_on_its_terrain_layer_with_tight_bounds`; the
   grass of a material, `a_grass_output_gives_each_grass_type_its_layers_rule_and_varieties` of
   `editor/material`.
 - Tests of `plugins/unreal_physics/editor`:

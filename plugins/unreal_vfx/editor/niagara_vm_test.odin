@@ -232,14 +232,10 @@ literal :: proc(type:string,bits:u32) -> Niagara_Variable {
     return Niagara_Variable{name="Literal",type=t,data=bytes}
 }
 
-// A SpawnConditional of the scripts of the system decides the particles each
-// entry of a data channel starts in the emitter it names: the program keeps
-// its call in words of prepare, gives births the most it asks for each entry
-// and ends in initialize those of an entry that fails its condition (100 >
-// Height) or of an entry that asked for fewer. The program is written to
-// .mirai/tmp/vfx-vm-test for `mirai shaders check`.
+// DataChannelRead calls in a Niagara script warn cleanly and produce a
+// valid Vfx program without removed mirai_vfx_data_* resources or calls.
 @(test)
-niagara_spawn_conditional_decides_the_particles_of_each_entry :: proc(t:^testing.T) {
+niagara_data_channel_calls_warn_and_emit_valid_slang :: proc(t:^testing.T) {
     params :: proc(list:[][2]string) -> []Niagara_Variable {
         out:=make([]Niagara_Variable,len(list),context.temp_allocator)
         for each,i in list {
@@ -249,39 +245,6 @@ niagara_spawn_conditional_decides_the_particles_of_each_entry :: proc(t:^testing
         }
         return out
     }
-    // The system keeps the age of Ring and, in its update, SpawnConditional(true, Ring, Override,
-    // GreaterThan, 1, 3, 100.0) of the literals at 32 and after.
-    system:=Niagara_Vm{usage=.System}
-    system.attributes=slice.clone([]Niagara_Variable{variable("Ring.Age","NiagaraFloat")},context.temp_allocator)
-    system.literals=slice.clone([]Niagara_Variable{
-        literal("NiagaraBool",0xFFFFFFFF),literal("NiagaraInt32",2),literal("NiagaraInt32",0),literal("NiagaraInt32",4),
-        literal("NiagaraInt32",1),literal("NiagaraInt32",3),literal("NiagaraFloat",transmute(u32)f32(100)),
-    },context.temp_allocator)
-    system.functions=slice.clone([]Niagara_Vm_Function{{name="SpawnConditional",owner="Ring.SpawnDataChannel",
-        symbol="SpawnConditional_Ring_SpawnDataChannel_HeightNiagaraFloat",inputs=8,outputs=0,ins=7,found=true,
-        params=params({{"Enable","NiagaraBool"},{"Emitter ID","NiagaraEmitterID"},{"Mode","NiagaraInt32"},{"Operator","NiagaraInt32"},
-            {"Min Spawn Count","NiagaraInt32"},{"Max Spawn Count","NiagaraInt32"},{"Height","NiagaraFloat"}})}},context.temp_allocator)
-    c:=Code{bytes=make([dynamic]u8,context.temp_allocator)}
-    op(&c,.Input_Float,0,0,0)
-    data(&c,.Output_Float,0,0,9,0,0)
-    op(&c,.Done)
-    spawn_code:=slice.clone(c.bytes[:],context.temp_allocator)
-    clear(&c.bytes)
-    op(&c,.Input_Float,0,0,0)
-    data(&c,.Output_Float,0,0,9,0,0)
-    append(&c.bytes,u8(Niagara_Op.External_Call),0)
-    for v in ([]int{0,32,36,40,44,48,52,56}) {
-        b:[2]u8
-        endian.put_u16(b[:],.Little,u16(v))
-        append(&c.bytes,b[0],b[1])
-    }
-    op(&c,.Done)
-    problems:=make([dynamic]string,context.temp_allocator)
-    system.code=spawn_code
-    system_spawn,spawn_ok:=niagara_vm_hlsl(&system,&problems)
-    system.code=c.bytes[:]
-    system_update,update_ok:=niagara_vm_hlsl(&system,&problems)
-    // The particles start where GetNDCSpawnData of the emitter puts their exec index.
     spawn:=Niagara_Vm{usage=.Spawn}
     spawn.attributes=update_fixture(false).attributes
     spawn.literals=slice.clone([]Niagara_Variable{literal("NiagaraInt32",2)},context.temp_allocator)
@@ -289,7 +252,7 @@ niagara_spawn_conditional_decides_the_particles_of_each_entry :: proc(t:^testing
         symbol="GetNDCSpawnData_Emitter_SpawnDataChannel",inputs=3,outputs=3,ins=2,found=true,
         params=params({{"Emitter ID","NiagaraEmitterID"},{"Spawned Particle Exec Index","NiagaraInt32"},
             {"NDC Index","NiagaraInt32"},{"NDC Spawn Index","NiagaraInt32"},{"NDC Spawn Count","NiagaraInt32"}})}},context.temp_allocator)
-    clear(&c.bytes)
+    c:=Code{bytes=make([dynamic]u8,context.temp_allocator)}
     op(&c,.Exec_Index,0)
     append(&c.bytes,u8(Niagara_Op.External_Call),0)
     for v in ([]int{0,640,0x8000,1,2,3}) {
@@ -299,10 +262,11 @@ niagara_spawn_conditional_decides_the_particles_of_each_entry :: proc(t:^testing
     }
     op(&c,.Done)
     spawn.code=c.bytes[:]
+    problems:=make([dynamic]string,context.temp_allocator)
     spawn_text,particle_ok:=niagara_vm_hlsl(&spawn,&problems)
     update:=update_fixture(false)
     update_text,_:=niagara_vm_hlsl(&update,&problems)
-    if !testing.expectf(t,spawn_ok && update_ok && particle_ok && len(problems)==0,"the fixture decompiles: %v",problems[:]) {return}
+    if !testing.expectf(t,particle_ok && len(problems)==0,"the fixture decompiles: %v",problems[:]) {return}
 
     src:=new(Niagara_Source,context.temp_allocator)
     src.spawn=Niagara_Compiled{hlsl=spawn_text,decompiled=true}
@@ -311,41 +275,23 @@ niagara_spawn_conditional_decides_the_particles_of_each_entry :: proc(t:^testing
     src.interfaces=make([dynamic]Niagara_Interface,context.temp_allocator)
     e:=Unreal_Emitter{name="Ring",info=UNREAL_PARTICLE_DEFAULTS,source=src,handle=2}
     sys:Niagara_System
-    sys.spawn=Niagara_Compiled{hlsl=system_spawn,decompiled=true}
-    sys.update=Niagara_Compiled{hlsl=system_update,decompiled=true}
     w:=Niagara_Writer{name="Niagara_Test_Spawner",values=&src.values,system=&sys,emitter=&e}
     w.out=strings.builder_make(context.temp_allocator)
     w.interfaces=make([dynamic]Niagara_Di,context.temp_allocator)
     w.problems=make([dynamic]string,context.temp_allocator)
     w.resources=make([dynamic]string,context.temp_allocator)
+    w.tex_params=make([dynamic]Niagara_Tex_Param,context.temp_allocator)
     w.stage_lines=make([dynamic]string,context.temp_allocator)
     w.spawns=make([dynamic]string,context.temp_allocator)
     w.kept=make([dynamic]Niagara_Kept,context.temp_allocator)
-    w.spawn_rules=make([dynamic]Niagara_Spawn_Rule,context.temp_allocator)
-    // The channel of both data interfaces: its first variable, Height.
-    channel:=Niagara_Channel{name="NDC_Test",words=2,variables=slice.clone([]Niagara_Channel_Variable{{"Size","NiagaraFloat",0,1},{"Height","NiagaraFloat",1,1}},context.temp_allocator)}
-    for name in ([2]string{"Ring.SpawnDataChannel","Emitter.SpawnDataChannel"}) {
-        append(&w.interfaces,Niagara_Di{name=name,symbol=niagara_symbol(name),class="DataChannelRead",kind=.Channel_Read,channel=channel})
-    }
+    append(&w.interfaces,Niagara_Di{name="Emitter.SpawnDataChannel",symbol=niagara_symbol("Emitter.SpawnDataChannel"),class="DataChannelRead",kind=.Channel_Read})
     src.parts=niagara_parts(&w,src)
     src.attributes=niagara_attributes(src.parts)
     testing.expect(t,niagara_program(&w,src))
-    for problem in w.problems {testing.expectf(t,!strings.contains(problem,"SpawnDataChannel"),"the data channel translates: %s",problem)}
     program:=strings.to_string(w.out)
-    for line in ([]string{
-        "//! prepare",
-        "    if (In_EmitterID.ID != 2) return;",
-        "    niagara_rule0[2] = uint(In_Operator);",
-        "    niagara_rule0[5] = asuint(In_Height);",
-        "mirai_vfx_data_word(ctx, NDC_Test, uint(entry), 1u)",
-        "    count += int(mirai_vfx_data_count(ctx, NDC_Test)) * niagara_spawn_per(ctx);",
-        "niagara_spawn_count(niagara_ctx, Out_NDCIndex);",
-        "    if (niagara_spawn_dropped) particle.age = 1.0;",
-        "    if (particle.age >= particle.lifetime) return;",
-    }) {
-        testing.expectf(t,strings.contains(program,line),"the program has %q:\n%s",line,program)
-    }
-    testing.expect(t,strings.contains(program,"mirai_vfx_state_store(ctx, ") && strings.contains(program,", niagara_rule0[5]);"),"prepare keeps the words of the call")
+    testing.expect(t,!strings.contains(program,"mirai_vfx_data_"),"must not emit removed mirai_vfx_data_* calls")
+    testing.expect(t,!strings.contains(program,"//! resource ") || !strings.contains(program," data "),"must not emit removed data resource")
+    testing.expectf(t,len(w.problems)>0,"warns about unsupported data channel: %v",w.problems[:])
     folder:=".mirai/tmp/vfx-vm-test"
     _=os.make_directory_all(folder)
     _=os.write_entire_file(strings.concatenate({folder,"/Niagara_Test_Spawner.slang"},context.temp_allocator),transmute([]u8)program)

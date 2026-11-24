@@ -191,7 +191,7 @@ particles_place :: proc(c:^unreal_scene.Context,a,k:int,niagara:bool,e:base.Enti
                 child,child_made=unreal_scene.entity_make(c,targets[i],fmt.tprintf("%s/%s",key,grid.key),grid.key,mm.TRANSFORM_IDENTITY)
                 if !child_made {return false}
                 keyed[grid.key]=child
-                g:=vfx.Particle_Grid{cells=grid.cells,cell_size=grid.cell_size,layers=min(grid.layers,vfx.GRID_LAYERS),cached=grid.cached}
+                g:=vfx.Particle_Grid{cells=grid.cells,cell_size=grid.cell_size,layers=min(grid.layers,vfx.GRID_LAYERS)}
                 // Each grid of the world has a name of its own: the program finds it by the binding.
                 unique:=fmt.tprintf("%08x_%s",u32(base.name_hash(fmt.tprintf("%s/%s",key,grid.key))),grid.resource)
                 unique=unique[:min(len(unique),vfx.GRID_NAME_BYTES-1)]
@@ -206,23 +206,17 @@ particles_place :: proc(c:^unreal_scene.Context,a,k:int,niagara:bool,e:base.Enti
             if !bind_add(c,targets[i],key,grid.resource,child,&sources) {return false}
         }
         for binding in written.bindings[i] {
-            if binding.level {
-                // The actor of the level the component names, by the name of its object
-                // with its number (Statue_2).
-                named:=niagara_mesh_actor(d,ref)
-                for actor,other in d.actors {
-                    if named=="" || object_numbered_name(d,actor.ref)!=named {continue}
-                    if entity,placed:=unreal_scene.actor_entity(c,other);placed {
-                        if !bind_add(c,targets[i],key,binding.resource,entity,&sources) {return false}
-                    }
+            if !binding.level {continue}
+            // The actor of the level the component names, by the name of its object
+            // with its number (Statue_2).
+            named:=niagara_mesh_actor(d,ref)
+            for actor,other in d.actors {
+                if named=="" || object_numbered_name(d,actor.ref)!=named {continue}
+                if entity,placed:=unreal_scene.actor_entity(c,other);placed {
+                    if !bind_add(c,targets[i],key,binding.resource,entity,&sources) {return false}
                 }
-                if named=="" {unreal_scene.warn(c,"%s: %s reads the mesh of no actor of the level",label,binding.resource)}
-                continue
             }
-            for j in 0..<written.count {
-                if written.names[j]!=binding.emitter {continue}
-                if !bind_add(c,targets[i],key,binding.resource,targets[j],&sources) {return false}
-            }
+            if named=="" {unreal_scene.warn(c,"%s: %s reads the mesh of no actor of the level",label,binding.resource)}
         }
     }
     return true
@@ -572,7 +566,7 @@ material_look :: proc(d:^level.Document,material:level.Ref) -> (blend:effect.Par
         shading,shaded:=level.enum_of(d,current,"ShadingModel","")
         if shaded {lit=shading!="MSM_Unlit"}
         if found {
-            blend=.Additive if mode=="BLEND_Additive" else .Alpha
+            blend=.Additive if mode=="BLEND_Additive" else .Multiply if mode=="BLEND_Modulate" else .Alpha
             return
         }
         parent,ok:=object_at(d,current,"Parent")

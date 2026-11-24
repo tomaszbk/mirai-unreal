@@ -773,6 +773,42 @@ a_translucent_layer_has_a_highlight_only_when_shaded_per_pixel :: proc(t:^testin
     }
 }
 
+// Unreal's BLEND_Additive maps directly to Alpha_Mode.Additive, keeping its
+// opacity to weight its light and never turning into glass even when refraction
+// or ThinTranslucent is set.
+@(test)
+additive_blend_maps_directly_to_mirai_additive_without_transmission :: proc(t:^testing.T) {
+    Case :: struct {name,shading:string,opacity,refraction,want_opacity:f32}
+    cases:=[]Case{
+        {"default","",-1,0,1},
+        {"weighted","",0.4,1.5,0.4},
+        {"unlit","MSM_Unlit",0.6,0,0.6},
+        {"thin","MSM_ThinTranslucent",0.3,0,0.3},
+    }
+    for c in cases {
+        b:=material_begin("M_Add")
+        m:=fx.writer(&b.p)
+        fx.enum_put(&m,"BlendMode","EBlendMode","BLEND_Additive")
+        if c.shading!="" {fx.enum_put(&m,"ShadingModel","EMaterialShadingModel",c.shading)}
+        if c.opacity>=0 {fx.input_put(&m,"Opacity","ScalarMaterialInput",{use_constant=true,constant={c.opacity,0,0,0}})}
+        if c.refraction>0 {fx.input_put(&m,"Refraction","ScalarMaterialInput",{use_constant=true,constant={c.refraction,0,0,0}})}
+        b.p.exports[0].data=fx.finish(&m)
+        lib:Library
+        library_with(&lib,{"/Game/M/M_Add",fx.package_bytes(&b.p,"/Game/M/M_Add")})
+        translated,ok:=translate_one(t,&lib,"/Game/M/M_Add")
+        if ok {
+            info:=translated.info
+            testing.expectf(t,info.alpha_mode==.Additive && abs(info.opacity-c.want_opacity)<1e-5 && info.transmission==0,
+                "%s: alpha_mode %v, opacity %v, transmission %v",c.name,info.alpha_mode,info.opacity,info.transmission)
+            for n in translated.notes {
+                testing.expectf(t,!strings.contains(n,"additive blending"),"%s: unexpected additive note %q",c.name,n)
+            }
+            translated_destroy(&translated)
+        }
+        library_destroy(&lib)
+    }
+}
+
 // The opacity of a translucent layer is how much of it is there; that of
 // glass, a layer that refracts or of the thin translucent model, is what it
 // stops of the light behind it: the glass is there whole and lets the rest through.

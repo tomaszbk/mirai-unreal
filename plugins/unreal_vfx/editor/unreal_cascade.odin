@@ -36,7 +36,9 @@ cascade_system :: proc(c:^unreal_scene.Context,system:level.Ref,label:string) ->
         if spawn,ok:=object_at(d,lod,"SpawnModule");ok {cascade_spawn(c,&e,spawn,&life)}
         if data,ok:=object_at(d,lod,"TypeDataModule");ok {
             switch class:=class_name(d,data);class {
-            case "ParticleModuleTypeDataRibbon":info.render=.Ribbon
+            case "ParticleModuleTypeDataRibbon":
+                info.render=.Ribbon
+                if tile:=real(d,data,"TilingDistance",0);tile>0 {info.ribbon_tile=tile*CENTIMETRE}
             case "ParticleModuleTypeDataMesh":
                 info.render=.Mesh
                 if path:=level.path_of(d,data,"Mesh");path!="" {
@@ -165,6 +167,27 @@ cascade_module :: proc(c:^unreal_scene.Context,e:^Unreal_Emitter,module:level.Re
         if lifetime.max.x>0 {info.lifetime={max(lifetime.min.x,0),lifetime.max.x}}
     case "ParticleModuleSize":
         size:=cascade_dist(d,module,"StartSize")
+        if info.render==.Mesh {
+            mlo:=[3]f32{max(size.min.y,0),max(size.min.z,0),max(size.min.x,0)}
+            mhi:=[3]f32{max(size.max.y,0),max(size.max.z,0),max(size.max.x,0)}
+            mean:=(mlo+mhi)*0.5
+            peak:=max(mean.x,mean.y,mean.z)
+            if peak>0 && (abs(mean.x-peak)>1e-4*peak || abs(mean.y-peak)>1e-4*peak || abs(mean.z-peak)>1e-4*peak) {
+                info.size={max(mlo.x,mlo.y,mlo.z)*CENTIMETRE,max(mhi.x,mhi.y,mhi.z)*CENTIMETRE}
+                info.scale={mean.x/peak,mean.y/peak,mean.z/peak}
+                break
+            }
+        } else if info.render==.Billboard || info.render==.Velocity || info.render==.Horizontal {
+            slo:=[2]f32{max(size.min.x,0),max(size.min.y,0)}
+            shi:=[2]f32{max(size.max.x,0),max(size.max.y,0)}
+            mean:=(slo+shi)*0.5
+            peak:=max(mean.x,mean.y)
+            if peak>0 && abs(mean.x-mean.y)>1e-4*peak {
+                info.size={max(slo.x,slo.y)*CENTIMETRE,max(shi.x,shi.y)*CENTIMETRE}
+                info.scale={mean.x/peak,mean.y/peak,1}
+                break
+            }
+        }
         info.size={max(size.min.x,0)*CENTIMETRE,max(size.max.x,0)*CENTIMETRE}
     case "ParticleModuleColor":
         color:=cascade_dist(d,module,"StartColor")

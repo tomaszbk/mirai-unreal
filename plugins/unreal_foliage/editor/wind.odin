@@ -96,19 +96,17 @@ sway_frequency :: proc(s:Sway) -> f32 {return s.frequency.y>0?f32(s.frequency.x/
 // The flutter of a type of the mesh, by the rule above.
 sway_flutter :: proc(s:Sway) -> f32 {
     if !(s.fluttered.y>0) {return 0}
-    unit:=foliage.FOLIAGE_TYPE_DEFAULT
-    unit.flutter=1
+    unit:=foliage.Look{flutter=1}
     return f32(s.fluttered.x/s.fluttered.y*0.01/(FLUTTER_MEAN*f64(foliage.flutter_amount(unit))*f64(volume.WIND_DEFAULT.speed)))
 }
 
 // The wind of a type of the mesh, by the rule above.
 sway_wind :: proc(s:Sway) -> f32 {
     if s.winds==0 {return 0}
-    if s.winds==s.unmeasured {return foliage.FOLIAGE_TYPE_DEFAULT.wind}
+    if s.winds==s.unmeasured {return foliage.FOLIAGE_DEFAULT.wind}
     if !(s.tall>0) || !(s.moved>0) {return 0}
     lean:=math.asin(min(s.moved/s.tall/(1-SWAY_LEAST),1))
-    unit:=foliage.FOLIAGE_TYPE_DEFAULT
-    unit.wind=1
+    unit:=foliage.Look{wind=1}
     return f32(lean)/(foliage.sway_amount(unit)*volume.WIND_DEFAULT.speed)
 }
 

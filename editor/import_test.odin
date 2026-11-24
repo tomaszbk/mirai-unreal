@@ -237,7 +237,7 @@ an_unreal_map_imports_as_a_scene_of_its_project :: proc(t:^testing.T) {
         p,package_error:=asset.package_get(&s,report.manifest,context.temp_allocator)
         if !testing.expect_value(t,package_error,asset.Error.None) {return}
         testing.expect_value(t,p.origin.importer,unreal_scene.LEVEL_IMPORTER)
-        testing.expect_value(t,p.catalog_path,"Maps")
+        testing.expect_value(t,p.catalog_path,"Unreal/Maps")
         testing.expect(t,slice.contains(p.inputs[:],"../Meshes/SM_Fixture.uasset"),"the packages it reads are inputs of its package")
         digits:[64]u8
         named,_:=store.ref_get(&s,asset.REF_IMPORTS_FAST if !report.final else asset.REF_IMPORTS,store.hex(report.key,&digits))

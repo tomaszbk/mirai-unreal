@@ -8,6 +8,7 @@ import "project:plugins/unreal/editor/level"
 import unreal "project:plugins/unreal/editor/package"
 import unreal_scene "project:plugins/unreal/editor/scene"
 import "mirai:std/base"
+import "plugins:vfx/runtime/effect"
 
 // The emitters of a system whose scripts keep the HLSL of their compilation
 // are translated together: the attributes of each and the attributes of the
@@ -23,16 +24,14 @@ Unreal_Grid :: struct {
     cells:[3]u32,
     cell_size:f32, // metres
     layers:u32,
-    cached:base.Asset_Id, // the .grid its cells start from: a vector field
     user:string,   // of a render target: the parameter of the system whose texture it writes; "" none
 }
 
 NIAGARA_CAPACITY_MAX :: 65536 // particles of a translated emitter
 NIAGARA_BIRTHS_ROOM :: f32(1024) // particles of an emitter whose program gives births its modules say nothing of
 
-// Another emitter of the system whose particles a resource of the program reads.
-// Or, level: the actor the mesh data interfaces of the component of the actor name.
-Unreal_Binding :: struct {resource,emitter:string,level:bool}
+// The actor the mesh data interfaces of the component of the actor name.
+Unreal_Binding :: struct {resource:string,level:bool}
 
 // What an emitter's scripts keep of their compilation, read for its program.
 Niagara_Source :: struct {
@@ -225,10 +224,10 @@ niagara_writer :: proc(c:^unreal_scene.Context,sys:^Niagara_System,e:^Unreal_Emi
     w.interfaces=make([dynamic]Niagara_Di,context.temp_allocator)
     w.problems=make([dynamic]string,context.temp_allocator)
     w.resources=make([dynamic]string,context.temp_allocator)
+    w.tex_params=make([dynamic]Niagara_Tex_Param,context.temp_allocator)
     w.stage_lines=make([dynamic]string,context.temp_allocator)
     w.spawns=make([dynamic]string,context.temp_allocator)
     w.kept=make([dynamic]Niagara_Kept,context.temp_allocator)
-    w.spawn_rules=make([dynamic]Niagara_Spawn_Rule,context.temp_allocator)
     niagara_interfaces_add(&w,e.source.interfaces[:])
     return w
 }
@@ -245,18 +244,28 @@ niagara_emitter_program :: proc(c:^unreal_scene.Context,sys:^Niagara_System,e:^U
         return
     }
     base.text_set(e.info.program[:],asset.generated_program_id(address,context.temp_allocator))
+    if len(w.tex_params)>0 {
+        params:=make([dynamic]effect.Particle_Parameter,context.temp_allocator)
+        append(&params,..e.parameters)
+        for tp in w.tex_params {
+            p:=effect.Particle_Parameter{kind=.Texture,components=1,texture=tp.id}
+            base.text_set(p.name[:],tp.name)
+            append(&params,p)
+        }
+        e.parameters=params[:]
+    }
     // The program says when a particle dies: the effect keeps room for what its births and the
     // lifetime of its modules need, and a lifetime its clock never sees end.
     births:=f32(0)
     for burst in e.info.bursts {births+=f32(burst.count)*f32(max(burst.cycles,1))}
     births+=e.info.rate*max(e.info.lifetime[1],1)*1.25
     // The births a program gives are known only as it runs: room for those of its modules, or NIAGARA_BIRTHS_ROOM.
-    if (len(w.spawns)>0 || w.channel_spawn!="") && births<1 {births=NIAGARA_BIRTHS_ROOM}
+    if len(w.spawns)>0 && births<1 {births=NIAGARA_BIRTHS_ROOM}
     e.info.max_particles=u32(clamp(births+16,16,NIAGARA_CAPACITY_MAX))
     e.info.lifetime={UNENDING_SECONDS,UNENDING_SECONDS}
     // The scripts of the system loop the emitter: the clock of the effect only counts its seconds,
     // and a cycle of its own that ended would start its particles again.
-    if len(w.spawns)>0 || w.channel_spawn!="" {e.info.duration=UNENDING_SECONDS}
+    if len(w.spawns)>0 {e.info.duration=UNENDING_SECONDS}
     for problem in e.source.problems {unreal_scene.warn(c,"%s, %s: %s",label,e.name,problem)}
     for problem in w.problems {unreal_scene.warn(c,"%s, %s: %s",label,e.name,problem)}
     grids:=make([dynamic]Unreal_Grid,context.temp_allocator)
@@ -269,19 +278,9 @@ niagara_emitter_program :: proc(c:^unreal_scene.Context,sys:^Niagara_System,e:^U
             // A 2D one is flat along y (niagara_grids.odin).
             cells:=di.three?[3]u32{u32(di.cells.x),u32(di.cells.y),u32(di.cells.z)}:[3]u32{u32(di.cells.x),1,u32(di.cells.y)}
             append(&grids,Unreal_Grid{resource=di.resource,key=niagara_grid_key(&w,e,&di),cells=cells,cell_size=cell,layers=u32(max(niagara_di_layers(&di),1)),user=di.user})
-        case .Particles:
-            if di.other!="" {append(&bindings,Unreal_Binding{resource=di.resource,emitter=di.other})}
         case .Mesh:
             append(&bindings,Unreal_Binding{resource=di.resource,level=true})
-        case .Vector_Field:
-            // A grid of each field, which its cells start from.
-            span:=max(di.field.high.x-di.field.low.x,1e-3)
-            append(&grids,Unreal_Grid{resource=di.resource,key=strings.concatenate({"VectorField.",di.field.name},context.temp_allocator),cells={u32(di.field.cells.x),u32(di.field.cells.y),u32(di.field.cells.z)},cell_size=span/f32(di.field.cells.x)*CENTIMETRE,layers=1,cached=di.field.id})
-        case .Texture:
-            // A grid of each texture, flat along y, which its cells start from.
-            t:=di.texture
-            append(&grids,Unreal_Grid{resource=di.resource,key=strings.concatenate({"Texture.",t.name},context.temp_allocator),cells={u32(t.cells.x),1,u32(t.cells.y)},cell_size=CENTIMETRE,layers=1,cached=t.id})
-        case .Unknown,.Curve,.Noise,.Collision,.Camera,.GBuffer,.Channel_Read,.Channel_Write,.Emitter_Info,.Array:
+        case .Unknown,.Curve,.Noise,.Collision,.Camera,.GBuffer,.Particles,.Channel_Read,.Channel_Write,.Vector_Field,.Texture,.Emitter_Info,.Array:
         }
     }
     e.grids,e.bindings=grids[:],bindings[:]
@@ -328,52 +327,4 @@ niagara_object_named :: proc(d:^level.Document,pkg:i32,class,name:string) -> (ob
     }
     if candidate.object==0 {candidate=copy}
     return candidate,candidate.object!=0
-}
-
-// The emitter of the system a ParticleRead data interface reads: its
-// EmitterBinding or EmitterName names it. The copy a script keeps may not
-// have it: the object of the emitter's stack named like the data interface
-// (Emitter.Attribute Reader: Emitter_Attribute_Reader) does, or the one
-// emitter every other reader of the package names.
-@(private)
-niagara_bound_emitter :: proc(d:^level.Document,object:level.Ref,found:bool,name:string) -> string {
-    if found {
-        if bound:=niagara_bound_name(d,object);bound!="" {return bound}
-    }
-    p:=level.library_package(d.library,int(object.pkg))
-    class:=class_name(d,object) if found else "NiagaraDataInterfaceParticleRead"
-    // The object is named after the parameter, with or without its namespace.
-    wanted:=niagara_identifier(name)
-    short:=niagara_identifier(name[strings.index_byte(name,'.')+1:])
-    only:=""
-    many:=false
-    for i in 0..<len(p.exports) {
-        other:=level.Ref{object.pkg,unreal.Object_Ref(i+1)}
-        if other.object==object.object || class_name(d,other)!=class {continue}
-        bound:=niagara_bound_name(d,other)
-        if bound=="" {continue}
-        if named:=object_name(d,other);named==wanted || named==short {return bound}
-        if only!="" && only!=bound {many=true}
-        only=bound
-    }
-    return many?"":only
-}
-
-@(private)
-niagara_bound_name :: proc(d:^level.Document,object:level.Ref) -> string {
-    for property in ([2]string{"EmitterBinding","EmitterName"}) {
-        f,error:=level.property(d,object,property)
-        if error.code!=.None || f.property==nil {continue}
-        if value,value_error:=unreal.property_value(f.pkg,f.property,context.temp_allocator);value_error.code==.None && value.kind==.String {
-            if value.text!="" {return strings.clone(value.text,context.temp_allocator)}
-            continue
-        }
-        fields,fields_error:=unreal.property_tagged_struct(f.pkg,f.property,true,context.temp_allocator)
-        if fields_error.code!=.None {continue}
-        if name,ok:=level.value_enum(f.pkg,unreal.property_find(f.pkg,&fields,"EmitterName"),"");ok && name!="" {return strings.clone(name,context.temp_allocator)}
-        if field:=unreal.property_find(f.pkg,&fields,"EmitterName");field!=nil {
-            if value,value_error:=unreal.property_value(f.pkg,field,context.temp_allocator);value_error.code==.None && value.kind==.String && value.text!="" {return strings.clone(value.text,context.temp_allocator)}
-        }
-    }
-    return ""
 }

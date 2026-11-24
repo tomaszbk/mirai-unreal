@@ -5,6 +5,7 @@ import "core:slice"
 import "core:strings"
 import "project:plugins/unreal/editor/level"
 import unreal_scene "project:plugins/unreal/editor/scene"
+import "mirai:std/base"
 
 // A Vfx program from the HLSL of Niagara's translator: the code of the modules of an emitter's scripts stays as
 // Niagara generated it, each stage in a namespace of its own, and the frame
@@ -31,6 +32,13 @@ Niagara_Part :: struct {
     vm:bool,               // a script of the VM: its data interfaces take an instance first
 }
 
+// A texture parameter of the program (Texture2D or VectorFieldStatic .tex atlas).
+Niagara_Tex_Param :: struct {
+    name:string,
+    id:base.Asset_Id,
+    srgb:bool,
+}
+
 // A program being written.
 Niagara_Writer :: struct {
     d:^level.Document,
@@ -41,6 +49,7 @@ Niagara_Writer :: struct {
     problems:[dynamic]string,
     local:bool,                  // the particles of the emitter are in the space of the system
     resources:[dynamic]string,   // the lines that declare them, in order
+    tex_params:[dynamic]Niagara_Tex_Param, // texture parameters of the program
     stage_lines:[dynamic]string, // `//! stage` lines
     system:^Niagara_System,
     emitter:^Unreal_Emitter,
@@ -48,8 +57,6 @@ Niagara_Writer :: struct {
     scene:^unreal_scene.Context, // what the import writes assets with
     spawns:[dynamic]string,      // the spawn infos of the emitter the scripts of the system compute
     kept:[dynamic]Niagara_Kept,  // what prepare keeps of the state, in its words
-    channel_spawn:string,        // the data channel whose entries start its particles; "" none
-    spawn_rules:[dynamic]Niagara_Spawn_Rule, // the SpawnConditional calls of the scripts of the system
 }
 
 // The parts of the scripts of an emitter: the spawn and update of one GPU
@@ -116,17 +123,27 @@ niagara_program :: proc(w:^Niagara_Writer,src:^Niagara_Source) -> bool {
         shared:=index+1<len(parts) && niagara_shares(parts,index+1)
         niagara_part_write(w,&body,&part,fmt.tprintf("p%d",index),shared?&parts[index+1]:nil)
     }
-    // What decides the particles of each entry of its data channel, through words prepare keeps.
-    spawning:=strings.builder_make(context.temp_allocator)
-    niagara_spawn_write(w,&spawning)
     s:=&w.out
     fmt.sbprintf(s,"//! mirai vfx %s\n//! moves\n",w.name)
-    if len(w.spawns)>0 || w.channel_spawn!="" {strings.write_string(s,"//! births\n")}
+    if len(w.spawns)>0 {strings.write_string(s,"//! births\n")}
     if len(w.kept)>0 {strings.write_string(s,"//! prepare\n")}
+    for tp in w.tex_params {fmt.sbprintf(s,"//! parameter %s {{\"kind\":\"texture\",\"srgb\":%v}}\n",tp.name,tp.srgb)}
     for line in w.resources {fmt.sbprintf(s,"%s\n",line)}
     for line in w.stage_lines {fmt.sbprintf(s,"%s\n",line)}
-    fmt.sbprintf(s,"// Translated from the HLSL Niagara generated for an emitter (unreal_vfx/editor, niagara_program.odin).\n#include \"niagara.slang\"\nnamespace %s {{\nstruct Parameters {{float unused;}};\n",w.name)
-    // One field a component: another program finds an attribute by its word.
+    fmt.sbprintf(s,"// Translated from the HLSL Niagara generated for an emitter (unreal_vfx/editor, niagara_program.odin).\n#include \"niagara.slang\"\nnamespace %s {{\nstruct Parameters {{",w.name)
+    if len(w.tex_params)==0 {
+        strings.write_string(s,"float unused;")
+    } else {
+        for tp in w.tex_params {fmt.sbprintf(s,"uint %s;",tp.name)}
+    }
+    strings.write_string(s,"};\n")
+    for tp in w.tex_params {fmt.sbprintf(s,"static uint niagara_param_%s;\n",tp.name)}
+    if len(w.tex_params)>0 {
+        strings.write_string(s,"void niagara_params_bind(Parameters p) {\n")
+        for tp in w.tex_params {fmt.sbprintf(s,"    niagara_param_%s = p.%s;\n",tp.name,tp.name)}
+        strings.write_string(s,"}\n")
+    }
+    // One field a component: each attribute keeps its own scalar fields.
     strings.write_string(s,"struct Attributes {\n")
     if len(src.attributes)==0 {strings.write_string(s,"    uint unused;\n")}
     for attribute in src.attributes {
@@ -135,12 +152,13 @@ niagara_program :: proc(w:^Niagara_Writer,src:^Niagara_Source) -> bool {
         for i in 0..<count {fmt.sbprintf(s,"    %s %s__%d;\n",scalar,attribute.name,i)}
     }
     strings.write_string(s,"};\n")
-    strings.write_string(s,strings.to_string(spawning))
     strings.write_string(s,strings.to_string(body))
     niagara_entries_write(w,s,parts)
     // The scripts of the system once a frame for each emitter, and what the parts read of them.
     if len(w.kept)>0 {
-        strings.write_string(s,"void prepare(Mirai_Vfx_Context ctx, Parameters p) {\n    niagara_begin(ctx, 0u, uint3(0u));\n    su::niagara_run(ctx);\n")
+        strings.write_string(s,"void prepare(Mirai_Vfx_Context ctx, Parameters p) {\n")
+        if len(w.tex_params)>0 {strings.write_string(s,"    niagara_params_bind(p);\n")}
+        strings.write_string(s,"    niagara_begin(ctx, 0u, uint3(0u));\n    su::niagara_run(ctx);\n")
         for k in w.kept {
             scalar,count:=niagara_components(k.type)
             axes:="xyzw"
@@ -154,14 +172,14 @@ niagara_program :: proc(w:^Niagara_Writer,src:^Niagara_Source) -> bool {
         }
         strings.write_string(s,"}\n")
     }
-    if len(w.spawns)>0 || w.channel_spawn!="" {
-        strings.write_string(s,"uint births(Mirai_Vfx_Context ctx, Parameters p) {\n    niagara_begin(ctx, 0u, uint3(0u));\n    int count = 0;\n")
+    if len(w.spawns)>0 {
+        strings.write_string(s,"uint births(Mirai_Vfx_Context ctx, Parameters p) {\n")
+        if len(w.tex_params)>0 {strings.write_string(s,"    niagara_params_bind(p);\n")}
+        strings.write_string(s,"    niagara_begin(ctx, 0u, uint3(0u));\n    int count = 0;\n")
         // prepare ran the scripts of the system in this thread just before.
-        if len(w.spawns)>0 && len(w.kept)==0 {strings.write_string(s,"    su::niagara_run(ctx);\n")}
-        if execution,known:=w.state["Emitter_ExecutionState"];known && len(w.spawns)>0 {fmt.sbprintf(s,"    if (%s != 0) return 0u;\n",execution.value)}
+        if len(w.kept)==0 {strings.write_string(s,"    su::niagara_run(ctx);\n")}
+        if execution,known:=w.state["Emitter_ExecutionState"];known {fmt.sbprintf(s,"    if (%s != 0) return 0u;\n",execution.value)}
         for at in w.spawns {fmt.sbprintf(s,"    count += max(%s.Count, 0);\n",at)}
-        // A program that spawns from a data channel: its particles for each entry of the frame.
-        if w.channel_spawn!="" {fmt.sbprintf(s,"    count += int(mirai_vfx_data_count(ctx, %s)) * niagara_spawn_per(ctx);\n",w.channel_spawn)}
         strings.write_string(s,"    return uint(count);\n}\n")
     }
     strings.write_string(s,"}\n")
@@ -625,6 +643,7 @@ niagara_entries_write :: proc(w:^Niagara_Writer,s:^strings.Builder,parts:[]Niaga
         switch part.role {
         case .Spawn:
             fmt.sbprintf(s,"void initialize(Mirai_Vfx_Context ctx, Parameters p, inout Mirai_Vfx_Particle particle, inout Attributes a) {{\n    float lead = min(particle.age, 0.0);\n")
+            if len(w.tex_params)>0 {strings.write_string(s,"    niagara_params_bind(p);\n")}
             fmt.sbprintf(s,"    niagara_begin(ctx, niagara_exec_index(ctx), uint3(niagara_exec_index(ctx), 0u, 0u));\n    niagara_id.y = int(particle.seed);\n    %s::niagara_setup(ctx);\n",ns)
             fmt.sbprintf(s,"    %s::FSimulationContext Context = (%s::FSimulationContext)0;\n",ns,ns)
             if has(&part,"InitConstants") {fmt.sbprintf(s,"    %s::InitConstants(Context);\n",ns)}
@@ -646,13 +665,13 @@ niagara_entries_write :: proc(w:^Niagara_Writer,s:^strings.Builder,parts:[]Niaga
                 strings.write_string(s,"    particle.age = -1e-6;\n    particle.lifetime = 1.0;\n")
             }
             if alive(&part) {fmt.sbprintf(s,"    if (!Context.%s.DataInstance.Alive) particle.age = 1.0;\n",M)}
-            if w.channel_spawn!="" {strings.write_string(s,"    if (niagara_spawn_dropped) particle.age = 1.0;\n")}
             strings.write_string(s,"}\n")
         case .Update:
             fmt.sbprintf(s,"void update(Mirai_Vfx_Context ctx, Parameters p, inout Mirai_Vfx_Particle particle, inout Attributes a) {{\n")
             // One that initialize ended dies before this step runs its scripts.
             strings.write_string(s,"    if (particle.age >= particle.lifetime) return;\n")
             if !w.emitter.source.interpolated {strings.write_string(s,"    if (particle.age < 0.0) {\n        particle.age = 0.0;\n        return;\n    }\n")}
+            if len(w.tex_params)>0 {strings.write_string(s,"    niagara_params_bind(p);\n")}
             fmt.sbprintf(s,"    niagara_begin(ctx, ctx.particle, uint3(ctx.particle, 0u, 0u));\n    %s::niagara_setup(ctx);\n",ns)
             fmt.sbprintf(s,"    %s::FSimulationContext Context = (%s::FSimulationContext)0;\n",ns,ns)
             if has(&part,"InitConstants") {fmt.sbprintf(s,"    %s::InitConstants(Context);\n",ns)}
@@ -674,6 +693,7 @@ niagara_entries_write :: proc(w:^Niagara_Writer,s:^strings.Builder,parts:[]Niaga
             if part.info.source==.Interface {
                 di,_:=niagara_interface_named(w,part.info.over)
                 fmt.sbprintf(s,"void s%d(Mirai_Vfx_Cell cell, Parameters p) {{\n    Mirai_Vfx_Context ctx = cell.ctx;\n%s",part.stage,gate)
+                if len(w.tex_params)>0 {strings.write_string(s,"    niagara_params_bind(p);\n")}
                 fmt.sbprintf(s,"    Mirai_Vfx_Grid g = mirai_vfx_grid(ctx, %s);\n    uint3 along = uint3(cell.index - g.first);\n",di!=nil?di.resource:"0u")
                 // The thread of a 2D grid, flat along y, in the order of Niagara.
                 thread:=di!=nil && !di.three?"along.xzy":"along"
@@ -687,6 +707,7 @@ niagara_entries_write :: proc(w:^Niagara_Writer,s:^strings.Builder,parts:[]Niaga
                 strings.write_string(s,"}\n")
             } else {
                 fmt.sbprintf(s,"void s%d(Mirai_Vfx_Context ctx, Parameters p, inout Mirai_Vfx_Particle particle, inout Attributes a) {{\n%s",part.stage,gate)
+                if len(w.tex_params)>0 {strings.write_string(s,"    niagara_params_bind(p);\n")}
                 fmt.sbprintf(s,"    niagara_begin(ctx, ctx.particle, uint3(ctx.particle, 0u, 0u));\n")
                 fmt.sbprintf(s,"    niagara_stage_iteration = ctx.iteration; niagara_stage_iterations = %du;\n",part.info.iterations)
                 fmt.sbprintf(s,"    %s::niagara_setup(ctx);\n    %s::FSimulationContext Context = (%s::FSimulationContext)0;\n",ns,ns,ns)

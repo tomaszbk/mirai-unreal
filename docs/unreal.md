@@ -385,7 +385,7 @@ it names). Everything lives in the library's arena.
   along the inverse normal, since Mirai reflects by the view and what imitates it sees the surface
   head-on;
   `EyeAdaptationInverse` is 1 and leaves emission relative to exposure (`Relative`); a sample's mip
-  level and bias are left to Mirai; additive blend is a layer that does not cover.
+  level and bias are left to Mirai. Additive blend maps directly to `Alpha_Mode.Additive`.
 - **Legacy is adapted.** View-dependent relief (`BumpOffset` and the `/Engine`
   `ParallaxOcclusionMapping` function) is the surface without relief: its UVs are the ones it
   receives, without depth displacement or self-shadow. `FuzzyShading`, which lightens a cloth's

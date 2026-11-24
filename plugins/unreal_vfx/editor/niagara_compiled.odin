@@ -191,7 +191,7 @@ niagara_interface_symbol :: proc(hlsl,name:string) -> string {
 }
 
 // What a script that writes or handles an event of Niagara uses in Mirai instead.
-NIAGARA_EVENTS_ALTERNATIVE :: "Mirai has no events between emitters: carry what the event carries in a Niagara Data Channel (DataChannelWrite where it is generated, SpawnConditional and GetNDCSpawnData where it is handled), or read the particles of the other emitter with a Particle Attribute Reader"
+NIAGARA_EVENTS_ALTERNATIVE :: "Mirai has no events between emitters: use a sub_particle trigger (Death, Collision or Trail), or emit from game code via core.Births and Particle_Channel"
 
 // The event handlers of an emitter, which Mirai does not translate: a problem
 // for each that names its script, its event and what to use instead.

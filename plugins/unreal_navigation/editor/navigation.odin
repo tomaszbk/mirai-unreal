@@ -150,7 +150,8 @@ link_entity :: proc(c:^unreal_scene.Context,a:int,key:string,link:Point_Link,kin
     t.position=mm.transform_point(world,start)
     id,made:=unreal_scene.entity_make(c,0,key,c.d.actors[a].label,t)
     if !made {return false}
-    value:=nav.Nav_Link{end=end-start,kind=kind,two_way=link.direction!="LeftToRight" && link.direction!="RightToLeft",area=nav.AREA_WALKABLE}
+    value:=nav.NAV_LINK_DEFAULT
+    value.end,value.kind,value.two_way,value.area=end-start,kind,link.direction!="LeftToRight" && link.direction!="RightToLeft",nav.AREA_WALKABLE
     return unreal_scene.component_set(c,id,"Nav_Link",&value)
 }
 

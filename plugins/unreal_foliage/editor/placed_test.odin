@@ -60,10 +60,9 @@ plant_package :: proc(name,material:string,body:fixture.Body_Fixture) -> []u8 {
     return fixture.static_mesh_package(f)
 }
 
-// A placed mesh whose material sways in the wind stays an entity, with its
-// collision, and sways as foliage with the wind the same mesh has as a type
-// of the .foliage (an instanced component of it); one whose material stands
-// still has no sway, and no placed mesh becomes foliage.
+// A placed mesh whose material sways in the wind stays an entity with
+// Foliage_Sway matching the instanced tree entity placed under Foliage; one
+// whose material stands still has no sway.
 @(test)
 a_placed_mesh_that_sways_stays_an_entity_with_the_wind_of_its_mesh :: proc(t:^testing.T) {
     directory,_:=os.temp_directory(context.temp_allocator)
@@ -107,24 +106,29 @@ a_placed_mesh_that_sways_stays_an_entity_with_the_wind_of_its_mesh :: proc(t:^te
     level:=fmt.tprintf("%s/Maps/Grove.umap",content)
     _=os.write_entire_file(level,fixture.level_bytes(&l))
     provider:=foliage_unreal_default().provider
-    report,error:=unreal_scene.level_import(level,{root=root},provider.translators[:provider.count],"-")
+    imports:=fixture.store_open(root)
+    defer fixture.store_close(imports)
+    report,error:=unreal_scene.level_import(level,fixture.into(root,imports),provider.translators[:provider.count],"-")
     if !testing.expectf(t,error.code==.None,"%s",error.message) {return}
     defer unreal_scene.level_report_destroy(&report)
     types:asset.Types;asset.types_init(&types);defer asset.types_destroy(&types)
-    s:foliage.Source
-    defer foliage.source_destroy(&s)
-    for a in report.imports.assets {
-        if a.kind!=foliage.FOLIAGE_KIND {continue}
-        file:asset.Asset
-        if !testing.expect_value(t,asset.asset_load(&file,a.path),asset.Error.None) {return}
-        defer asset.asset_close(&file)
-        _,read:=foliage.source_read(&s,&file,&types)
-        testing.expect(t,read,"the .foliage reads")
-    }
-    if !testing.expectf(t,len(s.types)==1 && s.types[0].wind>0,"the instanced trees alone are foliage, and sway: %d types",len(s.types)) {return}
     scene:asset.Scene
     if !testing.expect_value(t,asset.scene_load(&scene,&types,report.scene_path),asset.Error.None) {return}
     defer asset.scene_destroy(&scene)
+    foliage_group:base.Entity_Id
+    instanced_tree:base.Entity_Id
+    for row in 0..<asset.scene_entity_count(&scene) {
+        e:=asset.scene_entity(&scene,row)
+        if e.name=="Foliage" {foliage_group=e.id}
+    }
+    if !testing.expect(t,foliage_group!=0,"Foliage group entity exists") {return}
+    for row in 0..<asset.scene_entity_count(&scene) {
+        e:=asset.scene_entity(&scene,row)
+        if e.parent==foliage_group {instanced_tree=e.id}
+    }
+    if !testing.expect(t,instanced_tree!=0,"instanced tree entity exists under Foliage") {return}
+    instanced_sway,instanced_swaying:=asset.scene_get(&scene,instanced_tree,"Foliage_Sway",foliage.Foliage_Sway)
+    if !testing.expect(t,instanced_swaying && instanced_sway.wind>0,"the instanced tree sways") {return}
     for p in plants {
         id:base.Entity_Id
         for row in 0..<asset.scene_entity_count(&scene) {if e:=asset.scene_entity(&scene,row);e.name==p.label {id=e.id}}
@@ -134,6 +138,6 @@ a_placed_mesh_that_sways_stays_an_entity_with_the_wind_of_its_mesh :: proc(t:^te
             testing.expectf(t,!swaying,"%s stands still: %v",p.label,given)
             continue
         }
-        testing.expectf(t,swaying && abs(given.wind-s.types[0].wind)<=1e-6*s.types[0].wind && given.flutter==s.types[0].flutter,"%s sways with the wind and flutter of its mesh as foliage, %v: %v",p.label,s.types[0],given)
+        testing.expectf(t,swaying && abs(given.wind-instanced_sway.wind)<=1e-6*instanced_sway.wind && given.flutter==instanced_sway.flutter,"%s sways with the wind and flutter of its mesh as foliage, %v: %v",p.label,instanced_sway,given)
     }
 }

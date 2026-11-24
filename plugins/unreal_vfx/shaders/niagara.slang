@@ -430,42 +430,6 @@ uint niagara_cell_add(uint r, int linear, int word, uint value) {
     return mirai_vfx_grid_word_add(niagara_ctx, r, g.first + niagara_cell_of(r, linear), uint(word), value);
 }
 
-// The particles of another emitter (a resource of kind emitter): the slot of
-// one by its index, or by its id when tag is not -1 (the seed of the
-// particle); -1 when it is not alive.
-// An id of a particle not started when it was given (GetIDAtSpawnIndex)
-// keeps its birth, as -2 - birth; its slot is looked up while it lives.
-int niagara_read_slot(uint r, int index, int tag) {
-    Mirai_Vfx_Particle p;
-    if (index <= -2) {
-        uint seed;
-        int slot = mirai_vfx_emitter_birth(niagara_ctx, r, uint(-2 - index), seed);
-        return tag == -1 || int(seed) == tag ? slot : -1;
-    }
-    if (index < 0 || !mirai_vfx_emitter_particle(niagara_ctx, r, uint(index), p)) return -1;
-    if (tag != -1 && int(p.seed) != tag) return -1;
-    return index;
-}
-int niagara_read_seed(uint r, int slot) {
-    Mirai_Vfx_Particle p;
-    return slot >= 0 && mirai_vfx_emitter_particle(niagara_ctx, r, uint(slot), p) ? int(p.seed) : -1;
-}
-uint niagara_read_word(uint r, int slot, int word) {
-    return slot >= 0 ? mirai_vfx_emitter_word(niagara_ctx, r, uint(slot), uint(word)) : 0u;
-}
-float3 niagara_read_position(uint r, int slot, bool local) {
-    Mirai_Vfx_Particle p;
-    if (slot < 0 || !mirai_vfx_emitter_particle(niagara_ctx, r, uint(slot), p)) return float3(0.0);
-    float3 at = niagara_point(p.position);
-    return local ? mul(float4(at, 1.0), niagara_inverse(niagara_local_to_world(niagara_ctx.world))).xyz : at;
-}
-float3 niagara_read_velocity(uint r, int slot, bool local) {
-    Mirai_Vfx_Particle p;
-    if (slot < 0 || !mirai_vfx_emitter_particle(niagara_ctx, r, uint(slot), p)) return float3(0.0);
-    float3 v = niagara_vector(p.velocity);
-    return local ? mul(float4(v, 0.0), niagara_inverse(niagara_local_to_world(niagara_ctx.world))).xyz : v;
-}
-
 // The curl of the simplex noise that Niagara's curl noise samples.
 float3 niagara_curl_noise(float3 p) {
     float3x4 j = JacobianSimplex_ALU(p, false, 1.0);
@@ -601,41 +565,30 @@ int SimulationStage_GetLoopIndex() { return 0; }
 float SimulationStage_GetNormalizedIterationIndex() { return float(SimulationStage_GetIterationIndex()) / float(max(SimulationStage_GetNumIterations(), 1) - 1); }
 float SimulationStage_GetNormalizedLoopIndex() { return float(SimulationStage_GetLoopIndex()) / float(max(SimulationStage_GetNumLoops(), 1) - 1); }
 
-// VectorField: a field of vectors baked into a grid of one cell a texel
-// (niagara_vector_fields.odin), sampled between its texels over its bounds,
-// wrapping along the axes it tiles.
-// A texture baked into a grid flat along y, one texel a cell (rows along z):
-// bilinear at uv between texels, repeating.
-float4 niagara_texture_sample(uint r, float2 uv) {
-    Mirai_Vfx_Grid g = mirai_vfx_grid(niagara_ctx, r);
-    int2 n = max(g.cells.xz, int2(1));
-    float2 p = uv * float2(n) - 0.5;
-    int2 i0 = int2(floor(p));
-    float2 f = p - float2(i0);
-    float4 sum = float4(0.0);
-    for (int k = 0; k < 4; k++) {
-        int2 side = int2(k & 1, k >> 1);
-        int2 corner = ((i0 + side) % n + n) % n;
-        float2 w = lerp(1.0 - f, f, float2(side));
-        sum += w.x * w.y * mirai_vfx_grid_load(niagara_ctx, r, g.first + int3(corner.x, 0, corner.y), 0u);
-    }
-    return sum;
+// A texture parameter of the program (niagara_textures.odin), sampled at uv.
+float4 niagara_texture_sample(uint tex, float2 uv) {
+    return mirai_vfx_texture(tex, uv, 0.0);
 }
 
-float3 niagara_field_sample(uint r, float3 at, float3 low, float3 high, bool3 tile) {
-    Mirai_Vfx_Grid g = mirai_vfx_grid(niagara_ctx, r);
-    int3 n = max(g.cells, int3(1));
+// VectorField: a 3D field packed into a 2D RGBA16F texture parameter
+// (niagara_vector_fields.odin: width = cells.x, height = cells.y * cells.z,
+// z slices stacked vertically), trilinearly sampled over its bounds.
+float3 niagara_field_sample(uint tex, int3 cells, float3 at, float3 low, float3 high, bool3 tile) {
+    int3 n = max(cells, int3(1));
     float3 p = (at - low) / max(high - low, float3(1e-4)) * float3(n) - 0.5;
     int3 i0 = int3(floor(p));
     float3 f = p - float3(i0);
     float3 sum = float3(0.0);
+    float inv_w = 1.0 / float(n.x);
+    float inv_h = 1.0 / float(n.y * n.z);
     for (int k = 0; k < 8; k++) {
         int3 corner = i0 + int3(k & 1, (k >> 1) & 1, (k >> 2) & 1);
         for (int axis = 0; axis < 3; axis++) {
             corner[axis] = tile[axis] ? ((corner[axis] % n[axis]) + n[axis]) % n[axis] : clamp(corner[axis], 0, n[axis] - 1);
         }
         float3 w = lerp(1.0 - f, f, float3(k & 1, (k >> 1) & 1, (k >> 2) & 1));
-        sum += w.x * w.y * w.z * mirai_vfx_grid_load(niagara_ctx, r, g.first + corner, 0u).xyz;
+        float2 uv = float2((float(corner.x) + 0.5) * inv_w, (float(corner.z * n.y + corner.y) + 0.5) * inv_h);
+        sum += w.x * w.y * w.z * mirai_vfx_texture(tex, uv, 0.0).xyz;
     }
     return sum;
 }

@@ -1,7 +1,7 @@
 {
   "name": "unreal_foliage",
   "version": "0.1.0",
-  "dependencies": ["unreal", "foliage"],
+  "dependencies": ["unreal", "foliage", "pcg", "physics"],
   "parts": ["Editor"],
   "automatic": true
 }

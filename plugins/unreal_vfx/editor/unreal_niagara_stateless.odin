@@ -172,7 +172,16 @@ niagara_stateless_module :: proc(c:^unreal_scene.Context,e:^Unreal_Emitter,modul
         switch info.render {
         case .Mesh:
             scale:=module_dist(u,d,module,"MeshScaleDistribution",{1,1,1,1},3)
-            info.size={max(axes_mean(scale.min),0),max(axes_mean(scale.max),0)}
+            mlo:=[3]f32{max(scale.min.y,0),max(scale.min.z,0),max(scale.min.x,0)}
+            mhi:=[3]f32{max(scale.max.y,0),max(scale.max.z,0),max(scale.max.x,0)}
+            mean:=(mlo+mhi)*0.5
+            peak:=max(mean.x,mean.y,mean.z)
+            if peak>0 {
+                info.size={max(mlo.x,mlo.y,mlo.z),max(mhi.x,mhi.y,mhi.z)}
+                info.scale={mean.x/peak,mean.y/peak,mean.z/peak}
+            } else {
+                info.size={max(axes_mean(scale.min),0),max(axes_mean(scale.max),0)}
+            }
         case .Ribbon,.Beam:
             if write,_:=level.bool_of(d,module,"bWriteRibbonWidth",false);write {
                 width:=module_dist(u,d,module,"RibbonWidthDistribution",{10,10,10,10},1)
@@ -180,7 +189,16 @@ niagara_stateless_module :: proc(c:^unreal_scene.Context,e:^Unreal_Emitter,modul
             }
         case .Billboard,.Velocity,.Horizontal:
             size:=module_dist(u,d,module,"SpriteSizeDistribution",{10,10,10,10},2)
-            info.size={max(size.min.x,0),max(size.max.x,0)}*CENTIMETRE
+            slo:=[2]f32{max(size.min.x,0),max(size.min.y,0)}
+            shi:=[2]f32{max(size.max.x,0),max(size.max.y,0)}
+            mean:=(slo+shi)*0.5
+            peak:=max(mean.x,mean.y)
+            if peak>0 && abs(mean.x-mean.y)>1e-4*peak {
+                info.size={max(slo.x,slo.y),max(shi.x,shi.y)}*CENTIMETRE
+                info.scale={mean.x/peak,mean.y/peak,1}
+            } else {
+                info.size={max(size.min.x,0),max(size.max.x,0)}*CENTIMETRE
+            }
         }
         rotation:=module_dist(u,d,module,"SpriteRotationDistribution",{},1)
         info.rotation={rotation.min.x,rotation.max.x}*math.RAD_PER_DEG
@@ -254,7 +272,7 @@ niagara_stateless_module :: proc(c:^unreal_scene.Context,e:^Unreal_Emitter,modul
         }
     case "MeshIndex":
         index:=module_dist(u,d,module,"MeshIndex",{},1)
-        if index.max.x>0 {unreal_scene.warn(c,"%s, %s: its particles pick other meshes than the first; Mirai's draw one",label,e.name)}
+        if index.max.x>=effect.PARTICLE_MESHES {unreal_scene.warn(c,"%s, %s: its particles pick more than %d meshes; Mirai's draw up to %d",label,e.name,effect.PARTICLE_MESHES,effect.PARTICLE_MESHES)}
     case "RotateAroundPoint":
         rate:=niagara_mean(module_dist(u,d,module,"Rate",{360,360,360,360},1)).x
         radius:=module_dist(u,d,module,"Radius",{100,100,100,100},1)

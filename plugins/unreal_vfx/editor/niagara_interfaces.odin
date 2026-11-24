@@ -42,6 +42,7 @@ Niagara_Di :: struct {
     found:bool,
     kind:Niagara_Di_Kind,
     resource:string,                // the resource of the program it reads; "" none
+    param:string,                   // the texture parameter variable (niagara_param_*) it reads; "" none
     cells:[3]int,                   // of a grid, a render target or the neighbors
     size:[3]f32,                    // of a grid: its box in Unreal's centimetres
     floats:int,                     // of a grid: floats of each cell (its attributes, then the named ones)
@@ -51,12 +52,10 @@ Niagara_Di :: struct {
     channels:int,
     lut_start,lut_end:f32,
     three:bool,                     // a 3D grid or render target
-    other:string,                   // of the particles of another emitter: the name of its handle
-    channel:Niagara_Channel,        // of a data channel: its name and the layout of its entries
-    field:Niagara_Field,            // of a vector field: its grid, texels and bounds
+    field:Niagara_Field,            // of a vector field: its texture atlas, cells and bounds
     tile:[3]bool,                   // of a vector field: the axes it repeats along
     user:string,                    // of a render target: the parameter of the system whose texture it writes; "" none
-    texture:Niagara_Texture,        // of a texture: its grid and cells
+    texture:Niagara_Texture,        // of a texture: its .tex and dimensions
 }
 
 // An attribute of a grid that a script names: where its floats start among those of a cell.
@@ -265,14 +264,10 @@ niagara_interfaces_resolve :: proc(w:^Niagara_Writer) {
                 di.lut_end=real(w.d,di.object,"LUTMaxTime",1)
             }
         case .Particles:
-            di.other=niagara_bound_emitter(w.d,di.found?di.object:level.Ref{w.emitter.source.object.pkg,0},di.found,di.name)
-            // A reader named after the emitter it reads (Emitter.SortParticles_ParticleReader).
-            if di.other=="" {
-                short:=di.name[strings.index_byte(di.name,'.')+1:]
-                for name in w.system.emitters {
-                    if strings.has_prefix(short,strings.concatenate({name,"_"},context.temp_allocator)) && len(name)>len(di.other) {di.other=name}
-                }
+            if niagara_di_called(w,&di) {
+                append(&w.problems,fmt.tprintf("%s reads particles of another emitter, which Mirai's Vfx programs no longer support: it gives zero",di.name))
             }
+            continue
         case .Grid,.Neighbors,.Raster:
             if di.kind==.Grid {
                 layout:=niagara_grid_layout(w.system,niagara_grid_key(w,w.emitter,&di))
@@ -326,8 +321,9 @@ niagara_interfaces_resolve :: proc(w:^Niagara_Writer) {
             for axis,i in ([3]string{"bTileX","bTileY","bTileZ"}) {
                 if f,error:=level.property(w.d,di.object,axis);error.code==.None && f.property!=nil {di.tile[i]=value_flag(f.pkg,f.property,false)}
             }
-            di.resource=strings.concatenate({"di_",di.symbol},context.temp_allocator)
-            append(&w.resources,fmt.tprintf("//! resource %s grid",di.resource))
+            pname:=fmt.tprintf("vf_%d",len(w.tex_params))
+            append(&w.tex_params,Niagara_Tex_Param{name=pname,id=field.id,srgb=false})
+            di.param=fmt.tprintf("niagara_param_%s",pname)
             continue
         case .Texture:
             if di.class!="Texture" {continue}
@@ -337,20 +333,14 @@ niagara_interfaces_resolve :: proc(w:^Niagara_Writer) {
                 continue
             }
             di.texture=baked
-            di.resource=strings.concatenate({"di_",di.symbol},context.temp_allocator)
-            append(&w.resources,fmt.tprintf("//! resource %s grid",di.resource))
+            pname:=fmt.tprintf("tex_%d",len(w.tex_params))
+            append(&w.tex_params,Niagara_Tex_Param{name=pname,id=baked.id,srgb=baked.srgb})
+            di.param=fmt.tprintf("niagara_param_%s",pname)
             continue
         case .Channel_Read,.Channel_Write:
-            if di.found {di.channel=niagara_channel(w.d,di.object)}
-            if di.channel.name=="" {
-                append(&w.problems,fmt.tprintf("%s names no data channel this import reads: it reads and writes nothing",di.name))
-                continue
+            if niagara_di_called(w,&di) {
+                append(&w.problems,fmt.tprintf("%s uses a Niagara data channel, which Mirai's Vfx programs do not have (use core.Births with Particle_Channel from game code): it reads and writes nothing",di.name))
             }
-            // The data channel of the world of the name of the asset: one resource for each.
-            di.resource=di.channel.name
-            known:=false
-            for line in w.resources {known||=strings.has_prefix(line,fmt.tprintf("//! resource %s ",di.resource))}
-            if !known {append(&w.resources,fmt.tprintf("//! resource %s data %d",di.resource,max(di.channel.words,1)))}
             continue
         case .Unknown,.Noise,.Collision,.Camera,.GBuffer,.Mesh,.Emitter_Info,.Array:
         }
@@ -359,7 +349,6 @@ niagara_interfaces_resolve :: proc(w:^Niagara_Writer) {
         #partial switch di.kind {
         case .Grid,.Render_Target: kind="grid"
         case .Neighbors,.Raster: kind="grid cleared"
-        case .Particles: kind="emitter"
         case .Mesh: kind="surface"
         }
         if kind=="" {continue}
@@ -444,16 +433,14 @@ niagara_body :: proc(w:^Niagara_Writer,di:^Niagara_Di,base,specifier:string,para
         return niagara_gbuffer_body(base,params)
     case .Mesh:
         return niagara_mesh_body(w,di,base,params)
-    case .Channel_Read,.Channel_Write:
-        return niagara_channel_body(w,di,base,specifier,params)
+    case .Channel_Read,.Channel_Write,.Particles:
+        return
     case .Vector_Field:
         return niagara_vector_field_body(w,di,base,params)
     case .Array:
         return niagara_array_body(w,di,base,params)
     case .Collision:
         return niagara_collision_body(base,params)
-    case .Particles:
-        return niagara_read_body(w,di,base,specifier,params)
     case .Neighbors:
         return niagara_neighbors_body(w,di,base,specifier,params,written)
     case .Noise:
