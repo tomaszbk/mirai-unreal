@@ -320,3 +320,20 @@ rotated :: proc(q:quaternion128,v:[3]f32) -> [3]f32 {
     t:=2*linalg.cross(u,v)
     return v+q.w*t+linalg.cross(u,t)
 }
+
+@(test)
+a_flat_box_of_a_body_setup_keeps_the_least_half_extent_chaos_gives_it :: proc(t:^testing.T) {
+    f:=quad(fixture.Mesh_Layout(0))
+    f.body={boxes=own([]fixture.Body_Box{{size={200,100,0}}}),trace="CTF_UseSimpleAndComplex",profile="BlockAll"}
+    p,error:=unreal.package_open(fixture.static_mesh_package(f),limits=LIMITS)
+    if !testing.expectf(t,error.code==.None,"package: %v",error) {return}
+    defer unreal.package_destroy(&p)
+    index:=-1
+    for _,i in p.exports {if static_mesh_is(&p,i) {index=i}}
+    source,read_error:=mesh_read(&p,index,.Lod0,context.temp_allocator)
+    if !testing.expectf(t,read_error.code==.None,"read: %v",read_error) {return}
+    body,body_error:=body_read(&p,source.body_setup,context.temp_allocator)
+    if !testing.expectf(t,body_error.code==.None,"body: %v",body_error) {return}
+    if !testing.expect_value(t,len(body.shapes),1) {return}
+    testing.expect_value(t,body.shapes[0].size,[3]f32{100,50,BOX_HALF_MIN})
+}

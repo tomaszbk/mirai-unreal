@@ -29,6 +29,10 @@ Body_Shape :: struct {
     points:[][3]f32,
 }
 
+// Centimetres: the least half extent of a box, UE_KINDA_SMALL_NUMBER, which
+// Chaos gives every box element so that a flat one (a plane's) still collides.
+BOX_HALF_MIN :: 1e-4
+
 Body :: struct {
     shapes:[]Body_Shape,
     trace:Body_Trace,
@@ -91,7 +95,8 @@ body_read :: proc(p:^unreal.Package,setup:unreal.Object_Ref,allocator:=context.a
     for &box in elements(p,&geometry,"BoxElems",&error) {
         if !collides(p,&box) {continue}
         size:=[3]f64{real_of(p,&box,"X",1,&error),real_of(p,&box,"Y",1,&error),real_of(p,&box,"Z",1,&error)}
-        append(&shapes,Body_Shape{kind=.Box,center=center(p,&box,&error),rotation=turn(p,&box,&error),size={f32(size.x),f32(size.y),f32(size.z)}*0.5})
+        half:=[3]f32{f32(max(size.x*0.5,BOX_HALF_MIN)),f32(max(size.y*0.5,BOX_HALF_MIN)),f32(max(size.z*0.5,BOX_HALF_MIN))}
+        append(&shapes,Body_Shape{kind=.Box,center=center(p,&box,&error),rotation=turn(p,&box,&error),size=half})
     }
     for &sphere in elements(p,&geometry,"SphereElems",&error) {
         if !collides(p,&sphere) {continue}
