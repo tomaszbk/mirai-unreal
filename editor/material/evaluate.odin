@@ -158,6 +158,10 @@ evaluator_init :: proc(e:^Evaluator,lib:^Library,g:^Graph,allocator:=context.all
 }
 
 @(private)
+// Centimetres: what Unreal's DistanceToNearestSurface reads without a distance
+// field of the scene, no surface in range.
+NO_SURFACE_DISTANCE :: 1e10
+
 note :: proc(e:^Evaluator,format:string,args:..any) {
     text:=fmt.aprintf(format,..args,allocator=e.notes.allocator)
     for existing in e.notes {if existing==text {return}}
@@ -675,7 +679,12 @@ expression_build :: proc(e:^Evaluator,o:Object,output:i32,scope:i32) -> Value {
         return nodes(binary(g,.Mul,opacity,unary(g,.Saturate,binary(g,.Div,between,fade))))
     case "SceneColor","SceneTexture":
         return untranslated(e,o,"Mirai surface programs do not see the image behind them; a postprocess program does")
-    case "DistanceToNearestSurface","DistanceFieldGradient","DistanceFieldApproxAO":
+    // Unreal without a distance field reads no surface in range, the far
+    // distance; Mirai keeps none, so the material shows as Unreal's does then.
+    case "DistanceToNearestSurface":
+        note(e,"%s: Mirai keeps no distance field of the scene; it reads no surface in range, as Unreal without one",object_name(o))
+        return nodes(scalar(g,NO_SURFACE_DISTANCE))
+    case "DistanceFieldGradient","DistanceFieldApproxAO":
         return untranslated(e,o,"Mirai's renderer keeps no distance field of the scene")
     case "Transform":return transform_vector(e,o,scope)
     case "TransformPosition":return transform_position(e,o,scope)

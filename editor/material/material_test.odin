@@ -2366,3 +2366,26 @@ fortnite_nodes_translate_and_compile_to_slang :: proc(t:^testing.T) {
     defer translated_destroy(&t2)
     testing.expect_value(t,len(t2.untranslated),1)
 }
+
+// Without a distance field of the scene the distance to the nearest surface is
+// Unreal's without one, no surface in range: what reads it (a shore that
+// foams) translates as open water instead of leaving its input untranslated.
+@(test)
+the_distance_to_the_nearest_surface_reads_no_surface_in_range :: proc(t:^testing.T) {
+    b:=material_begin("M_Shore")
+    w:=fx.writer(&b.p)
+    distance:=expression(&b,"DistanceToNearestSurface","Distance",&w)
+    m:=fx.writer(&b.p)
+    fx.input_put(&m,"BaseColor","ColorMaterialInput",{expression=distance})
+    b.p.exports[0].data=fx.finish(&m)
+    lib:Library
+    library_with(&lib,{"/Game/M/M_Shore",fx.package_bytes(&b.p,"/Game/M/M_Shore")})
+    defer library_destroy(&lib)
+    translated,ok:=translate_one(t,&lib,"/Game/M/M_Shore")
+    if !ok {return}
+    defer translated_destroy(&translated)
+    testing.expect_value(t,len(translated.untranslated),0)
+    noted:=false
+    for n in translated.notes {noted||=strings.contains(n,"no surface in range")}
+    testing.expectf(t,noted,"a note says the distance reads no surface in range: %v",translated.notes)
+}
