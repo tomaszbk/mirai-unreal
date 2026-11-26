@@ -5,7 +5,6 @@ import "core:fmt"
 import "core:math"
 import "core:mem"
 import "core:strings"
-import "mirai:asset"
 import "mirai:std/base"
 import "plugins:vfx/runtime/effect"
 import cooked "project:plugins/unreal/editor/cooked"
@@ -16,18 +15,25 @@ import cooked "project:plugins/unreal/editor/cooked"
 // validated bytes), generated Mirai Vfx Slang shaders (`//! mirai vfx ...`),
 // and native `.mat` v6 materials (`cooked.Cooked_Material`).
 
+// One renderer of an emitter: a layer of the effect.
+Cooked_Vfx_Layer :: struct {
+    renderer:string,       // "sprite", "mesh", "ribbon" or "light", as the description names it
+    factory:string,        // the vertex factory of the game's shaders that draws it; "" for a light
+    info:effect.Particle_Info,
+    program_name:string,   // "" when its scripts read what has no answer here: see notes
+    program_source:string, // the Vfx program that runs its scripts (cooked_program.odin)
+    notes:[]string,        // what its scripts read that is not answered
+    limits:[]string,       // what its particles show that an effect cannot
+    material_path:string,  // of the game: what draws its particles
+    mesh_paths:[]string,   // of the game: what its particles are, for a mesh renderer
+    order:i32,             // among the layers of its system, the lower drawn first (SortOrderHint)
+}
+
 Cooked_Vfx_Emitter :: struct {
     name:string,
     enabled:bool,
     gpu:bool,
-    info:effect.Particle_Info,
-    particle_bytes:[]u8,
-    program_name:string,   // "" when its scripts read what has no answer here: see notes
-    program_source:string, // the Vfx program that runs its scripts (cooked_program.odin)
-    notes:[]string,        // what its scripts read that is not answered
-    limits:[]string,       // what its particles show that a Vfx program cannot
-    material_path:string,
-    mesh_paths:[]string,
+    layers:[]Cooked_Vfx_Layer,
     warnings:[]string,
 }
 
@@ -44,18 +50,22 @@ cooked_vfx_system_destroy :: proc(sys:^Cooked_Vfx_System,allocator:=context.allo
     delete(sys.pkg,allocator)
     for &em in sys.emitters {
         delete(em.name,allocator)
-        delete(em.particle_bytes,allocator)
-        delete(em.program_name,allocator)
-        delete(em.program_source,allocator)
-        delete(em.material_path,allocator)
-        for mp in em.mesh_paths {delete(mp,allocator)}
-        delete(em.mesh_paths,allocator)
+        for &layer in em.layers {
+            delete(layer.renderer,allocator)
+            delete(layer.factory,allocator)
+            delete(layer.program_name,allocator)
+            delete(layer.program_source,allocator)
+            delete(layer.material_path,allocator)
+            for mp in layer.mesh_paths {delete(mp,allocator)}
+            delete(layer.mesh_paths,allocator)
+            for n in layer.notes {delete(n,allocator)}
+            delete(layer.notes,allocator)
+            for n in layer.limits {delete(n,allocator)}
+            delete(layer.limits,allocator)
+        }
+        delete(em.layers,allocator)
         for w in em.warnings {delete(w,allocator)}
         delete(em.warnings,allocator)
-        for n in em.notes {delete(n,allocator)}
-        delete(em.notes,allocator)
-        for n in em.limits {delete(n,allocator)}
-        delete(em.limits,allocator)
     }
     delete(sys.emitters,allocator)
     for &m in sys.materials {cooked.cooked_material_destroy(&m,allocator)}
@@ -171,7 +181,7 @@ cooked_niagara_build :: proc(json_text:string,allocator:=context.allocator,user:
     obj,ok:=root.(json.Object)
     if !ok {return {},cooked.Error{"niagara","root JSON value must be an object"}}
     if schema:=jstr(obj["Schema"]);schema!="" && !strings.has_prefix(schema,"ue5parse.niagara/") {
-        return {},cooked.Error{"niagara",fmt.aprintf("unexpected schema %q",schema,allocator=allocator)}
+        return {},cooked.Error{"niagara",fmt.tprintf("unexpected schema %q",schema)}
     }
 
     // What the game sets of the user's parameters, before the scripts read them.
@@ -219,6 +229,17 @@ cooked_niagara_build :: proc(json_text:string,allocator:=context.allocator,user:
     return sys,nil
 }
 
+// The particles a layer keeps alive at once where the emitter does not say: an emitter of
+// the game sizes itself as it runs, an effect says it beforehand.
+COOKED_PARTICLES_CPU :: 512
+COOKED_PARTICLES_GPU :: 4096
+// The cycle of a layer: its scripts keep their own loops and say when it emits, so the effect
+// only starts it over when its emitter is started again.
+COOKED_CYCLE_SECONDS :: f32(3600)
+
+@(private="file")
+RENDERER_FACTORIES :: [?][2]string{{"sprite","NiagaraSpriteVF"},{"mesh","NiagaraMeshVF"},{"ribbon","NiagaraRibbonVF"}}
+
 @(private="file")
 build_cooked_emitter :: proc(
     system_name:string,
@@ -230,292 +251,184 @@ build_cooked_emitter :: proc(
     out.name=strings.clone(jstr(eobj["Name"],"Emitter"),allocator)
     out.enabled=jbool(eobj["Enabled"],true)
     out.gpu=strings.equal_fold(jstr(eobj["Target"]),"GPU")
-    out.info=effect.PARTICLE_DEFAULTS
-    out.info.rate=0 // Only set rate/bursts from actual emitter scripts or fallback below.
-    out.info.size_over_life=effect.PARTICLE_CURVE_ONE
-
     warns:=make([dynamic]string,allocator)
     if note:=jstr(eobj["Note"]);note!="" {append(&warns,strings.clone(note,allocator))}
 
-    // Settings (bLocalSpace, etc.).
+    base_info:=effect.PARTICLE_DEFAULTS
+    base_info.duration=COOKED_CYCLE_SECONDS
+    base_info.rate=0
+    base_info.soft=0
+    base_info.lit=false
+    base_info.size_over_life=effect.PARTICLE_CURVE_ONE
+    base_info.color_over_life={colors={{1,1,1,1},{1,1,1,1},{},{},{},{},{},{}},times={0,1,1,1,1,1,1,1}}
+    base_info.max_particles=out.gpu ? COOKED_PARTICLES_GPU : COOKED_PARTICLES_CPU
     if settings,has_s:=eobj["Settings"].(json.Object);has_s {
-        out.info.local_space=jbool(settings["bLocalSpace"],false)
-        if alloc_count,ok:=jf32(settings["AllocationCount"]);ok && alloc_count>0 {
-            out.info.max_particles=u32(clamp(alloc_count,1,65536))
+        base_info.local_space=jbool(settings["bLocalSpace"],false)
+        if count,ok:=jf32(settings["PreAllocationCount"]);ok && count>0 {
+            base_info.max_particles=u32(clamp(count,1,65536))
         }
     }
 
-    // EmitterScripts (SpawnRate, SpawnBurst, LoopDuration, DepthFade).
-    burst_idx:=0
-    if escripts,has_es:=eobj["EmitterScripts"].(json.Array);has_es {
-        for s in escripts {
-            sobj,sok:=s.(json.Object)
-            if !sok {continue}
-            if outs,has_o:=sobj["Outputs"].(json.Array);has_o {
-                for o in outs {
-                    oobj,ook:=o.(json.Object)
-                    if !ook {continue}
-                    attr:=jstr(oobj["Attribute"])
-                    val,has_val:=eval_literal(oobj["Value"])
-                    if !has_val {continue}
-                    low:=strings.to_lower(attr,context.temp_allocator)
-                    switch {
-                    case strings.contains(low,"spawnrate") && !strings.contains(low,"scale"):
-                        if val>0 {out.info.rate=max(out.info.rate,val)}
-                    case strings.contains(low,"spawnburst") && strings.has_suffix(low,".count"):
-                        if val>0 && burst_idx<effect.PARTICLE_BURSTS {
-                            out.info.bursts[burst_idx]={time=0,count=u32(clamp(val+0.5,0,1e6)),cycles=1,interval=0}
-                            burst_idx+=1
-                        }
-                    case strings.contains(low,"loopduration"):
-                        if val>0 {out.info.duration=val}
-                    case strings.contains(low,"depthfade"):
-                        if val>0 {out.info.soft=val*cooked.UNREAL_TO_MIRAI_SCALE}
-                    }
-                }
-            }
-        }
-    }
-
-    // Extract DataInterfaces curves (ShaderLUT) -> size_over_life / color_over_life.
-    Curve_LUT :: struct {name:string,samples:[]f32,channels:int}
-    curves:=make([dynamic]Curve_LUT,context.temp_allocator)
-    if dis,has_di:=eobj["DataInterfaces"].(json.Array);has_di {
-        for di in dis {
-            dobj,dok:=di.(json.Object)
-            if !dok {continue}
-            class:=jstr(dobj["Class"])
-            cname:=jstr(dobj["Name"])
-            if lut,has_l:=dobj["ShaderLUT"].(json.Array);has_l && len(lut)>0 {
-                samples:=make([]f32,len(lut),context.temp_allocator)
-                for x,i in lut {samples[i],_=jf32(x,0)}
-                ch:=strings.contains(class,"ColorCurve") ? 4 : strings.contains(class,"VectorCurve") ? 3 : strings.contains(class,"Vector2DCurve") ? 2 : 1
-                append(&curves,Curve_LUT{cname,samples,ch})
-                low:=strings.to_lower(cname,context.temp_allocator)
-                if ch==1 && (strings.contains(low,"size") || strings.contains(low,"scale")) {
-                    out.info.size_over_life=sample_curve_1d(samples)
-                } else if ch==4 && strings.contains(low,"color") {
-                    out.info.color_over_life=sample_gradient_4d(samples)
-                }
-            }
-        }
-    }
-
-    // Renderers -> Particle_Render, Particle_Blend, Particle_Light (v10), flipbook, material, meshes.
-    meshes:=make([dynamic]string,allocator)
-    has_light_renderer:=false
-    light_radius_scale:f32=1
-    light_diffuse_scale:f32=1
-    light_inverse_squared:=true
-    light_default_exponent:f32=1
-    light_alpha_scales:=false
-    light_color_add:[3]f32
-    light_shadows:=false
-    light_indirect:f32=1
-    light_scattering:f32=1
-    light_explicit_intensity:f32=0
-    light_explicit_range:f32=0
-    light_explicit_radius:f32=0
-    if rends,has_r:=eobj["Renderers"].(json.Array);has_r {
-        for r in rends {
-            robj,rok:=r.(json.Object)
-            if !rok {continue}
-            kind:=jstr(robj["Kind"],jstr(robj["Class"]))
-            low_kind:=strings.to_lower(kind,context.temp_allocator)
-            if strings.contains(low_kind,"light") {
-                has_light_renderer=true
-                if rs,ok:=jf32(robj["RadiusScale"]);ok && rs>0 {light_radius_scale=rs}
-                if ds,ok:=jf32(robj["DiffuseScale"]);ok && ds>0 {light_diffuse_scale=ds}
-                light_inverse_squared=jbool(robj["bUseInverseSquaredFalloff"],true)
-                if de,ok:=jf32(robj["DefaultExponent"]);ok && de>=0 {light_default_exponent=de}
-                light_alpha_scales=jbool(robj["bAlphaScalesBrightness"],false)
-                if ca,ok:=jvec3(robj["ColorAdd"]);ok {light_color_add={max(ca.x,0),max(ca.y,0),max(ca.z,0)}}
-                if c_val,ok:=jvec3(robj["Color"]);ok && (c_val.x>0||c_val.y>0||c_val.z>0) {
-                    light_color_add={max(c_val.x,0),max(c_val.y,0),max(c_val.z,0)}
-                }
-                light_shadows=jbool(robj["bMegaLightsCastShadows"],false) || jbool(robj["bCastShadows"],false)
-                if ind,ok:=jf32(robj["IndirectLightingIntensity"]);ok && ind>=0 {light_indirect=ind}
-                if sc,ok:=jf32(robj["VolumetricScatteringIntensity"]);ok && sc>=0 {light_scattering=sc}
-                if li,ok:=jf32(robj["Intensity"]);ok && li>0 {light_explicit_intensity=li}
-                if lr,ok:=jf32(robj["Radius"]);ok && lr>0 {light_explicit_range=lr*cooked.UNREAL_TO_MIRAI_SCALE}
-                if lsr,ok:=jf32(robj["SourceRadius"]);ok && lsr>0 {light_explicit_radius=lsr*cooked.UNREAL_TO_MIRAI_SCALE}
-                continue
-            }
-            if mat:=jstr(robj["Material"]);mat!="" && out.material_path=="" {
-                out.material_path=strings.clone(mat,allocator)
-                if cm,found:=mat_by_path[mat];found {
-                    out.info.lit=!cm.info.unlit
-                    #partial switch cm.info.alpha_mode {
-                    case .Additive: out.info.blend=.Additive
-                    case .Blend,.Mask,.Opaque: out.info.blend=.Alpha
-                    }
-                }
-            }
-            if sub,has_sub:=robj["SubImageSize"].(json.Object);has_sub {
-                sx,_:=jf32(sub["X"],1)
-                sy,_:=jf32(sub["Y"],1)
-                out.info.flipbook={u32(max(sx,1)),u32(max(sy,1))}
-            }
-            switch {
-            case strings.contains(low_kind,"sprite"):
-                align:=jstr(robj["Alignment"])
-                if strings.contains(align,"Velocity") {
-                    out.info.render=.Velocity
-                } else if strings.contains(align,"Custom") {
-                    out.info.render=.Horizontal
-                } else {
-                    out.info.render=.Billboard
-                }
-            case strings.contains(low_kind,"ribbon"):
-                out.info.render=.Ribbon
-                if strings.contains(jstr(robj["FacingMode"]),"Custom") {
-                    out.info.ribbon_axis=.Emitter_Up
-                }
-            case strings.contains(low_kind,"mesh"):
-                out.info.render=.Mesh
-                facing:=jstr(robj["FacingMode"])
-                if strings.contains(facing,"Velocity") {out.info.facing=.Velocity} else {out.info.facing=.Emitter}
-                if m_arr,has_ms:=robj["Meshes"].(json.Array);has_ms {
-                    for me in m_arr {
-                        if s,sok:=me.(json.String);sok && s!="" {append(&meshes,strings.clone(s,allocator))}
-                        if mobj,mok:=me.(json.Object);mok {
-                            if mp:=jstr(mobj["Mesh"]);mp!="" {append(&meshes,strings.clone(mp,allocator))}
-                            // The scale the renderer gives its first mesh, along Mirai's axes.
-                            if ms,has_scale:=jvec3(mobj["Scale"]);has_scale&&len(meshes)==1&&ms.x>0&&ms.y>0&&ms.z>0 {
-                                out.info.scale=cooked.unreal_scale_to_mirai(ms)
-                            }
-                        }
-                    }
-                }
-            case strings.contains(low_kind,"beam"):
-                out.info.render=.Beam
-            }
-        }
-    }
-    out.mesh_paths=meshes[:]
-
-    // Parse particle scripts (Spawn & Update) -> extract lifetime/size/color/light + generate Vfx Slang shader.
-    spawn_script:json.Object
-    has_spawn,has_update:=false,false
+    has_scripts:=false
     if scripts,has_sc:=eobj["Scripts"].(json.Array);has_sc {
-        for s in scripts {
-            sobj,sok:=s.(json.Object)
-            if !sok {continue}
-            usage:=jstr(sobj["Usage"])
-            if strings.contains(usage,"Spawn") {
-                spawn_script,has_spawn=sobj,true
-            } else if strings.contains(usage,"Update") {
-                has_update=true
-            }
+        for sc in scripts {
+            if sobj,sok:=sc.(json.Object);sok && strings.contains(jstr(sobj["Usage"]),"Particle") {has_scripts=true}
         }
     }
 
-    // Extract scalar defaults from Spawn outputs into Particle_Info (lifetime, size, color, light).
-    spawn_light_radius_cm:f32=0
-    spawn_light_intensity:f32=0
-    spawn_light_scatter:f32=-1
-    spawn_light_color:[3]f32
-    has_spawn_light_color:=false
-    if has_spawn {
-        if outs,has_o:=spawn_script["Outputs"].(json.Array);has_o {
-            for o in outs {
-                oobj,ook:=o.(json.Object)
-                if !ook {continue}
-                attr:=jstr(oobj["Attribute"])
-                val,has_v:=eval_literal(oobj["Value"])
-                if !has_v {continue}
-                switch attr {
-                case "Lifetime":
-                    if val>0 {out.info.lifetime={val,val}}
-                case "SpriteSize.x","SpriteSize":
-                    if val>0 {
-                        m:=val*cooked.UNREAL_TO_MIRAI_SCALE
-                        out.info.size={m,m}
-                    }
-                case "Color.x": out.info.colors[0].x=clamp(val,0,10);out.info.colors[1].x=out.info.colors[0].x
-                case "Color.y": out.info.colors[0].y=clamp(val,0,10);out.info.colors[1].y=out.info.colors[0].y
-                case "Color.z": out.info.colors[0].z=clamp(val,0,10);out.info.colors[1].z=out.info.colors[0].z
-                case "Color.w": out.info.colors[0].w=clamp(val,0,1);out.info.colors[1].w=out.info.colors[0].w
-                case "LightRadius":
-                    if val>0 {spawn_light_radius_cm=val}
-                case "LightIntensity","LightBrightness":
-                    if val>0 {spawn_light_intensity=val}
-                case "LightVolumetricScattering":
-                    if val>=0 {spawn_light_scatter=val}
-                case "LightColor.x": spawn_light_color.x=max(val,0);has_spawn_light_color=true
-                case "LightColor.y": spawn_light_color.y=max(val,0);has_spawn_light_color=true
-                case "LightColor.z": spawn_light_color.z=max(val,0);has_spawn_light_color=true
+    layers:=make([dynamic]Cooked_Vfx_Layer,allocator)
+    rends,_:=eobj["Renderers"].(json.Array)
+    for r,index in rends {
+        robj,rok:=r.(json.Object)
+        if !rok || !jbool(robj["Enabled"],true) {continue}
+        kind:=strings.to_lower(jstr(robj["Kind"]),context.temp_allocator)
+        settings,_:=robj["Settings"].(json.Object)
+        layer:Cooked_Vfx_Layer
+        layer.info=base_info
+        limits:=make([dynamic]string,allocator)
+        if order,ok:=jf32(settings["SortOrderHint"]);ok {layer.order=i32(clamp(order,-1e6,1e6))}
+        if sub,has_sub:=settings["SubImageSize"].(json.Object);has_sub {
+            sx,_:=jf32(sub["X"],1)
+            sy,_:=jf32(sub["Y"],1)
+            layer.info.flipbook={u32(clamp(sx,1,4096)),u32(clamp(sy,1,4096))}
+        }
+        switch kind {
+        case "sprite":
+            layer.info.render=.Billboard
+            switch {
+            case strings.contains(jstr(settings["Alignment"]),"VelocityAligned"):
+                layer.info.render=.Velocity
+            case strings.contains(jstr(settings["Alignment"]),"Custom"):
+                append(&limits,strings.clone("SpriteAlignment of each particle: its sprites face the camera unturned",allocator))
+            }
+            if facing:=jstr(settings["FacingMode"]);facing!="" && !strings.has_suffix(facing,"::FaceCamera") {
+                append(&limits,fmt.aprintf("sprites that face as %s: they face the camera",facing[strings.last_index(facing,":")+1:],allocator=allocator))
+            }
+            if pivot,has_pivot:=settings["PivotInUVSpace"].(json.Object);has_pivot {
+                px,_:=jf32(pivot["X"],0.5)
+                py,_:=jf32(pivot["Y"],0.5)
+                if abs(px-0.5)>1e-3 || abs(py-0.5)>1e-3 {
+                    append(&limits,fmt.aprintf("sprites held at (%.2f, %.2f) of their image: they are held at its centre",px,py,allocator=allocator))
                 }
             }
+        case "ribbon":
+            layer.info.render=.Ribbon
+            if strings.contains(jstr(settings["FacingMode"]),"Custom") {layer.info.ribbon_axis=.Emitter_Up}
+            if uv,has_uv:=settings["UV0Settings"].(json.Object);has_uv && strings.contains(jstr(uv["DistributionMode"]),"Tiled") {
+                if tile,ok:=jf32(uv["TilingLength"]);ok && tile>0 {layer.info.ribbon_tile=tile*cooked.UNREAL_TO_MIRAI_SCALE}
+            }
+        case "mesh":
+            layer.info.render=.Mesh
+            facing:=jstr(settings["FacingMode"])
+            switch {
+            case strings.contains(facing,"Velocity"):
+                layer.info.facing=.Velocity
+            case strings.contains(facing,"Camera"):
+                layer.info.facing=.Emitter
+                append(&limits,fmt.aprintf("meshes that face as %s: they keep the turn of their emitter",facing[strings.last_index(facing,":")+1:],allocator=allocator))
+            case:
+                layer.info.facing=.Emitter
+            }
+            meshes:=make([dynamic]string,allocator)
+            m_arr,_:=robj["Meshes"].(json.Array)
+            for me in m_arr {
+                mobj,mok:=me.(json.Object)
+                if !mok {continue}
+                path:=jstr(mobj["Mesh"])
+                if path=="" || len(meshes)>=effect.PARTICLE_MESHES {continue}
+                append(&meshes,strings.clone(path,allocator))
+                if len(meshes)>1 {continue}
+                // What the renderer gives its first mesh, along Mirai's axes.
+                if ms,has_scale:=jvec3(mobj["Scale"]);has_scale&&ms.x>0&&ms.y>0&&ms.z>0 {
+                    layer.info.scale=cooked.unreal_scale_to_mirai(ms)
+                }
+                if rot,has_rot:=mobj["Rotation"].(json.Object);has_rot {
+                    pitch,_:=jf32(rot["Pitch"],0)
+                    yaw,_:=jf32(rot["Yaw"],0)
+                    roll,_:=jf32(rot["Roll"],0)
+                    if abs(pitch)>1e-3 || abs(yaw)>1e-3 || abs(roll)>1e-3 {
+                        append(&limits,fmt.aprintf("the turn the renderer gives its mesh (pitch %.0f, yaw %.0f, roll %.0f)",pitch,yaw,roll,allocator=allocator))
+                    }
+                }
+                if pivot,has_pivot:=jvec3(mobj["PivotOffset"]);has_pivot && pivot!={} {
+                    append(&limits,strings.clone("the pivot the renderer gives its mesh",allocator))
+                }
+            }
+            layer.mesh_paths=meshes[:]
+        case "light":
+            layer.info.render=.Billboard
+            radius_scale,_:=jf32(settings["RadiusScale"],1)
+            diffuse_scale,_:=jf32(settings["DiffuseScale"],1)
+            exponent,_:=jf32(settings["DefaultExponent"],1)
+            color_add,_:=jvec3(settings["ColorAdd"])
+            layer.info.light=niagara_particle_light({
+                radius_scale=radius_scale,
+                diffuse_scale=diffuse_scale,
+                inverse_squared=jbool(settings["bUseInverseSquaredFalloff"],true),
+                default_exponent=exponent,
+                alpha_scales_brightness=jbool(settings["bAlphaScalesBrightness"],false),
+                color_add={max(color_add.x,0),max(color_add.y,0),max(color_add.z,0)},
+                has_color_add=color_add!={},
+                particle_scattering=-1,
+                renderer_scattering=1,
+                indirect=1,
+                shadows=jbool(settings["bMegaLightsCastShadows"],false),
+                fallback_color={1,1,1,1},
+                fallback_color_intensity=1,
+            })
+            append(&limits,strings.clone("the radius and the colour of the light of each particle: one light at the emitter, of the renderer's own values",allocator))
+        case:
+            append(&warns,fmt.aprintf("renderer %d of kind %q is not drawn",index,jstr(robj["Kind"]),allocator=allocator))
+            delete(limits)
+            continue
         }
-    }
-
-    // Populate Mirai .particle v10 Particle_Light via shared Niagara light helper.
-    if has_light_renderer || spawn_light_radius_cm>0 || spawn_light_intensity>0 {
-        out.info.light=niagara_particle_light({
-            radius_scale=light_radius_scale,
-            diffuse_scale=light_diffuse_scale,
-            inverse_squared=light_inverse_squared,
-            default_exponent=light_default_exponent,
-            alpha_scales_brightness=light_alpha_scales,
-            color_add=light_color_add,
-            has_color_add=light_color_add!={},
-            explicit_range_m=light_explicit_range,
-            explicit_intensity=light_explicit_intensity,
-            explicit_source_radius_m=light_explicit_radius,
-            particle_radius_cm=spawn_light_radius_cm,
-            particle_intensity=spawn_light_intensity,
-            particle_color=spawn_light_color,
-            has_particle_color=has_spawn_light_color,
-            particle_scattering=spawn_light_scatter,
-            renderer_scattering=light_scattering,
-            indirect=light_indirect,
-            shadows=light_shadows,
-            fallback_sprite_size_m=out.info.size[0],
-            fallback_color=out.info.colors[0],
-            fallback_color_intensity=out.info.intensity,
-        })
-        if out.info.light.intensity<=0 || out.info.light.range<=0 {
-            append(&warns,strings.clone("NiagaraLightRendererProperties: particle light has zero intensity or range and is disabled",allocator))
+        layer.renderer=strings.clone(kind,allocator)
+        for pair in RENDERER_FACTORIES {
+            if pair[0]==kind {layer.factory=strings.clone(pair[1],allocator)}
         }
-    }
-
-    // Ensure non-zero spawn activity if emitter had neither rate nor bursts in EmitterScripts.
-    if out.info.rate==0 && burst_idx==0 {
-        out.info.bursts[0]={time=0,count=1,cycles=1,interval=0}
-    }
-
-    // The program that runs its scripts, where everything they read is answered.
-    if has_spawn || has_update {
-        prog_name:=cooked_program_name(system_name,out.name,allocator)
-        size_attribute:="SpriteSize"
-        #partial switch out.info.render {
-        case .Mesh: size_attribute="Scale"
-        case .Ribbon: size_attribute="RibbonWidth"
+        if mats,has_mats:=robj["Materials"].(json.Array);has_mats {
+            for m in mats {
+                path:=jstr((m.(json.Object) or_else nil)["Material"])
+                if path=="" {continue}
+                layer.material_path=strings.clone(path,allocator)
+                if cm,found:=mat_by_path[path];found {
+                    layer.info.lit=!cm.info.unlit
+                    #partial switch cm.info.alpha_mode {
+                    case .Additive: layer.info.blend=.Additive
+                    case .Blend,.Mask,.Opaque: layer.info.blend=.Alpha
+                    }
+                }
+                break
+            }
         }
-        program:=cooked_vfx_program(prog_name,system,eobj,size_attribute,allocator)
-        out.notes,out.limits=program.notes,program.limits
-        if len(program.notes)==0 {
-            out.program_name=prog_name
-            out.program_source=program.source
-            base.text_set(out.info.program[:],prog_name)
+
+        // The program that runs its scripts, where everything they read is answered.
+        if has_scripts {
+            prog_name:=cooked_program_name(system_name,index==0 ? out.name : fmt.tprintf("%s_%d",out.name,index),allocator)
+            program:=cooked_vfx_program(prog_name,system,eobj,robj,allocator)
+            layer.notes=program.notes
+            for limit in program.limits {append(&limits,limit)}
+            delete(program.limits,allocator)
+            if len(program.notes)==0 {
+                layer.program_name=prog_name
+                layer.program_source=program.source
+                base.text_set(layer.info.program[:],prog_name)
+            } else {
+                delete(program.source,allocator)
+                delete(prog_name,allocator)
+            }
         } else {
-            delete(program.source,allocator)
-            delete(prog_name,allocator)
+            notes:=make([dynamic]string,allocator)
+            append(&notes,strings.clone("no particle scripts",allocator))
+            layer.notes=notes[:]
         }
+        layer.limits=limits[:]
+        if prob:=effect.particle_validate({info=layer.info});prob.message!="" {
+            append(&warns,fmt.aprintf("renderer %d (%s): %s",index,prob.field,prob.message,allocator=allocator))
+        }
+        append(&layers,layer)
     }
-
-    if prob:=effect.particle_validate({info=out.info});prob.message!="" {
-        append(&warns,fmt.aprintf("particle validation (%s): %s",prob.field,prob.message,allocator=allocator))
-    }
-    types:asset.Types
-    asset.types_init(&types)
-    defer asset.types_destroy(&types)
-    if pbytes,perr:=effect.particle_bytes(&types,{info=out.info},allocator);perr==.None {
-        out.particle_bytes=pbytes
-    } else {
-        append(&warns,fmt.aprintf("particle_bytes failed: %v",perr,allocator=allocator))
-    }
+    out.layers=layers[:]
     out.warnings=warns[:]
     return
 }
@@ -546,45 +459,6 @@ write_ident :: proc(b:^strings.Builder,s:string) {
         ok:=(c>='a'&&c<='z')||(c>='A'&&c<='Z')||(c>='0'&&c<='9')
         strings.write_byte(b,ok ? c : '_')
     }
-}
-
-@(private="file")
-eval_literal :: proc(v:json.Value) -> (f32,bool) {
-    obj,ok:=v.(json.Object)
-    if !ok {return jf32(v)}
-    if lit,has:=obj["Literal"];has {return jf32(lit)}
-    if val,has:=obj["Value"];has {return jf32(val)}
-    return 0,false
-}
-
-@(private="file")
-sample_curve_1d :: proc(samples:[]f32) -> (c:effect.Particle_Curve) {
-    if len(samples)==0 {return effect.PARTICLE_CURVE_ONE}
-    for i in 0..<effect.PARTICLE_CURVE_KEYS {
-        t:=f32(i)/f32(effect.PARTICLE_CURVE_KEYS-1)
-        idx:=int(t*f32(len(samples)-1)+0.5)
-        c.times[i]=t
-        c.values[i]=max(samples[clamp(idx,0,len(samples)-1)],0)
-    }
-    return
-}
-
-@(private="file")
-sample_gradient_4d :: proc(samples:[]f32) -> (g:effect.Particle_Gradient) {
-    count:=len(samples)/4
-    if count==0 {return effect.PARTICLE_DEFAULTS.color_over_life}
-    for i in 0..<effect.PARTICLE_CURVE_KEYS {
-        t:=f32(i)/f32(effect.PARTICLE_CURVE_KEYS-1)
-        idx:=clamp(int(t*f32(count-1)+0.5),0,count-1)
-        g.times[i]=t
-        g.colors[i]={
-            max(samples[idx*4+0],0),
-            max(samples[idx*4+1],0),
-            max(samples[idx*4+2],0),
-            clamp(samples[idx*4+3],0,1),
-        }
-    }
-    return
 }
 
 @(private)

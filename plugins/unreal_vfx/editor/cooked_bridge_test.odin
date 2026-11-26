@@ -5,15 +5,30 @@ import "core:os"
 import "core:path/filepath"
 import "core:strings"
 import "core:testing"
-import "mirai:asset"
 import shaders "mirai:cook/shaders"
 import "mirai:std/base"
 import "plugins:vfx/runtime/effect"
 
-// Cooked `ue5parse.niagara/2` JSON builds validated Mirai `.particle` bytes,
-// native `.mat` v6 materials, and a compiling Mirai Vfx Slang shader.
+// Whether a Vfx program compiles, where the tools that compile it are.
+@(private="file")
+program_compiles :: proc(t:^testing.T,name,source:string) {
+    folder:=".mirai/tmp/cooked-vfx-test"
+    _=os.make_directory_all(folder)
+    shader_path,_:=filepath.join({folder,strings.concatenate({name,".slang"},context.temp_allocator)},context.temp_allocator)
+    _=os.write_entire_file(shader_path,transmute([]u8)source)
+    root,cwd_err:=os.get_working_directory(context.temp_allocator)
+    if !testing.expectf(t,cwd_err==nil,"cwd failed: %v",cwd_err) {return}
+    vfx_dir,_:=filepath.join({root,"plugins","vfx","shaders"},context.temp_allocator)
+    sources:=os.exists(vfx_dir) ? []shaders.Source{{name="vfx",folder=vfx_dir}} : nil
+    res:=shaders.program_check({root=root,project=folder,sources=sources,path=shader_path},context.temp_allocator)
+    testing.expectf(t,res.error=="" && res.errors==0,"%s does not compile: %s %v",name,res.error,res.diagnostics)
+    if os.exists(vfx_dir) {testing.expectf(t,res.compiled,"%s: its stages did not compile: %v",name,res.diagnostics)}
+}
+
+// An emitter gives a layer for each renderer that is on, drawn by what that renderer binds:
+// its own colour and size, its material, its mesh, and the vertex factory of its kind.
 @(test)
-cooked_niagara_bridge_builds_particle_and_compiles_vfx_slang :: proc(t:^testing.T) {
+cooked_niagara_bridge_gives_a_layer_for_each_renderer :: proc(t:^testing.T) {
     arena:mem.Dynamic_Arena
     mem.dynamic_arena_init(&arena)
     defer mem.dynamic_arena_destroy(&arena)
@@ -21,203 +36,136 @@ cooked_niagara_bridge_builds_particle_and_compiles_vfx_slang :: proc(t:^testing.
 
     doc:=`{
   "Schema": "ue5parse.niagara/2",
-  "Name": "NS_Katana_Slash",
-  "Package": "/Game/FX/NS_Katana_Slash",
+  "Name": "NS_Slash",
+  "Package": "/Game/FX/NS_Slash",
   "Kind": "NiagaraSystem",
   "UserParameters": [{"Name": "User.Scale", "Type": "NiagaraFloat", "Value": 1.5}],
   "Materials": [
-    {
-      "Path": "/Game/FX/MI_Slash.MI_Slash",
-      "Name": "MI_Slash",
-      "BlendMode": "BLEND_Additive",
-      "ShadingModel": "MSM_Unlit",
-      "TwoSided": true,
-      "Vectors": {"EmissiveColor": {"Value": [0.3, 0.8, 1.0, 1.0], "From": "MI_Slash"}}
-    }
+    {"Path": "/Game/FX/MI_Slash.MI_Slash", "Name": "MI_Slash", "BlendMode": "BLEND_Additive", "ShadingModel": "MSM_Unlit", "TwoSided": true,
+     "Vectors": {"EmissiveColor": {"Value": [0.3, 0.8, 1.0, 1.0], "From": "MI_Slash"}}}
   ],
   "Emitters": [
     {
-      "Name": "SlashArc",
+      "Name": "Arc",
       "Enabled": true,
       "Target": "CPU",
-      "Settings": {"bLocalSpace": true, "AllocationCount": 64},
-      "EmitterScripts": [
-        {
-          "Usage": "EmitterUpdateScript",
-          "Outputs": [
-            {"Attribute": "SlashArc.SpawnBurst_Instantaneous.SpawnBurst.Count", "Value": {"Literal": 8.0}},
-            {"Attribute": "SlashArc.CurrentLoopDuration", "Value": {"Literal": 0.45}},
-            {"Attribute": "SlashArc.DepthFade", "Value": {"Literal": 120.0}}
-          ]
-        }
-      ],
+      "Settings": {"bLocalSpace": true, "PreAllocationCount": 64},
       "Scripts": [
-        {
-          "Usage": "ParticleSpawnScript",
-          "Target": "CPU",
-          "Outputs": [
-            {"Attribute": "Lifetime", "Value": {"Literal": 0.35}},
-            {"Attribute": "SpriteSize.x", "Value": {"Literal": 120.0}},
-            {"Attribute": "SpriteSize.y", "Value": {"Literal": 120.0}},
-            {"Attribute": "Color.x", "Value": {"Literal": 0.4}},
-            {"Attribute": "Color.y", "Value": {"Literal": 0.9}},
-            {"Attribute": "Color.z", "Value": {"Literal": 1.0}},
-            {"Attribute": "Color.w", "Value": {"Literal": 1.0}},
-            {"Attribute": "Position.x", "Value": {"Literal": 50.0}},
-            {"Attribute": "Position.y", "Value": {"Literal": 0.0}},
-            {"Attribute": "Position.z", "Value": {"Literal": 100.0}},
-            {"Attribute": "DynamicMaterialParameter.x", "Value": {"Parameter": "User.Scale", "Value": 1.5}}
-          ]
-        },
-        {
-          "Usage": "ParticleUpdateScript",
-          "Target": "CPU",
-          "Outputs": [
-            {"Attribute": "Age", "Value": {"Op": "add", "Args": [{"Attribute": "Age"}, {"Parameter": "Engine.DeltaTime"}]}},
-            {"Attribute": "Position.z", "Value": {"Op": "mad", "Args": [{"Attribute": "Velocity.z"}, {"Parameter": "Engine.DeltaTime"}, {"Attribute": "Position.z"}]}}
-          ],
-          "KeepConditions": [
-            {"Op": "cmplt", "Args": [{"Attribute": "Age"}, {"Attribute": "Lifetime"}]}
-          ]
-        }
-      ],
-      "DataInterfaces": [
-        {"Name": "Emitter.ScaleSize.FloatCurve", "Class": "NiagaraDataInterfaceCurve", "ShaderLUT": [0.2, 0.8, 1.0, 0.5, 0.0]}
+        {"Usage": "ParticleSpawnScript", "Target": "CPU", "Outputs": [
+          {"Attribute": "Lifetime", "Value": {"Literal": 0.35}},
+          {"Attribute": "SpriteSize", "Components": {"x": {"Literal": 120.0}, "y": {"Literal": 60.0}}},
+          {"Attribute": "GlowSize", "Components": {"x": {"Literal": 300.0}, "y": {"Literal": 300.0}}},
+          {"Attribute": "Scale", "Components": {"x": {"Literal": 2.0}, "y": {"Literal": 2.0}, "z": {"Literal": 2.0}}},
+          {"Attribute": "RibbonWidth", "Value": {"Literal": 25.0}},
+          {"Attribute": "Color", "Components": {"x": {"Literal": 0.4}, "y": {"Literal": 0.9}, "z": {"Literal": 1.0}, "w": {"Literal": 1.0}}},
+          {"Attribute": "Glow", "Components": {"x": {"Literal": 4.0}, "y": {"Literal": 0.0}, "z": {"Literal": 4.0}, "w": {"Literal": 0.5}}},
+          {"Attribute": "Position", "Components": {"x": {"Literal": 50.0}, "y": {"Literal": 0.0}, "z": {"Literal": 100.0}}},
+          {"Attribute": "Shown", "Components": {"x": {"Literal": 0.0}, "y": {"Literal": 0.0}, "z": {"Literal": 10.0}}},
+          {"Attribute": "DynamicMaterialParameter", "Components": {"x": {"Parameter": "User.Scale", "Source": "User", "Value": 1.5, "Type": "float"}}}
+        ]},
+        {"Usage": "ParticleUpdateScript", "Target": "CPU",
+         "Outputs": [{"Attribute": "Age", "Value": {"Op": "add", "Args": [{"Attribute": "Age", "DataSet": 0}, {"Parameter": "Engine.DeltaTime", "Source": "Engine"}]}}],
+         "KeepConditions": [{"Op": "cmplt", "Args": [{"Attribute": "Age", "DataSet": 0}, {"Attribute": "Lifetime", "DataSet": 0}]}]}
       ],
       "Renderers": [
-        {
-          "Kind": "NiagaraSpriteRendererProperties",
-          "Alignment": "ENiagaraSpriteAlignment::VelocityAligned",
-          "SubImageSize": {"X": 2, "Y": 2},
-          "Material": "/Game/FX/MI_Slash.MI_Slash"
-        }
+        {"Kind": "sprite", "Class": "NiagaraSpriteRendererProperties", "Enabled": true,
+         "Materials": [{"Slot": 0, "From": "Material", "Material": "/Game/FX/MI_Slash.MI_Slash"}],
+         "Settings": {"Alignment": "ENiagaraSpriteAlignment::VelocityAligned", "FacingMode": "ENiagaraSpriteFacingMode::FaceCamera", "SubImageSize": {"X": 2.0, "Y": 2.0},
+                      "PivotInUVSpace": {"X": 0.5, "Y": 1.0}, "SortOrderHint": 3},
+         "Bindings": {"PositionBinding": "Particles.Position", "ColorBinding": "Particles.Color", "SpriteSizeBinding": "Particles.SpriteSize"}},
+        {"Kind": "sprite", "Class": "NiagaraSpriteRendererProperties", "Enabled": true,
+         "Materials": [{"Slot": 0, "From": "Material", "Material": "/Game/FX/MI_Glow.MI_Glow"}],
+         "Settings": {"Alignment": "ENiagaraSpriteAlignment::Unaligned", "FacingMode": "ENiagaraSpriteFacingMode::FaceCamera"},
+         "Bindings": {"PositionBinding": "Particles.Shown", "ColorBinding": "Particles.Glow", "SpriteSizeBinding": "Particles.GlowSize"}},
+        {"Kind": "mesh", "Class": "NiagaraMeshRendererProperties", "Enabled": true,
+         "Materials": [{"Slot": 0, "From": "OverrideMaterials", "Material": "/Game/FX/MI_Slash.MI_Slash"}],
+         "Meshes": [{"Mesh": "/Game/FX/SM_Arc.SM_Arc", "Scale": {"X": 1.0, "Y": 2.0, "Z": 0.5}, "Rotation": {"Pitch": 90.0, "Yaw": 0.0, "Roll": 0.0}, "PivotOffset": {"X": 0.0, "Y": 0.0, "Z": 0.0}}],
+         "Settings": {"FacingMode": "ENiagaraMeshFacingMode::CameraPosition"},
+         "Bindings": {"ScaleBinding": "Particles.Scale"}},
+        {"Kind": "ribbon", "Class": "NiagaraRibbonRendererProperties", "Enabled": true,
+         "Settings": {"FacingMode": "ENiagaraRibbonFacingMode::Screen", "UV0Settings": {"DistributionMode": "ENiagaraRibbonUVDistributionMode::TiledOverRibbonLength", "TilingLength": 200.0}},
+         "Bindings": {"RibbonWidthBinding": "Particles.RibbonWidth"}},
+        {"Kind": "light", "Class": "NiagaraLightRendererProperties", "Enabled": true,
+         "Settings": {"bUseInverseSquaredFalloff": false, "RadiusScale": 2.0, "DefaultExponent": 1.0, "ColorAdd": {"X": 1.0, "Y": 0.5, "Z": 0.25}}},
+        {"Kind": "sprite", "Class": "NiagaraSpriteRendererProperties", "Enabled": false},
+        {"Kind": "decal", "Class": "NiagaraDecalRendererProperties", "Enabled": true}
       ]
     }
   ]
 }`
-
-    sys,err:=cooked_niagara_build(doc,alloc)
-    _,bad:=err.?
-    if !testing.expect(t,!bad) {return}
-    testing.expect_value(t,sys.name,"NS_Katana_Slash")
-    testing.expect_value(t,len(sys.materials),1)
-    if !testing.expect_value(t,len(sys.emitters),1) {return}
-
-    em:=sys.emitters[0]
-    testing.expect_value(t,em.name,"SlashArc")
-    testing.expect(t,em.info.local_space)
-    testing.expect_value(t,em.info.render,effect.Particle_Render.Velocity)
-    testing.expect_value(t,em.info.blend,effect.Particle_Blend.Additive)
-    testing.expect(t,!em.info.lit)
-    testing.expect_value(t,em.info.flipbook,[2]u32{2,2})
-    testing.expect_value(t,em.info.bursts[0].count,u32(8))
-    testing.expectf(t,abs(em.info.soft-1.2)<1e-4,"soft %v",em.info.soft)
-    testing.expectf(t,abs(em.info.lifetime[0]-0.35)<1e-4,"lifetime %v",em.info.lifetime)
-    testing.expectf(t,abs(em.info.size[0]-1.2)<1e-4,"size %v",em.info.size)
-    testing.expect(t,len(em.particle_bytes)>0)
-
-    // Round-trip .particle bytes through Mirai's effect.particle_view.
-    types:asset.Types
-    asset.types_init(&types)
-    defer asset.types_destroy(&types)
-    a:asset.Asset
-    testing.expect_value(t,asset.asset_open(&a,em.particle_bytes),asset.Error.None)
-    defer asset.asset_close(&a)
-    view,verr:=effect.particle_view(&a,&types)
-    testing.expect_value(t,verr,asset.Error.None)
-    testing.expect_value(t,view.info.render,effect.Particle_Render.Velocity)
-    testing.expect_value(t,view.info.blend,effect.Particle_Blend.Additive)
-
-    // Its scripts as a program: everything they read is answered, the particle takes its
-    // attributes before the script may end it, and the program compiles.
-    testing.expect_value(t,len(em.notes),0)
-    testing.expect(t,strings.contains(em.program_source,"//! mirai vfx Cooked_NS_Katana_Slash_SlashArc"))
-    testing.expect(t,strings.contains(em.program_source,"visual.data[0]"))
-    testing.expect(t,strings.contains(em.program_source,"a.f_Age = o0;"))
-    leave_idx:=strings.last_index(em.program_source,"nv_leave(ctx, particle, a);")
-    kill_idx:=strings.last_index(em.program_source,"if (!keep) particle.age = particle.lifetime;")
-    testing.expectf(t,leave_idx>0 && kill_idx>leave_idx,"the script ends the particle after it takes its attributes (leave=%d kill=%d):\n%s",leave_idx,kill_idx,em.program_source)
-
-    folder:=".mirai/tmp/cooked-vfx-test"
-    _=os.make_directory_all(folder)
-    shader_path,_:=filepath.join({folder,"Cooked_NS_Katana_Slash_SlashArc.slang"},context.temp_allocator)
-    _=os.write_entire_file(shader_path,transmute([]u8)em.program_source)
-    root,cwd_err:=os.get_working_directory(context.temp_allocator)
-    if testing.expectf(t,cwd_err==nil,"cwd failed: %v",cwd_err) {
-        vfx_dir,_:=filepath.join({root,"plugins","vfx","shaders"},context.temp_allocator)
-        sources:=os.exists(vfx_dir) ? []shaders.Source{{name="vfx",folder=vfx_dir}} : nil
-        res:=shaders.program_check({root=root,project=folder,sources=sources,path=shader_path},context.temp_allocator)
-        testing.expectf(t,res.error=="" && res.errors==0,"Vfx Slang compile failed: %s %v",res.error,res.diagnostics)
-        if os.exists(vfx_dir) {testing.expectf(t,res.compiled,"Vfx Slang stages did not compile: %v",res.diagnostics)}
-    }
-}
-
-// Cooked Niagara emitter with UNiagaraLightRendererProperties populates
-// Mirai .particle v10 effect.Particle_Light cleanly and round-trips at v10.
-@(test)
-cooked_niagara_bridge_emits_a_particle_with_its_light :: proc(t:^testing.T) {
-    arena:mem.Dynamic_Arena
-    mem.dynamic_arena_init(&arena)
-    defer mem.dynamic_arena_destroy(&arena)
-    alloc:=mem.dynamic_arena_allocator(&arena)
-
-
-    doc:=`{
-  "Schema": "ue5parse.niagara/2",
-  "Name": "NS_Katana_ImpactFlash",
-  "Package": "/Game/FX/NS_Katana_ImpactFlash",
-  "Kind": "NiagaraSystem",
-  "Emitters": [
-    {
-      "Name": "ImpactLight",
-      "Enabled": true,
-      "Target": "CPU",
-      "Settings": {"bLocalSpace": false, "AllocationCount": 8},
-      "Scripts": [
-        {
-          "Usage": "ParticleSpawnScript",
-          "Target": "CPU",
-          "Outputs": [
-            {"Attribute": "Lifetime", "Value": {"Literal": 0.25}},
-            {"Attribute": "SpriteSize.x", "Value": {"Literal": 60.0}},
-            {"Attribute": "Color.x", "Value": {"Literal": 0.4}},
-            {"Attribute": "Color.y", "Value": {"Literal": 0.8}},
-            {"Attribute": "Color.z", "Value": {"Literal": 1.0}},
-            {"Attribute": "LightRadius", "Value": {"Literal": 450.0}},
-            {"Attribute": "LightIntensity", "Value": {"Literal": 600.0}},
-            {"Attribute": "LightVolumetricScattering", "Value": {"Literal": 1.5}}
-          ]
-        }
-      ],
-      "Renderers": [
-        {
-          "Kind": "NiagaraLightRendererProperties",
-          "RadiusScale": 1.2,
-          "DiffuseScale": 1.0,
-          "bMegaLightsCastShadows": true,
-          "IndirectLightingIntensity": 0.8
-        }
-      ]
-    }
-  ]
-}`
-
     sys,err:=cooked_niagara_build(doc,alloc)
     _,bad:=err.?
     if !testing.expect(t,!bad) || !testing.expect_value(t,len(sys.emitters),1) {return}
-
     em:=sys.emitters[0]
-    testing.expect_value(t,len(em.warnings),0)
-    l:=em.info.light
-    testing.expectf(t,abs(l.intensity-600.0)<1e-3,"intensity %v",l.intensity)
-    testing.expectf(t,abs(l.range-5.4)<1e-3,"range %v (450cm * 1.2)",l.range)
-    testing.expectf(t,abs(l.radius-0.3)<1e-3,"radius %v",l.radius)
-    testing.expect(t,l.shadows)
-    testing.expectf(t,abs(l.indirect-0.8)<1e-3,"indirect %v",l.indirect)
-    testing.expectf(t,abs(l.scattering-1.5)<1e-3,"scattering %v",l.scattering)
-    // No explicit LightColor / ColorAdd -> {0,0,0} so Mirai uses the particle's color.
-    testing.expect_value(t,l.color,[3]f32{0,0,0})
+    testing.expect_value(t,em.name,"Arc")
+    testing.expect_value(t,len(em.warnings),1) // the decal renderer
+    if !testing.expect_value(t,len(em.layers),5) {return}
 
+    sprite:=em.layers[0]
+    testing.expect_value(t,sprite.factory,"NiagaraSpriteVF")
+    testing.expect_value(t,sprite.material_path,"/Game/FX/MI_Slash.MI_Slash")
+    testing.expect_value(t,sprite.info.render,effect.Particle_Render.Velocity)
+    testing.expect_value(t,sprite.info.blend,effect.Particle_Blend.Additive)
+    testing.expect_value(t,sprite.info.flipbook,[2]u32{2,2})
+    testing.expect_value(t,sprite.info.max_particles,u32(64))
+    testing.expect_value(t,sprite.order,i32(3))
+    testing.expect(t,sprite.info.local_space && !sprite.info.lit && sprite.info.rate==0)
+    testing.expect_value(t,len(sprite.notes),0)
+    testing.expect_value(t,base.text_get(sprite.info.program[:]),"Cooked_NS_Slash_Arc")
+    testing.expect(t,strings.contains(sprite.program_source,"visual.data[0]"))
+    held:=false
+    for limit in sprite.limits {held|=strings.contains(limit,"held at")}
+    testing.expect(t,held) // a pivot at the end of the sprite is not shown
+
+    // The second sprite renderer draws other attributes of the same particles.
+    glow:=em.layers[1]
+    testing.expect_value(t,glow.info.render,effect.Particle_Render.Billboard)
+    testing.expect_value(t,base.text_get(glow.info.program[:]),"Cooked_NS_Slash_Arc_1")
+    testing.expect(t,strings.contains(glow.program_source,"a.f_Glow_x") && strings.contains(glow.program_source,"a.f_GlowSize_x"))
+    testing.expect(t,strings.contains(glow.program_source,"a.f_Shown_x"))
+    testing.expect(t,!strings.contains(sprite.program_source,"visual.color = float4(max(float3(fv(a.f_Glow_x)"))
+
+    mesh:=em.layers[2]
+    testing.expect_value(t,mesh.factory,"NiagaraMeshVF")
+    testing.expect_value(t,mesh.info.render,effect.Particle_Render.Mesh)
+    testing.expect_value(t,mesh.info.facing,effect.Particle_Facing.Emitter)
+    if testing.expect_value(t,len(mesh.mesh_paths),1) {testing.expect_value(t,mesh.mesh_paths[0],"/Game/FX/SM_Arc.SM_Arc")}
+    testing.expect(t,mesh.info.scale!=[3]f32{1,1,1})
+    testing.expect(t,len(mesh.limits)>=2) // facing the camera and the turn of the mesh
+
+    ribbon:=em.layers[3]
+    testing.expect_value(t,ribbon.factory,"NiagaraRibbonVF")
+    testing.expect_value(t,ribbon.info.render,effect.Particle_Render.Ribbon)
+    testing.expectf(t,abs(ribbon.info.ribbon_tile-2)<1e-4,"tile %v",ribbon.info.ribbon_tile)
+
+    light:=em.layers[4]
+    testing.expect_value(t,light.factory,"")
+    testing.expect(t,light.info.light.intensity>0 && abs(light.info.light.range-2)<1e-4)
+    testing.expect(t,strings.contains(light.program_source,"visual.size = 0.0"))
+
+    for layer in em.layers {
+        if layer.program_name!="" {program_compiles(t,layer.program_name,layer.program_source)}
+    }
+}
+
+// What a document that is no system, or a broken one, gives: an error or nothing, never a crash.
+@(test)
+cooked_niagara_bridge_survives_hostile_documents :: proc(t:^testing.T) {
+    for doc in ([]string{
+        ``,`[]`,`{`,`{"Schema": "other/1"}`,`{"Emitters": 3}`,`{"Emitters": [3, null, {"Renderers": 7}]}`,
+        `{"Emitters": [{"Name": 5, "Renderers": [null, 1, {"Kind": 9}, {"Kind": "mesh", "Meshes": [1, {"Mesh": 2}], "Settings": 4, "Materials": [1, {}]}]}]}`,
+        `{"Emitters": [{"Renderers": [{"Kind": "sprite", "Settings": {"SubImageSize": {"X": 1e30, "Y": -5}, "SortOrderHint": 1e30, "PivotInUVSpace": {"X": "a"}}, "Bindings": {"ColorBinding": 7, "PositionBinding": ""}}], "Scripts": [{"Usage": "ParticleSpawnScript", "Outputs": [{"Attribute": "Color"}]}]}]}`,
+    }) {
+        sys,err:=cooked_niagara_build(doc)
+        _=err
+        cooked_vfx_system_destroy(&sys)
+    }
+}
+
+// UE6's simple-light calibration: intensity * effective colour, for colours above and below 1,
+// from the particle and from the renderer.
+@(test)
+niagara_light_matches_the_simple_light_of_unreal :: proc(t:^testing.T) {
     // Table-driven UE6 simple-light calibration: assert exact intensity * effective_color
     // across HDR (>1) and dim (<1) colors for BOTH particle-color and explicit-color lights.
     Light_Case :: struct {
@@ -287,17 +235,6 @@ cooked_niagara_bridge_emits_a_particle_with_its_light :: proc(t:^testing.T) {
     testing.expect_value(t,dark.intensity,f32(0))
     testing.expect_value(t,dark.color,[3]f32{0,0,0})
 
-    // Binary .particle v10 round-trip preserves Particle_Light verbatim.
-    types:asset.Types
-    asset.types_init(&types)
-    defer asset.types_destroy(&types)
-    a:asset.Asset
-    testing.expect_value(t,asset.asset_open(&a,em.particle_bytes),asset.Error.None)
-    defer asset.asset_close(&a)
-    testing.expect_value(t,asset.kind_check(&a,effect.PARTICLE_KIND,effect.PARTICLE_VERSION),asset.Error.None)
-    view,verr:=effect.particle_view(&a,&types)
-    testing.expect_value(t,verr,asset.Error.None)
-    testing.expect_value(t,view.info.light,l)
 }
 
 // Verifies collision-free <= 63-byte program names, real bitwise/cast Slang ops,
@@ -310,6 +247,7 @@ cooked_niagara_bridge_names_bitwise_and_zero_leaks :: proc(t:^testing.T) {
           "Name": "NS_VeryLongCookedFortniteNiagaraSystemAssetNameExceedingLimit",
           "Emitters": [{
             "Name": "`,em_name,`",
+            "Renderers": [{"Kind": "sprite", "Class": "NiagaraSpriteRendererProperties"}],
             "Scripts": [{
               "Usage": "ParticleSpawnScript",
               "Outputs": [
@@ -327,13 +265,14 @@ cooked_niagara_bridge_names_bitwise_and_zero_leaks :: proc(t:^testing.T) {
     defer cooked_vfx_system_destroy(&sys_b)
     if !testing.expect(t,err_a==nil && err_b==nil) {return}
     if !testing.expect(t,len(sys_a.emitters)==1 && len(sys_b.emitters)==1) {return}
-    pa,pb:=sys_a.emitters[0].program_name,sys_b.emitters[0].program_name
+    if !testing.expect(t,len(sys_a.emitters[0].layers)==1 && len(sys_b.emitters[0].layers)==1) {return}
+    pa,pb:=sys_a.emitters[0].layers[0].program_name,sys_b.emitters[0].layers[0].program_name
     testing.expect(t,len(pa)<=effect.PARTICLE_NAME_BYTES-1)
     testing.expect(t,len(pb)<=effect.PARTICLE_NAME_BYTES-1)
     testing.expect(t,pa!=pb)
-    testing.expect_value(t,base.text_get(sys_a.emitters[0].info.program[:]),pa)
-    testing.expect_value(t,base.text_get(sys_b.emitters[0].info.program[:]),pb)
-    src:=sys_a.emitters[0].program_source
+    testing.expect_value(t,base.text_get(sys_a.emitters[0].layers[0].info.program[:]),pa)
+    testing.expect_value(t,base.text_get(sys_b.emitters[0].layers[0].info.program[:]),pb)
+    src:=sys_a.emitters[0].layers[0].program_source
     testing.expect(t,strings.contains(src,"int(") && strings.contains(src," & ") && strings.contains(src," | "))
     testing.expect(t,strings.contains(src,"asuint(") && strings.contains(src,"asfloat("))
 

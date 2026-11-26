@@ -2,6 +2,7 @@ package cooked
 
 import "core:encoding/json"
 import "core:fmt"
+import core_hash "core:hash"
 import "core:slice"
 import "core:strconv"
 import "core:strings"
@@ -26,10 +27,11 @@ Cooked_Program_Parameter :: struct {
 }
 
 Cooked_Shader_Program :: struct {
-    name:string,   // Unreal_<shader map hash>: the same for every material of the map
+    name:string,   // Unreal_<shader map hash>_<vertex factory>: the same for every material of the map
     source:string, // the Slang surface program
     parameters:[]Cooked_Program_Parameter,
-    notes:[]string, // what the program reads that is answered with zeros
+    notes:[]string,  // what the program reads that is answered with zeros
+    limits:[]string, // what a particle gives its material in Unreal and not in a surface context
 }
 
 cooked_shader_program_destroy :: proc(p:^Cooked_Shader_Program,allocator:=context.allocator) {
@@ -42,6 +44,8 @@ cooked_shader_program_destroy :: proc(p:^Cooked_Shader_Program,allocator:=contex
     delete(p.parameters,allocator)
     for n in p.notes {delete(n,allocator)}
     delete(p.notes,allocator)
+    for n in p.limits {delete(n,allocator)}
+    delete(p.limits,allocator)
     p^={}
 }
 
@@ -49,7 +53,43 @@ cooked_shader_program_destroy :: proc(p:^Cooked_Shader_Program,allocator:=contex
 // carry: a build of the engine that lays one out differently has another hash, and its
 // materials are refused instead of read wrong.
 @(private="file")
-KNOWN_LAYOUTS :: [4][2]string{{"View","cfe9c681"},{"Scene","f7e1b302"},{"LocalVF","3aef5598"},{SKIN_PASS_THROUGH,"fc97ef48"}}
+KNOWN_LAYOUTS :: [5][2]string{{"View","cfe9c681"},{"Scene","f7e1b302"},{"LocalVF","3aef5598"},{SKIN_PASS_THROUGH,"fc97ef48"},{TRANSLUCENT_PASS,"642995f2"}}
+
+// The uniform buffer of the pass that draws what blends. Its constants are those of the fog of
+// the scene, off here (Mirai fogs what it draws itself); of its resources a program reads the
+// depth of the scene behind the surface and how much the eye has adapted.
+@(private="file") TRANSLUCENT_PASS :: "TranslucentBasePass"
+@(private="file") TRANSLUCENT_SCENE_DEPTH :: 35
+@(private="file") TRANSLUCENT_FOG_VOLUME :: 23
+@(private="file") TRANSLUCENT_EYE_ADAPTATION :: 95
+
+// The registers of the primitive a pixel shader reads only to mark what is out of its bounds,
+// which the view never asks for here.
+@(private="file") PRIMITIVE_BOUNDS_CHECK :: [7]int{0,22,23,24,32,33,40}
+
+// A vertex factory of particles: its vertex shader builds each particle from the buffers of
+// the simulation, which a surface program does not have; the pixel shader takes what the
+// particle gives straight from the surface context. Which interpolant carries the colour of
+// the particle, its texture coordinates and its first dynamic parameter, by semantic and index.
+@(private="file")
+Particle_Factory :: struct {
+    name:string,
+    color:Interpolant,
+    texcoords:Interpolant,
+    parameter:Interpolant, // its first dynamic parameter of four, each the next index
+    vertex_color:Interpolant, // of the mesh a mesh particle draws; "" for sprites
+    mask_register:int, // of the factory's own buffer: which dynamic parameters the emitter gives
+}
+@(private="file")
+Interpolant :: struct {semantic:string,index:int}
+@(private="file")
+PARTICLE_FACTORIES :: [5]Particle_Factory{
+    {"NiagaraSpriteVF",{"TEXCOORD",0},{"TEXCOORD",1},{"PARTICLE_DYNAMIC_PARAM",0},{},11},
+    {"NiagaraRibbonVF",{"TEXCOORD",0},{"TEXCOORD",1},{"PARTICLE_DYNAMIC_PARAM",0},{},6},
+    {"NiagaraMeshVF",{"COLOR",1},{"TEXCOORD",0},{"COLOR",2},{"COLOR",0},25},
+    {"SpriteVF",{"TEXCOORD",2},{"TEXCOORD",3},{"PARTICLE_DYNAMIC_PARAM",0},{},-1},
+    {"MeshParticleVF",{"COLOR",1},{"TEXCOORD",0},{"COLOR",2},{"COLOR",0},-1},
+}
 
 // The streams of a local vertex factory whose vertices a skin wrote: positions now and
 // before, then tangents at rest and now. A mesh that is not skinned has its own in them.
@@ -207,7 +247,17 @@ literal :: proc(text:string) -> (int,bool) {
 // One function with its dx_* calls as what answers them. feeds is the stage the outputs of
 // this one go to (the pixel stage for the vertex function), nil for the last.
 @(private="file")
-stage_rewrite :: proc(w:^strings.Builder,source:string,s:^Stage,feeds:^Stage,is_vertex:bool,textures:map[int]int,notes:^[dynamic]string) -> (problem:string) {
+Rewrite :: struct {
+    textures:map[int]int,     // of the material: resource -> binding
+    notes:^[dynamic]string,
+    collections:[]json.Array, // the uniform buffer of each parameter collection, by its number
+    factory:^Particle_Factory, // nil for a mesh
+    written:bool,              // the registers of the material are constants of the program, not its parameters
+}
+
+@(private="file")
+stage_rewrite :: proc(w:^strings.Builder,source:string,s:^Stage,feeds:^Stage,is_vertex:bool,rw:^Rewrite) -> (problem:string) {
+    textures,notes:=rw.textures,rw.notes
     in_array:=is_vertex ? "vin" : "pin"
     rest:=source
     for {
@@ -273,7 +323,7 @@ stage_rewrite :: proc(w:^strings.Builder,source:string,s:^Stage,feeds:^Stage,is_
             case "Material":
                 reg,is_literal:=literal(args[2])
                 if !is_literal {return "a register of the material's uniform buffer read by a computed index"}
-                fmt.sbprintf(w,integer ? "asint(e.p.m%d)" : "e.p.m%d",reg)
+                fmt.sbprintf(w,rw.written ? (integer ? "asint(DX_M%d)" : "DX_M%d") : (integer ? "asint(e.p.m%d)" : "e.p.m%d"),reg)
             case "View":
                 fmt.sbprintf(w,integer ? "asint(dx_view(e,%s))" : "dx_view(e,%s)",args[2])
             case "LocalVF":
@@ -281,16 +331,56 @@ stage_rewrite :: proc(w:^strings.Builder,source:string,s:^Stage,feeds:^Stage,is_
             case "Scene":
                 // Of the scene only how instances index their data is read: one primitive, at zero.
                 strings.write_string(w,integer ? "int4(0)" : "float4(0.0)")
-            case:
-                note_add(notes,fmt.tprintf("the uniform buffer %s",buffer))
+            case TRANSLUCENT_PASS:
+                // The fog of the scene: none.
                 strings.write_string(w,integer ? "int4(0)" : "float4(0.0)")
+            case "Primitive":
+                reg,is_literal:=literal(args[2])
+                checks:=PRIMITIVE_BOUNDS_CHECK
+                known:=false
+                for c in checks {known||=is_literal&&c==reg}
+                if !known {note_add(notes,fmt.tprintf("the register %s of the primitive",args[2]))}
+                strings.write_string(w,integer ? "int4(0)" : "float4(0.0)")
+            case:
+                switch {
+                case strings.has_prefix(buffer,"MaterialCollection"):
+                    // A parameter collection: its values are the same for every material.
+                    number,_:=strconv.parse_int(buffer[len("MaterialCollection"):])
+                    reg,is_literal:=literal(args[2])
+                    if !is_literal||number<0||number>=len(rw.collections)||reg<0||reg>=len(rw.collections[number]) {
+                        note_add(notes,fmt.tprintf("the register %s of the parameter collection %s",args[2],buffer))
+                        strings.write_string(w,integer ? "int4(0)" : "float4(0.0)")
+                    } else {
+                        row,_:=json_arr(rw.collections[number][reg])
+                        value:[4]f32
+                        for c in 0..<min(len(row),4) {value[c],_=json_f32(row[c])}
+                        text:=fmt.tprintf("float4(%s, %s, %s, %s)",slang_float(value[0]),slang_float(value[1]),slang_float(value[2]),slang_float(value[3]))
+                        fmt.sbprintf(w,integer ? "asint(%s)" : "%s",text)
+                    }
+                case rw.factory!=nil&&buffer==rw.factory.name&&rw.factory.mask_register>=0:
+                    reg,is_literal:=literal(args[2])
+                    if !is_literal||reg!=rw.factory.mask_register {note_add(notes,fmt.tprintf("the register %s of %s",args[2],buffer))}
+                    strings.write_string(w,integer ? "int4(dx_particle_mask(e))" : "asfloat(int4(dx_particle_mask(e)))")
+                case:
+                    note_add(notes,fmt.tprintf("the uniform buffer %s",buffer))
+                    strings.write_string(w,integer ? "int4(0)" : "float4(0.0)")
+                }
             }
         case "dx_sample","dx_sample_level","dx_sample_grad","dx_load":
             slot,_:=literal(args[1])
             b,_:=bind_find(s,{"Texture"},slot)
             k,bound:=textures[b.resource]
+            if b.buffer==TRANSLUCENT_PASS&&b.resource==TRANSLUCENT_SCENE_DEPTH {
+                // The depth of the scene behind the surface, as the view's depth transform reads it.
+                strings.write_string(w,"float4(e.scene_depth)")
+                continue
+            }
+            if b.buffer==TRANSLUCENT_PASS&&b.resource==TRANSLUCENT_FOG_VOLUME {
+                strings.write_string(w,"float4(0.0)")
+                continue
+            }
             if b.buffer!="Material"||!bound {
-                note_add(notes,fmt.tprintf("a texture of %s",b.buffer!="" ? b.buffer : "no uniform buffer"))
+                note_add(notes,fmt.tprintf("the texture %d of %s",b.resource,b.buffer!="" ? b.buffer : "no uniform buffer"))
                 strings.write_string(w,"float4(0.0)")
                 continue
             }
@@ -309,6 +399,9 @@ stage_rewrite :: proc(w:^strings.Builder,source:string,s:^Stage,feeds:^Stage,is_
                 fmt.sbprintf(w,integer ? "asint(dx_primitive(e,%s))" : "dx_primitive(e,%s)",args[2])
             case b.buffer=="Scene"&&b.resource==SCENE_INSTANCE_DATA:
                 strings.write_string(w,integer ? "int4(0)" : "float4(0.0)")
+            case b.buffer==TRANSLUCENT_PASS&&b.resource==TRANSLUCENT_EYE_ADAPTATION:
+                // How much the eye has adapted: the exposure is Mirai's, so one.
+                strings.write_string(w,integer ? "asint(float4(1.0))" : "float4(1.0)")
             case:
                 note_add(notes,fmt.tprintf("the buffer %d of %s",b.resource,b.buffer))
                 strings.write_string(w,integer ? "int4(0)" : "float4(0.0)")
@@ -349,6 +442,14 @@ stage_rewrite :: proc(w:^strings.Builder,source:string,s:^Stage,feeds:^Stage,is_
         }
     }
     return ""
+}
+
+@(private="file")
+slang_float :: proc(v:f32) -> string {
+    text:=fmt.tprintf("%.9g",v)
+    if strings.contains_any(text,"nNiI") {return "0.0"}
+    if !strings.contains_any(text,".e") {text=fmt.tprintf("%s.0",text)}
+    return text
 }
 
 // What every program starts with, inside its namespace after struct Parameters and the sizes
@@ -435,7 +536,12 @@ struct Dx_Env {
     float3 local_normal;
     float3 local_tangent;
     D uv[4];             // the first two texture coordinates of the mesh
-    float4 color;        // of the mesh at the point
+    float4 color;        // of the mesh at the point, or of the particle that draws it
+    float scene_depth;   // of what is drawn behind the point, along the view
+    float4 particle_data[4]; // what the particle gives its material, and which of them (bit i)
+    uint particle_given;
+    float particle_random;
+    float particle_radius;
     bool discarded;
     D vin[DX_VERTEX_INPUTS];
     D pin[DX_PIXEL_INPUTS];
@@ -481,6 +587,11 @@ void dx_env_fill(inout Dx_Env e, Mirai_Surface_Context ctx) {
     e.uv[2] = d_make(uv1.value.x, uv1.dx.x, uv1.dy.x);
     e.uv[3] = d_make(uv1.value.y, uv1.dx.y, uv1.dy.y);
     e.color = ctx.vertex_color;
+    e.scene_depth = ctx.scene_depth * 100.0;
+    for (int i = 0; i < 4; i++) e.particle_data[i] = ctx.particle_data[i];
+    e.particle_given = ctx.particle_given;
+    e.particle_random = ctx.particle_random;
+    e.particle_radius = ctx.particle_radius * 100.0;
     e.discarded = false;
     for (int i = 0; i < DX_VERTEX_INPUTS; i++) e.vin[i] = d_c(0.0);
     for (int i = 0; i < DX_PIXEL_INPUTS; i++) e.pin[i] = d_c(0.0);
@@ -498,7 +609,16 @@ float4 dx_view(inout Dx_Env e, int reg) {
     case 45: return float4(e.position_dy, 0.0);
     case 46: return float4(0.0);
     case 47: return float4(e.position - e.position_dx * e.pixel.x - e.position_dy * e.pixel.y, 1.0);
+    // CameraViewToTranslatedWorld: the right, the up and the front of the camera, and where it is.
+    case 24: return float4(normalize(e.position_dx), 0.0);
+    case 25: return float4(-normalize(e.position_dy), 0.0);
+    case 26: return float4(-e.normal, 0.0);
+    case 27: return float4(e.position + e.normal * e.depth, 1.0);
+    case 31: return float4(0.0, 0.0, 10.0, 0.0);                      // ViewToClip, its last row: a perspective
     case 77: return float4(-e.normal, 0.0);                           // ViewForward
+    case 82: return float4(1.0, 0.0, 0.0, 1e30);                      // InvDeviceZToWorldZTransform: a device depth is the depth
+    case 83: return float4(0.5, -0.5, 0.5, 0.5);                      // ScreenPositionScaleBias
+    case 126: return float4(e.position + e.normal * e.depth, 0.0);    // RelativeWorldCameraOriginTO
     case 84: return float4(e.position + e.normal * e.depth, 0.0);     // ViewOriginLow
     case 85: return float4(e.position + e.normal * e.depth, 0.0);     // TranslatedWorldCameraOrigin
     case 87: return float4(e.position + e.normal * e.depth, 0.0);     // WorldViewOriginLow
@@ -549,6 +669,16 @@ float4 dx_primitive(inout Dx_Env e, int row) {
 
 // The local vertex factory's parameters: no colour mask, two texture coordinates, vertex zero.
 int4 dx_localvf(int reg) { return reg == 0 ? int4(0, 2, 0, 0) : int4(0); }
+// Which components of the four dynamic parameters the emitter of the particle gives: four bits each.
+int dx_particle_mask(inout Dx_Env e) {
+    int mask = 0;
+    for (int i = 0; i < 4; i++) if ((e.particle_given >> uint(i) & 1u) != 0u) mask |= 15 << (4 * i);
+    return mask;
+}
+// The i-th dynamic parameter of the particle: all ones where its emitter gives none.
+float4 dx_particle_dynamic(inout Dx_Env e, int i) {
+    return (e.particle_given >> uint(i) & 1u) != 0u ? e.particle_data[i] : float4(1.0);
+}
 // Its vertex streams, as the vertex function indexes them for vertex zero.
 D4 dx_fetch_uv(inout Dx_Env e, int index) {
     D4 r = (D4)0;
@@ -606,6 +736,23 @@ cooked_shader_program :: proc(description,pixel,vertex:string,allocator:=context
     if vs_problem!="" {return {},Error{"program",vs_problem}}
     if ps.in_size==0||ps.out_size==0 {return {},Error{"program","the pixel shader has no inputs or no outputs"}}
 
+    factory_v,_:=json_get(root,"VertexFactory")
+    factory_name:=json_str(factory_v)
+    for ch in factory_name {
+        if !(ch>='0'&&ch<='9'||ch>='a'&&ch<='z'||ch>='A'&&ch<='Z') {return {},Error{"program","VertexFactory is not a name"}}
+    }
+    if factory_name=="" {return {},Error{"program","the description names no VertexFactory: is it written by ue5parse shader --program?"}}
+    factories:=PARTICLE_FACTORIES
+    factory:^Particle_Factory
+    for &f in factories {
+        if f.name==factory_name {factory=&f}
+    }
+    // The vertex function of a mesh runs at the pixel; that of particles is not run at all,
+    // and what it reads asks for nothing.
+    stages:=make([dynamic]^Stage,context.temp_allocator)
+    append(&stages,&ps)
+    if factory==nil {append(&stages,&vs)}
+
     // The parameters: the textures of the material's uniform buffer the shaders sample, then
     // the registers they read.
     params,_:=json_get(root,"Parameters")
@@ -617,7 +764,7 @@ cooked_shader_program :: proc(description,pixel,vertex:string,allocator:=context
     // A texture is the resource before its sampler: resource 2i is the i-th binding.
     textures:=make(map[int]int,allocator=context.temp_allocator) // resource -> binding
     slots:=make([dynamic]int,context.temp_allocator)
-    for stage in ([2]^Stage{&ps,&vs}) {
+    for stage in stages {
         for b in stage.binds {
             if b.kind!="Texture"||b.buffer!="Material"||b.resource<0||b.resource%2!=0||b.resource/2>=len(tb) {continue}
             textures[b.resource]=b.resource/2
@@ -626,40 +773,81 @@ cooked_shader_program :: proc(description,pixel,vertex:string,allocator:=context
     }
     slice.sort(slots[:])
     registers:=make([dynamic]int,context.temp_allocator)
-    for stage in ([2]^Stage{&ps,&vs}) {
+    for stage in stages {
         for r in stage.registers["Material"] {
             if r>=0&&!slice.contains(registers[:],r) {append(&registers,r)}
         }
     }
     slice.sort(registers[:])
+    // Registers that do not fit the parameters of a program are written into it as the values
+    // the material has: the program is then of that material alone, and its name says so.
     bytes:=(len(slots)*4+15)/16*16+len(registers)*16
-    if len(slots)+len(registers)>PROGRAM_MAX_FIELDS||bytes>PROGRAM_MAX_BYTES {
-        return {},Error{"program",fmt.tprintf("its shaders read %d textures and %d registers of the material: more than a program's parameters hold (%d fields, %d bytes)",
-            len(slots),len(registers),PROGRAM_MAX_FIELDS,PROGRAM_MAX_BYTES)}
+    written:=len(slots)+len(registers)>PROGRAM_MAX_FIELDS||bytes>PROGRAM_MAX_BYTES
+    if len(slots)>PROGRAM_MAX_FIELDS {
+        return {},Error{"program",fmt.tprintf("its shaders sample %d textures of the material: more than a program's parameters hold (%d fields)",len(slots),PROGRAM_MAX_FIELDS)}
+    }
+    register_value :: proc(ub:json.Array,r:int) -> (value:[4]f32) {
+        if r<len(ub) {
+            row,_:=json_arr(ub[r])
+            for c in 0..<min(len(row),4) {value[c],_=json_f32(row[c])}
+        }
+        return
     }
 
     notes:=make([dynamic]string,context.temp_allocator)
-    name:=fmt.tprintf("Unreal_%s",hash)
+    limits:=make([dynamic]string,context.temp_allocator)
+    rw:=Rewrite{textures=textures,notes=&notes,factory=factory,written=written}
+    collections_v,_:=json_get(root,"Collections")
+    collection_list,_:=json_arr(collections_v)
+    rw.collections=make([]json.Array,len(collection_list),context.temp_allocator)
+    for item,i in collection_list {
+        buffer,_:=json_get(item,"UniformBuffer")
+        rw.collections[i],_=json_arr(buffer)
+    }
+    blend_v,_:=json_get(params,"BlendMode")
+    blend:=json_str(blend_v)
+    name:=fmt.tprintf("Unreal_%s_%s",hash,factory_name)
+    if written {
+        values:=make([dynamic]f32,context.temp_allocator)
+        for r in registers {
+            value:=register_value(ub,r)
+            append(&values,..value[:])
+        }
+        name=fmt.tprintf("%s_%08x",name,core_hash.fnv32a(slice.to_bytes(values[:])))
+    }
     w:=strings.builder_make(allocator)
     fmt.sbprintfln(&w,"//! mirai surface %s",name)
     for k in slots {fmt.sbprintfln(&w,"//! parameter t%d {{\"kind\":\"texture\"}}",k)}
-    for r in registers {fmt.sbprintfln(&w,"//! parameter m%d {{\"default\":[0.0,0.0,0.0,0.0],\"min\":-1000000.0,\"max\":1000000.0}}",r)}
+    if !written {
+        for r in registers {fmt.sbprintfln(&w,"//! parameter m%d {{\"default\":[0.0,0.0,0.0,0.0],\"min\":-1000000.0,\"max\":1000000.0}}",r)}
+    }
     strings.write_string(&w,"// The compiled shaders of an Unreal material as one surface program: generated, not written.\n")
     fmt.sbprintfln(&w,"namespace %s {{",name)
     strings.write_string(&w,"struct Parameters {\n")
     for k in slots {fmt.sbprintfln(&w,"    uint t%d;",k)}
-    for r in registers {fmt.sbprintfln(&w,"    float4 m%d;",r)}
-    if len(slots)+len(registers)==0 {strings.write_string(&w,"    float unused;\n")}
+    if !written {
+        for r in registers {fmt.sbprintfln(&w,"    float4 m%d;",r)}
+    }
+    if len(slots)+(written ? 0 : len(registers))==0 {strings.write_string(&w,"    float unused;\n")}
     strings.write_string(&w,"};\n")
+    if written {
+        for r in registers {
+            value:=register_value(ub,r)
+            fmt.sbprintfln(&w,"static const float4 DX_M%d = float4(%s, %s, %s, %s);",r,slang_float(value[0]),slang_float(value[1]),slang_float(value[2]),slang_float(value[3]))
+        }
+    }
     fmt.sbprintfln(&w,"static const int DX_VERTEX_INPUTS = %d;",max(vs.in_size,1))
     fmt.sbprintfln(&w,"static const int DX_PIXEL_INPUTS = %d;",ps.in_size)
     fmt.sbprintfln(&w,"static const int DX_PIXEL_OUTPUTS = %d;",ps.out_size)
     strings.write_string(&w,PROGRAM_PRELUDE)
-    if problem:=stage_rewrite(&w,vertex,&vs,&ps,true,textures,&notes);problem!="" {
-        strings.builder_destroy(&w)
-        return {},Error{"program",problem}
+    // The vertex function of a mesh runs at the pixel; that of particles is not run at all.
+    if rw.factory==nil {
+        if problem:=stage_rewrite(&w,vertex,&vs,&ps,true,&rw);problem!="" {
+            strings.builder_destroy(&w)
+            return {},Error{"program",problem}
+        }
     }
-    if problem:=stage_rewrite(&w,pixel,&ps,nil,false,textures,&notes);problem!="" {
+    if problem:=stage_rewrite(&w,pixel,&ps,nil,false,&rw);problem!="" {
         strings.builder_destroy(&w)
         return {},Error{"program",problem}
     }
@@ -669,43 +857,89 @@ cooked_shader_program :: proc(description,pixel,vertex:string,allocator:=context
     set :: proc(w:^strings.Builder,array:string,at:int,value:string) {
         fmt.sbprintfln(w,"    e.%s[%d] = %s;",array,at,value)
     }
-    for in_ in vs.inputs {
-        if !in_.used {continue}
-        switch {
-        case in_.semantic=="ATTRIBUTE"&&in_.index==0:
-            for i in 0..<3 {set(&w,"vin",in_.base+i,fmt.tprintf("e.local[%d]",i))}
-            set(&w,"vin",in_.base+3,"d_c(1.0)")
-        case in_.semantic=="ATTRIBUTE"&&in_.index==1:
-            for i in 0..<3 {set(&w,"vin",in_.base+i,fmt.tprintf("d_c(e.local_tangent[%d])",i))}
-        case in_.semantic=="ATTRIBUTE"&&in_.index==2:
-            for i in 0..<3 {set(&w,"vin",in_.base+i,fmt.tprintf("d_c(e.local_normal[%d])",i))}
-            set(&w,"vin",in_.base+3,"d_c(e.side)")
-        case in_.semantic=="ATTRIBUTE"&&in_.index==3:
-            for i in 0..<4 {set(&w,"vin",in_.base+i,fmt.tprintf("d_c(e.color.bgra[%d])",i))}
-        case strings.has_prefix(in_.semantic,"SV_"):
-            // vertex and instance zero
-        case:
-            note_add(&notes,fmt.tprintf("the vertex input %s%d",in_.semantic,in_.index))
+    if rw.factory==nil {
+        for in_ in vs.inputs {
+            if !in_.used {continue}
+            switch {
+            case in_.semantic=="ATTRIBUTE"&&in_.index==0:
+                for i in 0..<3 {set(&w,"vin",in_.base+i,fmt.tprintf("e.local[%d]",i))}
+                set(&w,"vin",in_.base+3,"d_c(1.0)")
+            case in_.semantic=="ATTRIBUTE"&&in_.index==1:
+                for i in 0..<3 {set(&w,"vin",in_.base+i,fmt.tprintf("d_c(e.local_tangent[%d])",i))}
+            case in_.semantic=="ATTRIBUTE"&&in_.index==2:
+                for i in 0..<3 {set(&w,"vin",in_.base+i,fmt.tprintf("d_c(e.local_normal[%d])",i))}
+                set(&w,"vin",in_.base+3,"d_c(e.side)")
+            case in_.semantic=="ATTRIBUTE"&&in_.index==3:
+                for i in 0..<4 {set(&w,"vin",in_.base+i,fmt.tprintf("d_c(e.color.bgra[%d])",i))}
+            case strings.has_prefix(in_.semantic,"SV_"):
+                // vertex and instance zero
+            case:
+                note_add(&notes,fmt.tprintf("the vertex input %s%d",in_.semantic,in_.index))
+            }
         }
+        strings.write_string(&w,"    dx_vertex(e);\n")
     }
-    strings.write_string(&w,"    dx_vertex(e);\n")
     for in_ in ps.inputs {
         if !in_.used {continue}
         from_vertex:=false
-        for o in vs.outputs {from_vertex||=o.used&&o.semantic==in_.semantic&&o.index==in_.index}
+        for o in vs.outputs {from_vertex||=rw.factory==nil&&o.used&&o.semantic==in_.semantic&&o.index==in_.index}
         if from_vertex {continue}
+        if f:=rw.factory;f!=nil {
+            // What the particle gives: its colour, the texture coordinates of what draws it and its dynamic parameters.
+            is :: proc(e:Element,i:Interpolant,offset:=0) -> bool {return i.semantic!=""&&e.semantic==i.semantic&&e.index==i.index+offset}
+            answered:=true
+            switch {
+            case is(in_,f.color):
+                for i in 0..<4 {set(&w,"pin",in_.base+i,fmt.tprintf("d_c(e.color[%d])",i))}
+            case is(in_,f.texcoords):
+                for row in 0..<in_.rows {
+                    for i in 0..<4 {set(&w,"pin",in_.base+row*4+i,row==0 ? fmt.tprintf("e.uv[%d]",i) : "d_c(0.0)")}
+                }
+            case is(in_,f.vertex_color):
+                for i in 0..<4 {set(&w,"pin",in_.base+i,"d_c(1.0)")}
+                note_add(&limits,"the vertex colours of the mesh a particle draws: white")
+            case in_.semantic=="PARTICLE_RANDOM":
+                set(&w,"pin",in_.base,"d_c(e.particle_random)")
+            case in_.semantic=="PARTICLE_SUBUVS":
+                for i in 0..<4 {set(&w,"pin",in_.base+i,fmt.tprintf("e.uv[%d]",i%2))}
+            case in_.semantic=="PARTICLE_POSITION":
+                for i in 0..<3 {set(&w,"pin",in_.base+i,fmt.tprintf("d_c(e.position[%d])",i))}
+                set(&w,"pin",in_.base+3,"d_c(e.particle_radius)")
+                note_add(&limits,"the centre of the particle: the point drawn")
+            case in_.semantic=="PARTICLE_VELOCITY":
+                set(&w,"pin",in_.base+2,"d_c(1.0)")
+                note_add(&limits,"the velocity of the particle: none")
+            case in_.semantic=="PARTICLE_TIME":
+                note_add(&limits,"the age of the particle over its life: zero")
+            case in_.semantic=="PARTICLE_LIGHTING_OFFSET":
+                // no offset
+            case:
+                answered=false
+                for n in 0..<4 {
+                    if is(in_,f.parameter,n) {
+                        for i in 0..<4 {set(&w,"pin",in_.base+i,fmt.tprintf("d_c(dx_particle_dynamic(e, %d)[%d])",n,i))}
+                        answered=true
+                    }
+                }
+            }
+            if answered {continue}
+        }
         switch {
-        case in_.semantic=="TEXCOORD10_centroid"||in_.semantic=="TEXCOORD10":
+        case in_.semantic=="TEXCOORD10_centroid"||in_.semantic=="TEXCOORD10"||in_.semantic=="TEXCOORD"&&in_.index==10:
             for i in 0..<3 {set(&w,"pin",in_.base+i,fmt.tprintf("d_c(e.tangent[%d])",i))}
-        case in_.semantic=="TEXCOORD11_centroid"||in_.semantic=="TEXCOORD11":
+        case in_.semantic=="TEXCOORD11_centroid"||in_.semantic=="TEXCOORD11"||in_.semantic=="TEXCOORD"&&in_.index==11:
             for i in 0..<3 {set(&w,"pin",in_.base+i,fmt.tprintf("d_c(e.normal[%d])",i))}
             set(&w,"pin",in_.base+3,"d_c(e.side)")
         case in_.semantic=="TEXCOORD"&&in_.index==9:
             for i in 0..<3 {set(&w,"pin",in_.base+i,fmt.tprintf("d_make(e.position[%d], e.position_dx[%d], e.position_dy[%d])",i,i,i))}
+        case in_.semantic=="TEXCOORD"&&in_.index==7:
+            // The fog of the vertex: none of its colour, all of what is behind.
+            set(&w,"pin",in_.base+3,"d_c(1.0)")
         case in_.semantic=="SV_Position":
+            // Its depth as the view's depth transform reads one: the depth itself.
             set(&w,"pin",in_.base,"d_make(e.pixel.x, 1.0, 0.0)")
             set(&w,"pin",in_.base+1,"d_make(e.pixel.y, 0.0, 1.0)")
-            set(&w,"pin",in_.base+2,"d_c(0.5)")
+            set(&w,"pin",in_.base+2,"d_c(e.depth)")
             set(&w,"pin",in_.base+3,"d_c(e.depth)")
         case in_.semantic=="SV_IsFrontFace":
             set(&w,"pin",in_.base,"d_c(1.0)")
@@ -738,9 +972,16 @@ cooked_shader_program :: proc(description,pixel,vertex:string,allocator:=context
         // The shading model in the low four bits of the last channel: zero is unlit.
         fmt.sbprintfln(&w,"    if ((int(e.pout[%d].v * 255.0 + 0.5) & 15) == 0) {{ s.unlit = true; s.base_color = float3(0.0); }}",target[2]+3)
     } else if target[0]>=0 {
-        // One target: the colour it shows, and how much of it.
+        // One target: the colour it shows, and how much of it. What adds its light writes it
+        // already scaled and no coverage.
         strings.write_string(&w,"    s.unlit = true;\n    s.base_color = float3(0.0);\n    s.emission = max(scene, float3(0.0));\n")
-        fmt.sbprintfln(&w,"    if (!e.discarded) s.alpha = saturate(e.pout[%d].v);",target[0]+3)
+        switch {
+        case strings.has_suffix(blend,"BLEND_Additive"):
+        case strings.has_suffix(blend,"BLEND_Translucent")||strings.has_suffix(blend,"BLEND_Masked")||strings.has_suffix(blend,"BLEND_Opaque")||blend=="":
+            fmt.sbprintfln(&w,"    if (!e.discarded) s.alpha = saturate(e.pout[%d].v);",target[0]+3)
+        case:
+            note_add(&notes,fmt.tprintf("the blend %s",blend))
+        }
     } else {
         strings.builder_destroy(&w)
         return {},Error{"program","the pixel shader writes no target this importer reads"}
@@ -749,27 +990,27 @@ cooked_shader_program :: proc(description,pixel,vertex:string,allocator:=context
 
     p.name=strings.clone(name,allocator)
     p.source=strings.to_string(w)
-    p.parameters=make([]Cooked_Program_Parameter,len(slots)+len(registers),allocator)
+    p.parameters=make([]Cooked_Program_Parameter,len(slots)+(written ? 0 : len(registers)),allocator)
     for k,i in slots {
         tex_v,_:=json_get(tb[k],"Texture")
         p.parameters[i]={name=fmt.aprintf("t%d",k,allocator=allocator),is_texture=true,texture=strings.clone(json_str(tex_v),allocator)}
     }
-    for r,i in registers {
-        prm:=Cooked_Program_Parameter{name=fmt.aprintf("m%d",r,allocator=allocator)}
-        if r<len(ub) {
-            row,_:=json_arr(ub[r])
-            for c in 0..<min(len(row),4) {prm.value[c],_=json_f32(row[c])}
+    if !written {
+        for r,i in registers {
+            p.parameters[len(slots)+i]={name=fmt.aprintf("m%d",r,allocator=allocator),value=register_value(ub,r)}
         }
-        p.parameters[len(slots)+i]=prm
     }
     // View registers the shaders read that dx_view does not answer.
-    answered:=[?]int{44,45,46,47,77,84,85,87,125,128,148,155,156,159,163,164,165,166,167,168,169,170,171,172,173,174,212,361}
-    for stage in ([2]^Stage{&ps,&vs}) {
+    // (4 to 7, 76, 261, 262, 267 and 362 place the fog volume, which is off: zero.)
+    answered:=[?]int{4,5,6,7,24,25,26,27,31,44,45,46,47,76,77,82,83,84,85,87,125,126,128,148,155,156,159,163,164,165,166,167,168,169,170,171,172,173,174,212,261,262,267,361,362}
+    for stage in stages {
         for r in stage.registers["View"] {
             if !slice.contains(answered[:],r) {note_add(&notes,fmt.tprintf("the register %d of the view",r))}
         }
     }
     p.notes=make([]string,len(notes),allocator)
     for n,i in notes {p.notes[i]=strings.clone(n,allocator)}
+    p.limits=make([]string,len(limits),allocator)
+    for n,i in limits {p.limits[i]=strings.clone(n,allocator)}
     return p,nil
 }

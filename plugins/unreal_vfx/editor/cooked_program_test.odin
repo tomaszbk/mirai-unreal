@@ -68,7 +68,8 @@ cooked_emitter_runs_its_scripts_as_a_program :: proc(t:^testing.T) {
     sys,err:=cooked_niagara_build(PROGRAM_SYSTEM,alloc)
     _,bad:=err.?
     if !testing.expect(t,!bad)||!testing.expect_value(t,len(sys.emitters),1) {return}
-    em:=sys.emitters[0]
+    if !testing.expect_value(t,len(sys.emitters[0].layers),1) {return}
+    em:=sys.emitters[0].layers[0]
     testing.expect_value(t,len(em.notes),0)
     testing.expect_value(t,em.program_name,"Cooked_NS_Test_Burst")
     src:=em.program_source
@@ -124,8 +125,10 @@ cooked_emitter_runs_its_scripts_as_a_program :: proc(t:^testing.T) {
     other,other_err:=cooked_niagara_build(unanswered,alloc)
     _,bad=other_err.?
     if testing.expect(t,!bad&&len(other.emitters)==1) {
-        testing.expect_value(t,other.emitters[0].program_name,"")
-        testing.expect_value(t,len(other.emitters[0].notes),2)
+        if testing.expect_value(t,len(other.emitters[0].layers),1) {
+            testing.expect_value(t,other.emitters[0].layers[0].program_name,"")
+            testing.expect_value(t,len(other.emitters[0].layers[0].notes),2)
+        }
     }
 }
 

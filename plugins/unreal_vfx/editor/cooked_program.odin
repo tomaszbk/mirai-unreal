@@ -699,9 +699,27 @@ float3 nv_place_back(Mirai_Vfx_Context ctx, float3 p, bool local) {
 }
 `
 
-// The program of one emitter of a system `ue5parse niagara` described. size_attribute is what
-// its renderer takes the size of a particle from: SpriteSize, Scale or RibbonWidth.
-cooked_vfx_program :: proc(name:string,system,emitter:json.Object,size_attribute:string,allocator:=context.allocator) -> (p:Cooked_Vfx_Program) {
+// The program of one emitter of a system `ue5parse niagara` described, as one of its renderers
+// draws it: renderer is that renderer of the description, whose Bindings name the attribute
+// each thing a particle shows comes from (its place, colour, size, rotation, frame and what it
+// gives its material).
+cooked_vfx_program :: proc(name:string,system,emitter,renderer:json.Object,allocator:=context.allocator) -> (p:Cooked_Vfx_Program) {
+    bindings,_:=renderer["Bindings"].(json.Object)
+    kind:=jstr(renderer["Kind"])
+    bound :: proc(bindings:json.Object,key,fallback:string) -> string {
+        if name:=jstr(bindings[key]);name!="" {return strings.trim_prefix(name,"Particles.")}
+        return fallback
+    }
+    size_attribute:=bound(bindings,"SpriteSizeBinding","SpriteSize")
+    switch kind {
+    case "mesh":size_attribute=bound(bindings,"ScaleBinding","Scale")
+    case "ribbon":size_attribute=bound(bindings,"RibbonWidthBinding","RibbonWidth")
+    }
+    position_attribute:=bound(bindings,"PositionBinding","Position")
+    color_attribute:=bound(bindings,"ColorBinding","Color")
+    rotation_attribute:=bound(bindings,"SpriteRotationBinding","SpriteRotation")
+    frame_attribute:=bound(bindings,"SubImageIndexBinding","SubImageIndex")
+    random_attribute:=bound(bindings,"MaterialRandomBinding","MaterialRandom")
     t:=Translation{
         emitter=jstr(emitter["Name"]),
         interfaces=make([dynamic]Interface,context.temp_allocator),
@@ -823,18 +841,24 @@ cooked_vfx_program :: proc(name:string,system,emitter:json.Object,size_attribute
     }
     position,has_position:=vector(&t,"Position")
     velocity,has_velocity:=vector(&t,"Velocity")
+    // Where the renderer draws the particle, when that is not where its scripts move it.
+    shown,has_shown:=vector(&t,position_attribute)
+    drawn_apart:=position_attribute!="Position"&&has_shown
 
     // What the particle of Mirai takes of its attributes after a script.
     strings.write_string(&w,"void nv_leave(Mirai_Vfx_Context ctx, inout Mirai_Vfx_Particle particle, Attributes a) {\n")
-    if has_position {fmt.sbprintf(&w,"    particle.position = nv_place(ctx, %s, NV_LOCAL);\n",position)}
+    switch {
+    case drawn_apart:fmt.sbprintf(&w,"    particle.position = nv_place(ctx, %s, NV_LOCAL);\n",shown)
+    case has_position:fmt.sbprintf(&w,"    particle.position = nv_place(ctx, %s, NV_LOCAL);\n",position)
+    }
     if has_velocity {fmt.sbprintf(&w,"    particle.velocity = nv_way(ctx, %s, NV_LOCAL);\n",velocity)}
     if has_field(&t,"Lifetime") {strings.write_string(&w,"    particle.lifetime = max(fv(a.f_Lifetime), 1e-4);\n")}
     if has_field(&t,"Age") {strings.write_string(&w,"    particle.age = max(fv(a.f_Age), 0.0);\n")}
-    if has_field(&t,"SpriteRotation") {strings.write_string(&w,"    particle.rotation = radians(fv(a.f_SpriteRotation));\n")}
+    if kind=="sprite"&&has_field(&t,rotation_attribute) {fmt.sbprintf(&w,"    particle.rotation = radians(fv(a.%s));\n",ident("f_",rotation_attribute))}
     strings.write_string(&w,"}\n")
     // And what its attributes take of it before one: where the pool has it.
     strings.write_string(&w,"void nv_enter(Mirai_Vfx_Context ctx, Mirai_Vfx_Particle particle, inout Attributes a) {\n")
-    if has_position {
+    if has_position&&!drawn_apart {
         strings.write_string(&w,"    float3 at = nv_place_back(ctx, particle.position, NV_LOCAL);\n")
         for c in ([3]string{"x","y","z"}) {
             if has_field(&t,fmt.tprintf("Position.%s",c)) {fmt.sbprintf(&w,"    a.f_Position_%s = nf(at.%s);\n",c,c)}
@@ -868,11 +892,14 @@ cooked_vfx_program :: proc(name:string,system,emitter:json.Object,size_attribute
     strings.write_string(&w,"    nv_leave(ctx, particle, a);\n    if (!keep) particle.age = particle.lifetime;\n}\n")
 
     strings.write_string(&w,"void render(Mirai_Vfx_Context ctx, Parameters p, Mirai_Vfx_Particle particle, Attributes a, inout Mirai_Vfx_Visual visual) {\n")
-    if color,has_color:=vector(&t,"Color");has_color {
-        alpha:=has_field(&t,"Color.w") ? "saturate(fv(a.f_Color_w))" : "1.0"
+    if color,has_color:=vector(&t,color_attribute);has_color {
+        alpha:=has_field(&t,fmt.tprintf("%s.w",color_attribute)) ? fmt.tprintf("saturate(fv(a.%s))",ident("f_",fmt.tprintf("%s.w",color_attribute))) : "1.0"
         fmt.sbprintf(&w,"    visual.color = float4(max(%s, float3(0.0)), %s);\n",color,alpha)
     }
     switch {
+    case kind=="light":
+        // A light renderer draws no particle.
+        strings.write_string(&w,"    visual.color = float4(0.0);\n    visual.size = 0.0;\n")
     case has_field(&t,fmt.tprintf("%s.x",size_attribute)):
         parts:=make([dynamic]string,context.temp_allocator)
         for c in ([3]string{"x","y","z"}) {
@@ -881,15 +908,15 @@ cooked_vfx_program :: proc(name:string,system,emitter:json.Object,size_attribute
         largest:=parts[0]
         for part in parts[1:] {largest=fmt.tprintf("max(%s, %s)",largest,part)}
         // A mesh takes its size as how many times its own; a sprite as metres across.
-        fmt.sbprintf(&w,"    visual.size = %s * %s * max(p.scale, 0.0);\n",largest,size_attribute=="Scale" ? "1.0" : "0.01")
+        fmt.sbprintf(&w,"    visual.size = %s * %s * max(p.scale, 0.0);\n",largest,kind=="mesh" ? "1.0" : "0.01")
         if len(parts)>1 {note(&t.limits,fmt.tprintf("%s of each axis: a particle takes the largest",size_attribute))}
     case has_field(&t,size_attribute):
         fmt.sbprintf(&w,"    visual.size = abs(fv(a.%s)) * 0.01 * max(p.scale, 0.0);\n",ident("f_",size_attribute))
     }
-    if has_field(&t,"SubImageIndex") {strings.write_string(&w,"    visual.frame = fv(a.f_SubImageIndex);\n")}
-    if has_field(&t,"MaterialRandom") {strings.write_string(&w,"    visual.random = fv(a.f_MaterialRandom);\n")}
+    if has_field(&t,frame_attribute) {fmt.sbprintf(&w,"    visual.frame = fv(a.%s);\n",ident("f_",frame_attribute))}
+    if has_field(&t,random_attribute) {fmt.sbprintf(&w,"    visual.random = fv(a.%s);\n",ident("f_",random_attribute))}
     for slot in 0..<4 {
-        base:=slot==0 ? "DynamicMaterialParameter" : fmt.tprintf("DynamicMaterialParameter%d",slot)
+        base:=bound(bindings,slot==0 ? "DynamicMaterialBinding" : fmt.tprintf("DynamicMaterial%dBinding",slot),slot==0 ? "DynamicMaterialParameter" : fmt.tprintf("DynamicMaterialParameter%d",slot))
         if !has_field(&t,fmt.tprintf("%s.x",base)) {continue}
         parts:[4]string
         for c,i in ([4]string{"x","y","z","w"}) {

@@ -5,7 +5,7 @@ import "core:strings"
 import "core:testing"
 
 @(private="file")
-PROGRAM_DESCRIPTION :: `{"Material":"MI_Floor","CodeHash":"00112233aabbccdd",
+PROGRAM_DESCRIPTION :: `{"Material":"MI_Floor","CodeHash":"00112233aabbccdd","VertexFactory":"LocalVF",
 "Pixel":{"Shader":"003_Pixel","Function":"dx_pixel","Source":"pixel.slang",
  "Inputs":[{"Id":0,"Semantic":"TEXCOORD10_centroid","Index":0,"Rows":1,"Integer":false,"Used":true},
            {"Id":1,"Semantic":"TEXCOORD","Index":0,"Rows":2,"Integer":false,"Used":true},
@@ -71,7 +71,7 @@ cooked_shader_program_answers_what_its_functions_read :: proc(t:^testing.T) {
     p,err:=cooked_shader_program(description,PROGRAM_PIXEL,PROGRAM_VERTEX,alloc)
     _,bad:=err.?
     if !testing.expect(t,!bad,"a program of known layouts builds") {return}
-    testing.expect_value(t,p.name,"Unreal_00112233aabbccdd")
+    testing.expect_value(t,p.name,"Unreal_00112233aabbccdd_LocalVF")
     testing.expect_value(t,len(p.notes),0)
     // Parameters: the texture the shaders sample, then the registers they read, in order.
     if testing.expect_value(t,len(p.parameters),3) {
@@ -83,7 +83,7 @@ cooked_shader_program_answers_what_its_functions_read :: proc(t:^testing.T) {
         testing.expect_value(t,p.parameters[2].value,[4]f32{0.5,0.25,0,1})
     }
     wants:=[]string{
-        "//! mirai surface Unreal_00112233aabbccdd",
+        "//! mirai surface Unreal_00112233aabbccdd_LocalVF",
         "//! parameter t1 {\"kind\":\"texture\"}",
         "    uint t1;\n    float4 m1;\n    float4 m3;\n",
         "v1=int(e.vin[4].v);",          // SV_VertexID, the second vertex input
@@ -111,6 +111,20 @@ cooked_shader_program_answers_what_its_functions_read :: proc(t:^testing.T) {
     cooked_shader_program_destroy(&p,alloc)
     testing.expect_value(t,len(tracking.allocation_map),0)
 
+    // More registers than the parameters of a program hold: they are written into it as the
+    // values of the material, and its name tells that material from another of the same shaders.
+    many,_:=strings.replace_all(description,`"Registers":[3,1]`,`"Registers":[3,1,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19]`,context.temp_allocator)
+    w,werr:=cooked_shader_program(many,PROGRAM_PIXEL,PROGRAM_VERTEX,alloc)
+    _,wbad:=werr.?
+    if testing.expect(t,!wbad,"a program of many registers builds") {
+        testing.expect(t,strings.has_prefix(w.name,"Unreal_00112233aabbccdd_LocalVF_")&&len(w.name)==len("Unreal_00112233aabbccdd_LocalVF_")+8,"its name carries its values")
+        testing.expect_value(t,len(w.parameters),1) // the texture alone
+        testing.expect(t,strings.contains(w.source,"static const float4 DX_M3 = float4(0.5, 0.25, 0.0, 1.0);"))
+        testing.expect(t,strings.contains(w.source,"v2=DX_M3;")&&!strings.contains(w.source,"float4 m3;"))
+        cooked_shader_program_destroy(&w,alloc)
+    }
+    testing.expect_value(t,len(tracking.allocation_map),0)
+
     // An engine buffer of another layout is refused, not read wrong.
     other,_:=strings.replace_all(PROGRAM_DESCRIPTION,"VIEW_LAYOUT","deadbeef",context.temp_allocator)
     _,err=cooked_shader_program(other,PROGRAM_PIXEL,PROGRAM_VERTEX,alloc)
@@ -125,7 +139,9 @@ cooked_shader_program_answers_what_its_functions_read :: proc(t:^testing.T) {
         {"[]","",""},
         {`{"CodeHash":"../x"}`,"",""},
         {`{"CodeHash":"00"}`,"",""},
-        {`{"CodeHash":"00","Pixel":{"Inputs":[{"Rows":999999999}],"Outputs":[{}]},"Vertex":7}`,"dx_input(e,0,99,0)",""},
+        {`{"CodeHash":"00","VertexFactory":"a b"}`,"",""},
+        {`{"CodeHash":"00","VertexFactory":"NiagaraSpriteVF","Collections":7,"Pixel":{"Inputs":[{"Semantic":"TEXCOORD","Index":1,"Rows":3,"Used":true}],"Outputs":[{"Semantic":"SV_Target","Used":true}]}}`,"dx_cb(e,0,1);dx_sample(e,1,2,a,b,c);",""},
+        {`{"CodeHash":"00","VertexFactory":"LocalVF","Pixel":{"Inputs":[{"Rows":999999999}],"Outputs":[{}]},"Vertex":7}`,"dx_input(e,0,99,0)",""},
         {description,"v1=dx_input(e,1,1","v=dx_output(e"},
         {description,"v1=dx_input(e,v9,0,0);",""},
         {description,"dx_output(e,3,0);",""},
