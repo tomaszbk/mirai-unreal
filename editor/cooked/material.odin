@@ -314,7 +314,10 @@ cooked_material_parse :: proc(json_text:string,allocator:=context.allocator) -> 
     // Map parameter values onto Material_Info. Only what the instance chain sets counts: a
     // master shared by every character or prop declares hundreds of parameters whose defaults
     // say nothing about this material (a derez colour, a tiling of a pattern it does not use).
-    if v,found:=find_vector(m.vectors,{"BaseColor","BaseColorTint","Tint","DiffuseColor","Color","AlbedoTint","Albedo"});found {
+    // Color1_Base is the base tint of the leaves of Fortnite's tree master; a trunk of it
+    // (IsTrunk) inherits the value of its leaves and does not draw with it.
+    is_trunk,_:=find_switch(m.switches,"IsTrunk")
+    if v,found:=find_vector(m.vectors,{"BaseColor","BaseColorTint","Tint","DiffuseColor","Color","AlbedoTint","Albedo","Color1_Base"});found && !is_trunk {
         m.info.base_color={max(v.x,0),max(v.y,0),max(v.z,0)}
     }
     if v,found:=find_vector(m.vectors,{"EmissiveColor","Emissive Color","Emissive","EmissiveTint","GlowColor"});found {
@@ -415,7 +418,7 @@ cooked_material_parse :: proc(json_text:string,allocator:=context.allocator) -> 
     // only to the Surface program's t_masks slot, not to Mirai's alpha-cutout maps.mask.
     // A trunk of Fortnite's tree master (switch IsTrunk) draws its Trunk_ textures, not the
     // leaf ones it inherits.
-    if is_trunk,found:=find_switch(m.switches,"IsTrunk");found && is_trunk {
+    if is_trunk {
         for tex in m.textures {
             if !tex.set {continue}
             switch {

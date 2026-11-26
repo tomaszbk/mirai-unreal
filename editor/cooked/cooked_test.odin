@@ -478,6 +478,7 @@ cooked_material_takes_only_what_the_instance_sets :: proc(t:^testing.T) {
 
     trunk,trunk_err:=cooked_material_parse(`{"Name":"MI_Trunk","BlendMode":"BLEND_Opaque","ShadingModel":"MSM_DefaultLit",
         "StaticSwitches":{"IsTrunk":{"Value":true,"From":"MI_Trunk","Overridden":true}},
+        "Vectors":{"Color1_Base":{"Value":[0.5,0.4,0.45,1],"From":"MI_Leaves","Overridden":true}},
         "Textures":{"Diffuse":{"Value":"/Game/T_Leaf_D.T_Leaf_D","From":"MI_Leaves","Overridden":true},
             "Trunk_BaseColor":{"Value":"/Game/T_Bark_D.T_Bark_D","From":"MI_Trunk","Overridden":true},
             "Trunk_Normal":{"Value":"/Game/T_Bark_N.T_Bark_N","From":"MI_Trunk","Overridden":true}}}`,alloc)
@@ -485,4 +486,11 @@ cooked_material_takes_only_what_the_instance_sets :: proc(t:^testing.T) {
     if !testing.expect(t,!bad) {return}
     testing.expect_value(t,trunk.texture_paths[.Base_Color],"/Game/T_Bark_D.T_Bark_D")
     testing.expect_value(t,trunk.texture_paths[.Normal],"/Game/T_Bark_N.T_Bark_N")
+    testing.expect_value(t,trunk.info.base_color,[3]f32{1,1,1})
+
+    leaves,leaves_err:=cooked_material_parse(`{"Name":"MI_Leaves","BlendMode":"BLEND_Masked","ShadingModel":"MSM_DefaultLit",
+        "Vectors":{"Color1_Base":{"Value":[0.5,0.4,0.45,1],"From":"MI_Leaves","Overridden":true}}}`,alloc)
+    _,bad=leaves_err.?
+    if !testing.expect(t,!bad) {return}
+    testing.expect_value(t,leaves.info.base_color,[3]f32{0.5,0.4,0.45})
 }
