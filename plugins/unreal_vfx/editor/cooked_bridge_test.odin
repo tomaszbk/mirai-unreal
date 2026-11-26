@@ -155,13 +155,12 @@ cooked_niagara_bridge_builds_particle_and_compiles_vfx_slang :: proc(t:^testing.
 // Cooked Niagara emitter with UNiagaraLightRendererProperties populates
 // Mirai .particle v10 effect.Particle_Light cleanly and round-trips at v10.
 @(test)
-cooked_niagara_bridge_emits_particle_v10_light :: proc(t:^testing.T) {
+cooked_niagara_bridge_emits_a_particle_with_its_light :: proc(t:^testing.T) {
     arena:mem.Dynamic_Arena
     mem.dynamic_arena_init(&arena)
     defer mem.dynamic_arena_destroy(&arena)
     alloc:=mem.dynamic_arena_allocator(&arena)
 
-    testing.expect_value(t,effect.PARTICLE_VERSION,u32(10))
 
     doc:=`{
   "Schema": "ue5parse.niagara/2",
@@ -196,7 +195,6 @@ cooked_niagara_bridge_emits_particle_v10_light :: proc(t:^testing.T) {
           "RadiusScale": 1.2,
           "DiffuseScale": 1.0,
           "bMegaLightsCastShadows": true,
-          "MaxLights": 2,
           "IndirectLightingIntensity": 0.8
         }
       ]
@@ -214,7 +212,6 @@ cooked_niagara_bridge_emits_particle_v10_light :: proc(t:^testing.T) {
     testing.expectf(t,abs(l.intensity-600.0)<1e-3,"intensity %v",l.intensity)
     testing.expectf(t,abs(l.range-5.4)<1e-3,"range %v (450cm * 1.2)",l.range)
     testing.expectf(t,abs(l.radius-0.3)<1e-3,"radius %v",l.radius)
-    testing.expect_value(t,l.max_lights,u16(2))
     testing.expect(t,l.shadows)
     testing.expectf(t,abs(l.indirect-0.8)<1e-3,"indirect %v",l.indirect)
     testing.expectf(t,abs(l.scattering-1.5)<1e-3,"scattering %v",l.scattering)
@@ -235,39 +232,39 @@ cooked_niagara_bridge_emits_particle_v10_light :: proc(t:^testing.T) {
     cases:=[]Light_Case{
         {
             label="explicit_hdr_inv_sq",
-            params={radius_scale=2.0,diffuse_scale=1.0,inverse_squared=true,color_add={10,5,2},has_color_add=true,particle_scattering=-1,renderer_scattering=1,indirect=1,max_lights=1},
+            params={radius_scale=2.0,diffuse_scale=1.0,inverse_squared=true,color_add={10,5,2},has_color_add=true,particle_scattering=-1,renderer_scattering=1,indirect=1},
             want_eff={10.0/10000.0,5.0/10000.0,2.0/10000.0},
         },
         {
             label="explicit_dim_inv_sq",
-            params={radius_scale=2.0,diffuse_scale=1.0,inverse_squared=true,color_add={0.5,0.25,0.1},has_color_add=true,particle_scattering=-1,renderer_scattering=1,indirect=1,max_lights=1},
+            params={radius_scale=2.0,diffuse_scale=1.0,inverse_squared=true,color_add={0.5,0.25,0.1},has_color_add=true,particle_scattering=-1,renderer_scattering=1,indirect=1},
             want_eff={0.5/10000.0,0.25/10000.0,0.1/10000.0},
         },
         {
             label="explicit_hdr_windowed",
-            params={radius_scale=4.0,diffuse_scale=1.0,inverse_squared=false,default_exponent=1.0,particle_color={10,5,2},has_particle_color=true,particle_scattering=-1,renderer_scattering=1,indirect=1,max_lights=1},
+            params={radius_scale=4.0,diffuse_scale=1.0,inverse_squared=false,default_exponent=1.0,particle_color={10,5,2},has_particle_color=true,particle_scattering=-1,renderer_scattering=1,indirect=1},
             want_eff={30.0,15.0,6.0},
         },
         {
             label="explicit_dim_windowed",
-            params={radius_scale=4.0,diffuse_scale=1.0,inverse_squared=false,default_exponent=1.0,particle_color={0.5,0.25,0.1},has_particle_color=true,particle_scattering=-1,renderer_scattering=1,indirect=1,max_lights=1},
+            params={radius_scale=4.0,diffuse_scale=1.0,inverse_squared=false,default_exponent=1.0,particle_color={0.5,0.25,0.1},has_particle_color=true,particle_scattering=-1,renderer_scattering=1,indirect=1},
             want_eff={1.5,0.75,0.3},
         },
         {
             label="particle_hdr_raw_windowed",
-            params={radius_scale=4.0,diffuse_scale=1.0,inverse_squared=false,default_exponent=1.0,fallback_color={10,5,2,1},fallback_color_intensity=1.0,particle_scattering=-1,renderer_scattering=1,indirect=1,max_lights=1},
+            params={radius_scale=4.0,diffuse_scale=1.0,inverse_squared=false,default_exponent=1.0,fallback_color={10,5,2,1},fallback_color_intensity=1.0,particle_scattering=-1,renderer_scattering=1,indirect=1},
             particle_rgb={10,5,2},want_zero_color=true,
             want_eff={30.0,15.0,6.0},
         },
         {
             label="particle_hdr_scaled_windowed",
-            params={radius_scale=4.0,diffuse_scale=1.0,inverse_squared=false,default_exponent=1.0,fallback_color={1,0.5,0.2,1},fallback_color_intensity=10.0,particle_scattering=-1,renderer_scattering=1,indirect=1,max_lights=1},
+            params={radius_scale=4.0,diffuse_scale=1.0,inverse_squared=false,default_exponent=1.0,fallback_color={1,0.5,0.2,1},fallback_color_intensity=10.0,particle_scattering=-1,renderer_scattering=1,indirect=1},
             particle_rgb={1,0.5,0.2},want_zero_color=true,
             want_eff={30.0,15.0,6.0},
         },
         {
             label="particle_dim_windowed",
-            params={radius_scale=4.0,diffuse_scale=1.0,inverse_squared=false,default_exponent=1.0,fallback_color={0.5,0.25,0.1,1},fallback_color_intensity=1.0,particle_scattering=-1,renderer_scattering=1,indirect=1,max_lights=1},
+            params={radius_scale=4.0,diffuse_scale=1.0,inverse_squared=false,default_exponent=1.0,fallback_color={0.5,0.25,0.1,1},fallback_color_intensity=1.0,particle_scattering=-1,renderer_scattering=1,indirect=1},
             particle_rgb={0.5,0.25,0.1},want_zero_color=true,
             want_eff={1.5,0.75,0.3},
         },
@@ -286,7 +283,7 @@ cooked_niagara_bridge_emits_particle_v10_light :: proc(t:^testing.T) {
     }
 
     // Zero-intensity black light stays disabled (intensity == 0).
-    dark:=niagara_particle_light({radius_scale=2.0,diffuse_scale=1.0,inverse_squared=true,particle_scattering=-1,renderer_scattering=1,indirect=1,max_lights=1})
+    dark:=niagara_particle_light({radius_scale=2.0,diffuse_scale=1.0,inverse_squared=true,particle_scattering=-1,renderer_scattering=1,indirect=1})
     testing.expect_value(t,dark.intensity,f32(0))
     testing.expect_value(t,dark.color,[3]f32{0,0,0})
 
@@ -297,7 +294,7 @@ cooked_niagara_bridge_emits_particle_v10_light :: proc(t:^testing.T) {
     a:asset.Asset
     testing.expect_value(t,asset.asset_open(&a,em.particle_bytes),asset.Error.None)
     defer asset.asset_close(&a)
-    testing.expect_value(t,asset.kind_check(&a,effect.PARTICLE_KIND,10),asset.Error.None)
+    testing.expect_value(t,asset.kind_check(&a,effect.PARTICLE_KIND,effect.PARTICLE_VERSION),asset.Error.None)
     view,verr:=effect.particle_view(&a,&types)
     testing.expect_value(t,verr,asset.Error.None)
     testing.expect_value(t,view.info.light,l)

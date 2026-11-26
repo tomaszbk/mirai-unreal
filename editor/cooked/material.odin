@@ -18,24 +18,28 @@ Cooked_Scalar :: struct {
     name:string,
     value:f32,
     from:string,
+    set:bool, // the instance or one of its parent instances gives it; false: the default of the master it comes from
 }
 
 Cooked_Vector :: struct {
     name:string,
     value:[4]f32,
     from:string,
+    set:bool, // the instance or one of its parent instances gives it; false: the default of the master it comes from
 }
 
 Cooked_Texture :: struct {
     name:string,
     path:string,
     from:string,
+    set:bool, // the instance or one of its parent instances gives it; false: the default of the master it comes from
 }
 
 Cooked_Switch :: struct {
     name:string,
     value:bool,
     from:string,
+    set:bool, // the instance or one of its parent instances gives it; false: the default of the master it comes from
 }
 
 // Channel packing layout of the metallic/roughness/specular mask texture.
@@ -151,12 +155,12 @@ cooked_material_parse :: proc(json_text:string,allocator:=context.allocator) -> 
     mat_sub,_:=json_obj(obj["Material"])
     prop_str :: proc(obj,sub:json.Object,key,fallback:string) -> string {
         if v,has:=obj[key];has {
-            inner,_:=unwrap_entry(v)
+            inner,_,_:=unwrap_entry(v)
             if s:=json_str(inner);s!="" {return s}
         }
         if sub!=nil {
             if v,has:=sub[key];has {
-                inner,_:=unwrap_entry(v)
+                inner,_,_:=unwrap_entry(v)
                 if s:=json_str(inner);s!="" {return s}
             }
         }
@@ -164,12 +168,12 @@ cooked_material_parse :: proc(json_text:string,allocator:=context.allocator) -> 
     }
     prop_bool :: proc(obj,sub:json.Object,key:string,fallback:bool) -> bool {
         if v,has:=obj[key];has {
-            inner,_:=unwrap_entry(v)
+            inner,_,_:=unwrap_entry(v)
             return json_bool(inner,fallback)
         }
         if sub!=nil {
             if v,has:=sub[key];has {
-                inner,_:=unwrap_entry(v)
+                inner,_,_:=unwrap_entry(v)
                 return json_bool(inner,fallback)
             }
         }
@@ -177,12 +181,12 @@ cooked_material_parse :: proc(json_text:string,allocator:=context.allocator) -> 
     }
     prop_f32 :: proc(obj,sub:json.Object,key:string,fallback:f32) -> f32 {
         if v,has:=obj[key];has {
-            inner,_:=unwrap_entry(v)
+            inner,_,_:=unwrap_entry(v)
             if f,fok:=json_f32(inner,fallback);fok {return f}
         }
         if sub!=nil {
             if v,has:=sub[key];has {
-                inner,_:=unwrap_entry(v)
+                inner,_,_:=unwrap_entry(v)
                 if f,fok:=json_f32(inner,fallback);fok {return f}
             }
         }
@@ -217,9 +221,9 @@ cooked_material_parse :: proc(json_text:string,allocator:=context.allocator) -> 
     for key in ([]string{"Scalars","scalars"}) {
         if s_obj,has:=json_obj(obj[key]);has {
             for k,v in s_obj {
-                val,from:=unwrap_entry(v)
+                val,from,set:=unwrap_entry(v)
                 if f,fok:=json_f32(val);fok {
-                    append(&scalars,Cooked_Scalar{strings.clone(k,allocator),f,strings.clone(from,allocator)})
+                    append(&scalars,Cooked_Scalar{strings.clone(k,allocator),f,strings.clone(from,allocator),set})
                 }
             }
         }
@@ -227,9 +231,9 @@ cooked_material_parse :: proc(json_text:string,allocator:=context.allocator) -> 
     for key in ([]string{"Vectors","vectors"}) {
         if v_obj,has:=json_obj(obj[key]);has {
             for k,v in v_obj {
-                val,from:=unwrap_entry(v)
+                val,from,set:=unwrap_entry(v)
                 if vec,vok:=json_vec4(val);vok {
-                    append(&vectors,Cooked_Vector{strings.clone(k,allocator),vec,strings.clone(from,allocator)})
+                    append(&vectors,Cooked_Vector{strings.clone(k,allocator),vec,strings.clone(from,allocator),set})
                 }
             }
         }
@@ -237,10 +241,10 @@ cooked_material_parse :: proc(json_text:string,allocator:=context.allocator) -> 
     for key in ([]string{"Textures","textures"}) {
         if t_obj,has:=json_obj(obj[key]);has {
             for k,v in t_obj {
-                val,from:=unwrap_entry(v)
+                val,from,set:=unwrap_entry(v)
                 path:=json_str(val)
                 if path!="" {
-                    append(&textures,Cooked_Texture{strings.clone(k,allocator),strings.clone(path,allocator),strings.clone(from,allocator)})
+                    append(&textures,Cooked_Texture{strings.clone(k,allocator),strings.clone(path,allocator),strings.clone(from,allocator),set})
                 }
             }
         }
@@ -248,29 +252,29 @@ cooked_material_parse :: proc(json_text:string,allocator:=context.allocator) -> 
     for key in ([]string{"StaticSwitches","static_switches","switches"}) {
         if sw_obj,has:=json_obj(obj[key]);has {
             for k,v in sw_obj {
-                val,from:=unwrap_entry(v)
-                append(&switches,Cooked_Switch{strings.clone(k,allocator),json_bool(val),strings.clone(from,allocator)})
+                val,from,set:=unwrap_entry(v)
+                append(&switches,Cooked_Switch{strings.clone(k,allocator),json_bool(val),strings.clone(from,allocator),set})
             }
         }
     }
     // Canonical sidecar unified `parameters` map (dispatches by JSON value type).
     if p_obj,has:=json_obj(obj["parameters"]);has {
         for k,v in p_obj {
-            val,from:=unwrap_entry(v)
+            val,from,set:=unwrap_entry(v)
             #partial switch x in val {
             case json.Boolean:
-                append(&switches,Cooked_Switch{strings.clone(k,allocator),bool(x),strings.clone(from,allocator)})
+                append(&switches,Cooked_Switch{strings.clone(k,allocator),bool(x),strings.clone(from,allocator),set})
             case json.Float,json.Integer:
                 if f,fok:=json_f32(val);fok {
-                    append(&scalars,Cooked_Scalar{strings.clone(k,allocator),f,strings.clone(from,allocator)})
+                    append(&scalars,Cooked_Scalar{strings.clone(k,allocator),f,strings.clone(from,allocator),set})
                 }
             case json.String:
                 if string(x)!="" {
-                    append(&textures,Cooked_Texture{strings.clone(k,allocator),strings.clone(string(x),allocator),strings.clone(from,allocator)})
+                    append(&textures,Cooked_Texture{strings.clone(k,allocator),strings.clone(string(x),allocator),strings.clone(from,allocator),set})
                 }
             case json.Array,json.Object:
                 if vec,vok:=json_vec4(val);vok {
-                    append(&vectors,Cooked_Vector{strings.clone(k,allocator),vec,strings.clone(from,allocator)})
+                    append(&vectors,Cooked_Vector{strings.clone(k,allocator),vec,strings.clone(from,allocator),set})
                 }
             }
         }
@@ -288,6 +292,12 @@ cooked_material_parse :: proc(json_text:string,allocator:=context.allocator) -> 
         }
     }
 
+    // What the material itself is named as the origin of is set by it.
+    for &x in scalars {x.set||=x.from==m.name}
+    for &x in vectors {x.set||=x.from==m.name}
+    for &x in textures {x.set||=x.from==m.name}
+    for &x in switches {x.set||=x.from==m.name}
+
     // Sort for deterministic output regardless of JSON map iteration order.
     slice.sort_by(scalars[:],proc(a,b:Cooked_Scalar) -> bool {return a.name<b.name})
     slice.sort_by(vectors[:],proc(a,b:Cooked_Vector) -> bool {return a.name<b.name})
@@ -301,16 +311,23 @@ cooked_material_parse :: proc(json_text:string,allocator:=context.allocator) -> 
     m.referenced_textures=refs[:]
     m.dynamic_params=dyn[:]
 
-    // Map high-ROI parameter values onto native Material_Info (v6).
+    // Map parameter values onto Material_Info. Only what the instance chain sets counts: a
+    // master shared by every character or prop declares hundreds of parameters whose defaults
+    // say nothing about this material (a derez colour, a tiling of a pattern it does not use).
     if v,found:=find_vector(m.vectors,{"BaseColor","BaseColorTint","Tint","DiffuseColor","Color","AlbedoTint","Albedo"});found {
         m.info.base_color={max(v.x,0),max(v.y,0),max(v.z,0)}
     }
-    if v,found:=find_vector(m.vectors,{"EmissiveColor","Emissive","EmissiveTint","GlowColor"});found {
+    if v,found:=find_vector(m.vectors,{"EmissiveColor","Emissive Color","Emissive","EmissiveTint","GlowColor"});found {
         intensity:f32=1
-        if s,has_i:=find_scalar(m.scalars,{"EmissiveIntensity","EmissiveStrength","EmissivePower","EmissiveBoost","GlowIntensity"});has_i {
+        if s,has_i:=find_scalar(m.scalars,{"EmissiveIntensity","EmissiveStrength","EmissivePower","EmissiveBoost","GlowIntensity","emissive mult"});has_i {
             intensity=max(s,0)
         }
         m.info.emission={max(v.x,0)*intensity,max(v.y,0)*intensity,max(v.z,0)*intensity}
+    }
+    // A master with an Emissive switch draws no emission while it is off, whatever colour the
+    // instance keeps for it.
+    for sw in m.switches {
+        if strings.equal_fold(sw.name,"Emissive") && !sw.value {m.info.emission={}}
     }
     if s,found:=find_scalar(m.scalars,{"Roughness","RoughnessMultiplier","RoughnessMax","RoughnessValue"});found {
         m.info.roughness=clamp(s,0,1)
@@ -393,25 +410,31 @@ cooked_material_parse :: proc(json_text:string,allocator:=context.allocator) -> 
         m.info.opacity=1
     }
 
-    // Preshader-evaluated overrides take highest priority when present.
-    if eval,has:=json_obj(obj["Evaluated"]);has {
-        if bc,bok:=json_vec4(eval["BaseColorTint"]);bok {
-            m.info.base_color={max(bc.x,0),max(bc.y,0),max(bc.z,0)}
-        }
-        if em,eok:=json_vec4(eval["EmissiveColor"]);eok && (em.x>0||em.y>0||em.z>0) {
-            m.info.emission={max(em.x,0),max(em.y,0),max(em.z,0)}
-        }
-    }
-
     // Classify cooked texture parameter names onto Mirai Material_Map_Kind slots.
     // On opaque materials, Fortnite multi-channel MasksTexture (AO/Cavity/SSS) belongs
     // only to the Surface program's t_masks slot, not to Mirai's alpha-cutout maps.mask.
-    for tex in m.textures {
-        if kind,matched:=classify_texture_slot(tex.name);matched && m.texture_paths[kind]=="" {
-            if kind==.Mask && m.info.alpha_mode==.Opaque && is_pbr_data_mask_name(tex.name) {
-                continue
+    // A trunk of Fortnite's tree master (switch IsTrunk) draws its Trunk_ textures, not the
+    // leaf ones it inherits.
+    if is_trunk,found:=find_switch(m.switches,"IsTrunk");found && is_trunk {
+        for tex in m.textures {
+            if !tex.set {continue}
+            switch {
+            case strings.equal_fold(tex.name,"Trunk_BaseColor"):m.texture_paths[.Base_Color]=tex.path
+            case strings.equal_fold(tex.name,"Trunk_Normal"):m.texture_paths[.Normal]=tex.path
+            case strings.equal_fold(tex.name,"Trunk_Specular"):m.texture_paths[.Metallic_Roughness]=tex.path
             }
-            m.texture_paths[kind]=tex.path
+        }
+    }
+    // The textures the instance sets first, then the defaults of its master.
+    for set in ([2]bool{true,false}) {
+        for tex in m.textures {
+            if tex.set!=set {continue}
+            if kind,matched:=classify_texture_slot(tex.name);matched && m.texture_paths[kind]=="" {
+                if kind==.Mask && m.info.alpha_mode==.Opaque && is_pbr_data_mask_name(tex.name) {
+                    continue
+                }
+                m.texture_paths[kind]=tex.path
+            }
         }
     }
 
@@ -456,13 +479,14 @@ apply_diffuse_transmission :: proc(info:^asset.Material_Info,sss:[3]f32) {
 }
 
 @(private="file")
-unwrap_entry :: proc(v:json.Value) -> (val:json.Value,from:string) {
+unwrap_entry :: proc(v:json.Value) -> (val:json.Value,from:string,set:bool) {
     if obj,ok:=v.(json.Object);ok {
         if inner,has:=obj["Value"];has {
-            return inner,json_str(obj["From"])
+            _,inherited:=obj["From"]
+            return inner,json_str(obj["From"]),!inherited || json_bool(obj["Overridden"])
         }
     }
-    return v,""
+    return v,"",true
 }
 
 @(private="file")
@@ -474,15 +498,21 @@ short_enum :: proc(s:string) -> string {
 @(private="file")
 find_scalar :: proc(list:[]Cooked_Scalar,names:[]string) -> (f32,bool) {
     for want in names {
-        for s in list {if strings.equal_fold(s.name,want) {return s.value,true}}
+        for s in list {if s.set && strings.equal_fold(s.name,want) {return s.value,true}}
     }
     return 0,false
 }
 
 @(private="file")
+find_switch :: proc(list:[]Cooked_Switch,name:string) -> (value,found:bool) {
+    for s in list {if s.set && strings.equal_fold(s.name,name) {return s.value,true}}
+    return
+}
+
+@(private="file")
 find_vector :: proc(list:[]Cooked_Vector,names:[]string) -> ([4]f32,bool) {
     for want in names {
-        for v in list {if strings.equal_fold(v.name,want) {return v.value,true}}
+        for v in list {if v.set && strings.equal_fold(v.name,want) {return v.value,true}}
     }
     return {},false
 }

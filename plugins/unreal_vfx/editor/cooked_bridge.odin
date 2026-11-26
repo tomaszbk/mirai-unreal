@@ -80,7 +80,6 @@ Niagara_Light_Params :: struct {
     renderer_scattering:f32,   // default 1.0
     indirect:f32,              // default 1.0
     shadows:bool,
-    max_lights:u16,            // default 1
     fallback_sprite_size_m:f32,
     fallback_color:[4]f32,
     fallback_color_intensity:f32, // Particle_Info.intensity multiplying fallback_color.rgb
@@ -148,7 +147,6 @@ niagara_particle_light :: proc(p:Niagara_Light_Params) -> effect.Particle_Light 
         intensity=max(lintensity,0),
         range=max(lrange,0),
         radius=clamp(lradius,0,max(lrange,0)),
-        max_lights=max(p.max_lights,1),
         shadows=p.shadows,
         indirect=max(p.indirect,0),
         scattering=max(lscatter,0),
@@ -304,7 +302,6 @@ build_cooked_emitter :: proc(
     light_alpha_scales:=false
     light_color_add:[3]f32
     light_shadows:=false
-    light_max:u16=1
     light_indirect:f32=1
     light_scattering:f32=1
     light_explicit_intensity:f32=0
@@ -328,7 +325,6 @@ build_cooked_emitter :: proc(
                     light_color_add={max(c_val.x,0),max(c_val.y,0),max(c_val.z,0)}
                 }
                 light_shadows=jbool(robj["bMegaLightsCastShadows"],false) || jbool(robj["bCastShadows"],false)
-                if ml,ok:=jf32(robj["MaxLights"]);ok && ml>=1 {light_max=u16(clamp(ml,1,65535))}
                 if ind,ok:=jf32(robj["IndirectLightingIntensity"]);ok && ind>=0 {light_indirect=ind}
                 if sc,ok:=jf32(robj["VolumetricScatteringIntensity"]);ok && sc>=0 {light_scattering=sc}
                 if li,ok:=jf32(robj["Intensity"]);ok && li>0 {light_explicit_intensity=li}
@@ -462,7 +458,6 @@ build_cooked_emitter :: proc(
             renderer_scattering=light_scattering,
             indirect=light_indirect,
             shadows=light_shadows,
-            max_lights=light_max,
             fallback_sprite_size_m=out.info.size[0],
             fallback_color=out.info.colors[0],
             fallback_color_intensity=out.info.intensity,

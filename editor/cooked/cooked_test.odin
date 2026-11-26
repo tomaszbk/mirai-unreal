@@ -447,3 +447,42 @@ cooked_anim_events_emit_mirai_spans_and_paired_markers :: proc(t:^testing.T) {
         testing.expectf(t,math.abs(paired[0].start_time-0.12)<1e-4 && math.abs(paired[0].end_time-0.42)<1e-4,"paired times %v",paired[0])
     }
 }
+
+// A master shared by many materials declares parameters this one never set: only what the
+// instance chain sets (Overridden, or its own name as the origin) gives a tint, an emission or
+// a texture, and a trunk of the tree master takes its Trunk_ textures.
+@(test)
+cooked_material_takes_only_what_the_instance_sets :: proc(t:^testing.T) {
+    arena:mem.Dynamic_Arena
+    mem.dynamic_arena_init(&arena)
+    defer mem.dynamic_arena_destroy(&arena)
+    alloc:=mem.dynamic_arena_allocator(&arena)
+    blade,err:=cooked_material_parse(`{"Name":"MI_Blade","BlendMode":"BLEND_Opaque","ShadingModel":"MSM_DefaultLit",
+        "Scalars":{"emissive mult":{"Value":5.0,"From":"MI_Blade","Overridden":true},"Roughness":{"Value":0.1,"From":"M_Master"}},
+        "Vectors":{"Tint":{"Value":[0,3.8,6,1],"From":"M_Master"},"Emissive Color":{"Value":[1.5,1.5,1.5,1],"From":"MI_Blade","Overridden":true}},
+        "Textures":{"Diffuse":{"Value":"/Game/T_Blade_D.T_Blade_D","From":"MI_Blade","Overridden":true},"Detail_Diffuse":{"Value":"/Game/T_Detail_D.T_Detail_D","From":"M_Master"}},
+        "Evaluated":{"BaseColorTint":{"R":0,"G":3.8,"B":6,"A":1,"Source":"Tint"}}}`,alloc)
+    _,bad:=err.?
+    if !testing.expect(t,!bad) {return}
+    testing.expect_value(t,blade.info.base_color,[3]f32{1,1,1})
+    testing.expect_value(t,blade.info.emission,[3]f32{7.5,7.5,7.5})
+    testing.expect_value(t,blade.info.roughness,asset.MATERIAL_DEFAULTS.roughness)
+    testing.expect_value(t,blade.texture_paths[.Base_Color],"/Game/T_Blade_D.T_Blade_D")
+
+    off,off_err:=cooked_material_parse(`{"Name":"MI_Body","BlendMode":"BLEND_Opaque","ShadingModel":"MSM_DefaultLit",
+        "StaticSwitches":{"Emissive":{"Value":false,"From":"M_Master"}},
+        "Vectors":{"EmissiveColor":{"Value":[0,0.79,1,1],"From":"MI_Body","Overridden":true}}}`,alloc)
+    _,bad=off_err.?
+    if !testing.expect(t,!bad) {return}
+    testing.expect_value(t,off.info.emission,[3]f32{0,0,0})
+
+    trunk,trunk_err:=cooked_material_parse(`{"Name":"MI_Trunk","BlendMode":"BLEND_Opaque","ShadingModel":"MSM_DefaultLit",
+        "StaticSwitches":{"IsTrunk":{"Value":true,"From":"MI_Trunk","Overridden":true}},
+        "Textures":{"Diffuse":{"Value":"/Game/T_Leaf_D.T_Leaf_D","From":"MI_Leaves","Overridden":true},
+            "Trunk_BaseColor":{"Value":"/Game/T_Bark_D.T_Bark_D","From":"MI_Trunk","Overridden":true},
+            "Trunk_Normal":{"Value":"/Game/T_Bark_N.T_Bark_N","From":"MI_Trunk","Overridden":true}}}`,alloc)
+    _,bad=trunk_err.?
+    if !testing.expect(t,!bad) {return}
+    testing.expect_value(t,trunk.texture_paths[.Base_Color],"/Game/T_Bark_D.T_Bark_D")
+    testing.expect_value(t,trunk.texture_paths[.Normal],"/Game/T_Bark_N.T_Bark_N")
+}

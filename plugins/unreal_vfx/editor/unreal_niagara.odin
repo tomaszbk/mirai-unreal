@@ -680,7 +680,6 @@ niagara_renderer :: proc(c:^unreal_scene.Context,info:^effect.Particle_Info,rend
             renderer_scattering=1,
             indirect=1,
             shadows=shadows,
-            max_lights=1,
             fallback_sprite_size_m=info.size[0],
             fallback_color=info.colors[0],
             fallback_color_intensity=info.intensity,

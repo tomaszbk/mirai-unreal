@@ -43,6 +43,7 @@ Converted_Light :: struct {
     range:f32,      // m
     radius:f32,     // m
     angle:f32,      // of a spot: its half angle, radians
+    inner:f32,      // of a spot: the share of angle its inner cone takes
     size:[2]f32,    // of a rectangle, m
     indirect,scattering:f32, // what of its light bounces and what a fog scatters, as Unreal gives them
     shadows:bool,
@@ -51,7 +52,6 @@ Converted_Light :: struct {
 Light_Approximation :: enum u8 {
     Falloff,       // no inverse squared falloff: matched where it reaches half its radius
     Source_Length, // a point or spot drawn out into a tube
-    Inner_Cone,    // Mirai fades over the outer fifth of the cone
     Cone_Clamped,  // outside 1° to 89°
 }
 
@@ -80,7 +80,7 @@ light_convert :: proc(u:Unreal_Light) -> (m:Converted_Light,approximated:bit_set
         outer:=clamp(u.outer_cone*math.RAD_PER_DEG,inner+0.001,88.9*math.RAD_PER_DEG+0.001)
         m.angle=clamp(outer,render.SPOT_MIN,render.SPOT_MAX)
         if m.angle!=outer {approximated+={.Cone_Clamped}}
-        if inner>0 {approximated+={.Inner_Cone}}
+        m.inner=clamp(inner/outer,0,1)
         cos_cone=math.cos(outer)
     }
     if u.kind!=.Directional && u.kind!=.Rect && u.source_length>0 {approximated+={.Source_Length}}
@@ -215,7 +215,7 @@ light_add :: proc(c:^Context,actor,component:int,kind:Light_Kind) -> bool {
         light:=render.Point_Light{color=m.color,intensity=m.value,range=m.range,radius=m.radius,shadows=m.shadows,indirect=m.indirect,scattering=m.scattering}
         if !component_set(c,e,"Point_Light",&light) {return false}
     case .Spot:
-        light:=render.Spot_Light{color=m.color,intensity=m.value,range=m.range,radius=m.radius,angle=m.angle,shadows=m.shadows,indirect=m.indirect,scattering=m.scattering}
+        light:=render.Spot_Light{color=m.color,intensity=m.value,range=m.range,radius=m.radius,angle=m.angle,inner=m.inner,shadows=m.shadows,indirect=m.indirect,scattering=m.scattering}
         if !component_set(c,e,"Spot_Light",&light) {return false}
     case .Rect:
         light:=render.Rect_Light{color=m.color,luminance=m.value,range=m.range,shadows=m.shadows,indirect=m.indirect,scattering=m.scattering}
