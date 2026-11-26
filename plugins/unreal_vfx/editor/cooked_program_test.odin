@@ -26,6 +26,7 @@ PROGRAM_SYSTEM :: `{
         {"Attribute": "Burst.Age", "Value": {"Op": "add", "Args": [{"Attribute": "Burst.Age", "DataSet": 0}, {"Parameter": "Engine.DeltaTime", "Source": "Engine"}]}},
         {"Attribute": "Burst.Spawn.Count", "Value": {"Op": "select", "Args": [{"Op": "logic_and", "Args": [{"Temp": "t2"}, {"Op": "cmplt", "Args": [{"Attribute": "System.Age", "DataSet": 0}, {"Literal": 5.0, "Type": "float"}]}]}, {"Literal": 12, "Type": "int"}, {"Literal": 0, "Type": "bits", "AsInt": 0}]}},
         {"Attribute": "Burst.Spawn.InterpStartDt", "Value": {"Literal": 0.0, "Type": "float"}},
+        {"Attribute": "Burst.ExecutionState", "Value": {"Op": "select", "Args": [{"Op": "cmpgt", "Args": [{"Attribute": "Burst.Age", "DataSet": 0}, {"Literal": 1.0, "Type": "float"}]}, {"Literal": 3, "Type": "int"}, {"Literal": 0, "Type": "int"}]}},
         {"Attribute": "Burst.Scale", "Value": {"Attribute": "Engine.Burst.SpawnCountScale", "DataSet": 1}}
       ]}],
     "Scripts": [
@@ -87,6 +88,8 @@ cooked_emitter_runs_its_scripts_as_a_program :: proc(t:^testing.T) {
         "visual.size = max(abs(fv(a.f_SpriteSize_x)), abs(fv(a.f_SpriteSize_y))) * 0.01 * max(p.scale, 0.0);",
         "void prepare(Mirai_Vfx_Context ctx, Parameters p) {",
         "uint births(Mirai_Vfx_Context ctx, Parameters p) {",
+        // An emitter that is no longer active starts nothing.
+        ") != 0u) return 0u;",
     }
     for want in wants {
         testing.expectf(t,strings.contains(src,want),"the program has %q",want)

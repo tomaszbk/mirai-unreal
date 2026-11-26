@@ -905,6 +905,10 @@ cooked_vfx_program :: proc(name:string,system,emitter:json.Object,size_attribute
     if p.births {
         strings.write_string(&w,"void prepare(Mirai_Vfx_Context ctx, Parameters p) {\n")
         for i in 0..<len(t.words) {fmt.sbprintf(&w,"    uint s%d = mirai_vfx_state_load(ctx, %du);\n",i,i)}
+        // An emitter that starts again starts from nothing: the words keep what its last run left.
+        strings.write_string(&w,"    if (ctx.emitter_age <= ctx.delta_time + 1e-5) {")
+        for i in 0..<len(t.words) {fmt.sbprintf(&w," s%d = 0u;",i)}
+        strings.write_string(&w," }\n")
         strings.write_string(&w,"    Nv e = nv_frame(ctx, ctx.delta_time, ctx.emitter * 2246822519u + uint(ctx.time * 1000.0));\n")
         // How fast the emitter moves: from where it was the frame before.
         strings.write_string(&w,"    if (s0 != 0u && ctx.delta_time > 0.0) e.velocity = (e.owner - float3(fv(s1), fv(s2), fv(s3))) / ctx.delta_time;\n")
@@ -913,6 +917,10 @@ cooked_vfx_program :: proc(name:string,system,emitter:json.Object,size_attribute
         for output,i in computed {fmt.sbprintf(&w,"    mirai_vfx_state_store(ctx, %du, n%d);\n",word_of(&t,output),i)}
         strings.write_string(&w,"}\n")
         strings.write_string(&w,"uint births(Mirai_Vfx_Context ctx, Parameters p) {\n    uint n = 0u;\n")
+        // An emitter that is no longer active starts nothing, whatever its script goes on computing.
+        if execution:=fmt.tprintf("%s.ExecutionState",t.emitter);execution in t.state_outputs {
+            fmt.sbprintf(&w,"    if (mirai_vfx_state_load(ctx, %du) != 0u) return 0u;\n",word_of(&t,execution))
+        }
         for word in counts {fmt.sbprintf(&w,"    n += uint(max(int(mirai_vfx_state_load(ctx, %du)), 0));\n",word)}
         strings.write_string(&w,"    return n;\n}\n")
     }

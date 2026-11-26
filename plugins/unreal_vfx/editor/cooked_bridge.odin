@@ -160,7 +160,11 @@ niagara_particle_light :: proc(p:Niagara_Light_Params) -> effect.Particle_Light 
 
 // Parses a `ue5parse.niagara/2` JSON document into native Mirai `.particle`
 // emitters + Vfx Slang shaders + native `.mat` v6 materials.
-cooked_niagara_build :: proc(json_text:string,allocator:=context.allocator) -> (sys:Cooked_Vfx_System,err:Maybe(cooked.Error)) {
+// A value a game gives a parameter of the user of a system in place of its default, by the
+// name of the parameter ("User.ColorVariant").
+Cooked_User_Value :: struct {name:string,value:f64}
+
+cooked_niagara_build :: proc(json_text:string,allocator:=context.allocator,user:[]Cooked_User_Value=nil) -> (sys:Cooked_Vfx_System,err:Maybe(cooked.Error)) {
     if len(json_text)==0 {return {},cooked.Error{"niagara","empty JSON"}}
     root,jerr:=json.parse_string(json_text,allocator=context.temp_allocator)
     if jerr!=.None {return {},cooked.Error{"niagara","malformed JSON"}}
@@ -170,6 +174,16 @@ cooked_niagara_build :: proc(json_text:string,allocator:=context.allocator) -> (
         return {},cooked.Error{"niagara",fmt.aprintf("unexpected schema %q",schema,allocator=allocator)}
     }
 
+    // What the game sets of the user's parameters, before the scripts read them.
+    if params,has_params:=obj["UserParameters"].(json.Array);has_params {
+        for item in params {
+            pobj,pok:=item.(json.Object)
+            if !pok {continue}
+            for given in user {
+                if jstr(pobj["Name"])==given.name {pobj["Value"]=json.Float(given.value)}
+            }
+        }
+    }
     sys.name=strings.clone(jstr(obj["Name"],"NiagaraSystem"),allocator)
     sys.pkg=strings.clone(jstr(obj["Package"]),allocator)
 
