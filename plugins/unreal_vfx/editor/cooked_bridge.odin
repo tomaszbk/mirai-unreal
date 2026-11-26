@@ -4,7 +4,6 @@ import "core:encoding/json"
 import "core:fmt"
 import "core:math"
 import "core:mem"
-import "core:slice"
 import "core:strings"
 import "mirai:asset"
 import "mirai:std/base"
@@ -23,8 +22,10 @@ Cooked_Vfx_Emitter :: struct {
     gpu:bool,
     info:effect.Particle_Info,
     particle_bytes:[]u8,
-    program_name:string,
-    program_source:string, // generated Mirai Vfx Slang shader
+    program_name:string,   // "" when its scripts read what has no answer here: see notes
+    program_source:string, // the Vfx program that runs its scripts (cooked_program.odin)
+    notes:[]string,        // what its scripts read that is not answered
+    limits:[]string,       // what its particles show that a Vfx program cannot
     material_path:string,
     mesh_paths:[]string,
     warnings:[]string,
@@ -51,6 +52,10 @@ cooked_vfx_system_destroy :: proc(sys:^Cooked_Vfx_System,allocator:=context.allo
         delete(em.mesh_paths,allocator)
         for w in em.warnings {delete(w,allocator)}
         delete(em.warnings,allocator)
+        for n in em.notes {delete(n,allocator)}
+        delete(em.notes,allocator)
+        for n in em.limits {delete(n,allocator)}
+        delete(em.limits,allocator)
     }
     delete(sys.emitters,allocator)
     for &m in sys.materials {cooked.cooked_material_destroy(&m,allocator)}
@@ -188,22 +193,12 @@ cooked_niagara_build :: proc(json_text:string,allocator:=context.allocator) -> (
         if m.path!="" {mat_by_path[m.path]=&m}
     }
 
-    // Collect system user parameters as default scalar/vector lookup.
-    user_params:=make(map[string]f32,allocator=context.temp_allocator)
-    if up,has_u:=obj["UserParameters"].(json.Array);has_u {
-        for item in up {
-            if uobj,uok:=item.(json.Object);uok {
-                if v,vok:=jf32(uobj["Value"]);vok {user_params[jstr(uobj["Name"])]=v}
-            }
-        }
-    }
-
     em_list:=make([dynamic]Cooked_Vfx_Emitter,allocator)
     if emitters,has_e:=obj["Emitters"].(json.Array);has_e {
         for item in emitters {
             eobj,eok:=item.(json.Object)
             if !eok {continue}
-            append(&em_list,build_cooked_emitter(sys.name,eobj,mat_by_path,user_params,allocator))
+            append(&em_list,build_cooked_emitter(sys.name,obj,eobj,mat_by_path,allocator))
         }
     }
     sys.emitters=em_list[:]
@@ -213,9 +208,9 @@ cooked_niagara_build :: proc(json_text:string,allocator:=context.allocator) -> (
 @(private="file")
 build_cooked_emitter :: proc(
     system_name:string,
+    system:json.Object,
     eobj:json.Object,
     mat_by_path:map[string]^cooked.Cooked_Material,
-    user_params:map[string]f32,
     allocator:mem.Allocator,
 ) -> (out:Cooked_Vfx_Emitter) {
     out.name=strings.clone(jstr(eobj["Name"],"Emitter"),allocator)
@@ -371,6 +366,10 @@ build_cooked_emitter :: proc(
                         if s,sok:=me.(json.String);sok && s!="" {append(&meshes,strings.clone(s,allocator))}
                         if mobj,mok:=me.(json.Object);mok {
                             if mp:=jstr(mobj["Mesh"]);mp!="" {append(&meshes,strings.clone(mp,allocator))}
+                            // The scale the renderer gives its first mesh, along Mirai's axes.
+                            if ms,has_scale:=jvec3(mobj["Scale"]);has_scale&&len(meshes)==1&&ms.x>0&&ms.y>0&&ms.z>0 {
+                                out.info.scale=cooked.unreal_scale_to_mirai(ms)
+                            }
                         }
                     }
                 }
@@ -382,7 +381,7 @@ build_cooked_emitter :: proc(
     out.mesh_paths=meshes[:]
 
     // Parse particle scripts (Spawn & Update) -> extract lifetime/size/color/light + generate Vfx Slang shader.
-    spawn_script,update_script:json.Object
+    spawn_script:json.Object
     has_spawn,has_update:=false,false
     if scripts,has_sc:=eobj["Scripts"].(json.Array);has_sc {
         for s in scripts {
@@ -392,7 +391,7 @@ build_cooked_emitter :: proc(
             if strings.contains(usage,"Spawn") {
                 spawn_script,has_spawn=sobj,true
             } else if strings.contains(usage,"Update") {
-                update_script,has_update=sobj,true
+                has_update=true
             }
         }
     }
@@ -472,13 +471,24 @@ build_cooked_emitter :: proc(
         out.info.bursts[0]={time=0,count=1,cycles=1,interval=0}
     }
 
-    // Generate native Mirai Vfx Slang program from decompiled expression trees when CPU scripts exist.
+    // The program that runs its scripts, where everything they read is answered.
     if has_spawn || has_update {
         prog_name:=cooked_program_name(system_name,out.name,allocator)
-        prog_src:=emit_cooked_vfx_slang(prog_name,eobj,spawn_script,has_spawn,update_script,has_update,user_params,allocator)
-        out.program_name=prog_name
-        out.program_source=prog_src
-        base.text_set(out.info.program[:],prog_name)
+        size_attribute:="SpriteSize"
+        #partial switch out.info.render {
+        case .Mesh: size_attribute="Scale"
+        case .Ribbon: size_attribute="RibbonWidth"
+        }
+        program:=cooked_vfx_program(prog_name,system,eobj,size_attribute,allocator)
+        out.notes,out.limits=program.notes,program.limits
+        if len(program.notes)==0 {
+            out.program_name=prog_name
+            out.program_source=program.source
+            base.text_set(out.info.program[:],prog_name)
+        } else {
+            delete(program.source,allocator)
+            delete(prog_name,allocator)
+        }
     }
 
     if prob:=effect.particle_validate({info=out.info});prob.message!="" {
@@ -525,275 +535,6 @@ write_ident :: proc(b:^strings.Builder,s:string) {
 }
 
 @(private="file")
-attr_field :: proc(name:string) -> string {
-    // Strip Particles. prefix and sanitize dots/spaces into a flat float field name.
-    clean:=strings.trim_prefix(name,"Particles.")
-    b:=strings.builder_make(context.temp_allocator)
-    strings.write_string(&b,"f_")
-    write_ident(&b,clean)
-    return strings.to_string(b)
-}
-
-// Emits a valid Mirai Vfx Slang shader (`//! mirai vfx <name>`) from cooked
-// `ue5parse.niagara/2` decompiled expression trees.
-@(private="file")
-emit_cooked_vfx_slang :: proc(
-    prog_name:string,
-    eobj:json.Object,
-    spawn_script:json.Object,has_spawn:bool,
-    update_script:json.Object,has_update:bool,
-    user_params:map[string]f32,
-    allocator:mem.Allocator,
-) -> string {
-    // Collect all scalar particle attribute components written or declared.
-    fields:=make([dynamic]string,context.temp_allocator)
-    field_set:=make(map[string]bool,allocator=context.temp_allocator)
-    add_field :: proc(fields:^[dynamic]string,set:^map[string]bool,name:string) {
-        if name=="" {return}
-        f:=attr_field(name)
-        if f in set {return}
-        set[f]=true
-        append(fields,f)
-    }
-
-    collect_script_attrs :: proc(fields:^[dynamic]string,set:^map[string]bool,sc:json.Object) {
-        if outs,has:=sc["Outputs"].(json.Array);has {
-            for o in outs {
-                if oobj,ok:=o.(json.Object);ok {
-                    add_field(fields,set,jstr(oobj["Attribute"]))
-                }
-            }
-        }
-    }
-    if has_spawn {collect_script_attrs(&fields,&field_set,spawn_script)}
-    if has_update {collect_script_attrs(&fields,&field_set,update_script)}
-    // Also ensure core attributes exist if referenced in expressions.
-    for core_attr in ([]string{"Age","Lifetime","Position.x","Position.y","Position.z","Velocity.x","Velocity.y","Velocity.z","Color.x","Color.y","Color.z","Color.w","SpriteSize.x","SpriteSize.y","SpriteRotation","SubImageIndex","MaterialRandom"}) {
-        add_field(&fields,&field_set,core_attr)
-    }
-    slice.sort(fields[:])
-
-    s:=strings.builder_make(allocator)
-    fmt.sbprintf(&s,"//! mirai vfx %s\n//! moves\n//! parameter scale {{\"default\":1,\"min\":0,\"max\":100}}\n",prog_name)
-    fmt.sbprintf(&s,"namespace %s {{\n",prog_name)
-    strings.write_string(&s,"struct Parameters { float scale; };\n")
-    strings.write_string(&s,"struct Attributes {\n")
-    for f in fields {fmt.sbprintf(&s,"    float %s;\n",f)}
-    strings.write_string(&s,"};\n")
-    strings.write_string(&s,"float3 ue_to_mirai_pos(float3 p) { return float3(p.y, p.z, -p.x) * 0.01; }\n")
-    strings.write_string(&s,"float3 mirai_to_ue_pos(float3 p) { return float3(-p.z, p.x, p.y) * 100.0; }\n")
-    strings.write_string(&s,"float vfx_div(float a, float b) { return abs(b) > 1e-8 ? a / b : 0.0; }\n")
-
-    // initialize()
-    strings.write_string(&s,"void initialize(Mirai_Vfx_Context ctx, Parameters p, inout Mirai_Vfx_Particle particle, inout Attributes a) {\n")
-    strings.write_string(&s,"    uint seed = particle.seed;\n")
-    strings.write_string(&s,"    float3 p_ue = mirai_to_ue_pos(particle.position);\n")
-    strings.write_string(&s,"    float3 v_ue = mirai_to_ue_pos(particle.velocity);\n")
-    strings.write_string(&s,"    a.f_Position_x = p_ue.x; a.f_Position_y = p_ue.y; a.f_Position_z = p_ue.z;\n")
-    strings.write_string(&s,"    a.f_Velocity_x = v_ue.x; a.f_Velocity_y = v_ue.y; a.f_Velocity_z = v_ue.z;\n")
-    strings.write_string(&s,"    a.f_Age = 0.0; a.f_Lifetime = max(particle.lifetime, 1e-4);\n")
-    strings.write_string(&s,"    a.f_Color_x = 1.0; a.f_Color_y = 1.0; a.f_Color_z = 1.0; a.f_Color_w = 1.0;\n")
-    strings.write_string(&s,"    a.f_SpriteSize_x = 20.0; a.f_SpriteSize_y = 20.0;\n")
-    if has_spawn {
-        emit_script_outputs(&s,spawn_script,field_set,user_params)
-    }
-    strings.write_string(&s,"    particle.position = ue_to_mirai_pos(float3(a.f_Position_x, a.f_Position_y, a.f_Position_z));\n")
-    strings.write_string(&s,"    particle.velocity = ue_to_mirai_pos(float3(a.f_Velocity_x, a.f_Velocity_y, a.f_Velocity_z));\n")
-    strings.write_string(&s,"    particle.lifetime = max(a.f_Lifetime, 1e-4);\n")
-    strings.write_string(&s,"    particle.age = max(a.f_Age, 0.0);\n")
-    strings.write_string(&s,"}\n")
-
-    // update()
-    strings.write_string(&s,"void update(Mirai_Vfx_Context ctx, Parameters p, inout Mirai_Vfx_Particle particle, inout Attributes a) {\n")
-    strings.write_string(&s,"    uint seed = particle.seed ^ uint(ctx.time * 1000.0);\n")
-    if has_update {
-        emit_script_outputs(&s,update_script,field_set,user_params)
-    } else {
-        strings.write_string(&s,"    a.f_Age += ctx.delta_time;\n")
-    }
-    strings.write_string(&s,"    particle.position = ue_to_mirai_pos(float3(a.f_Position_x, a.f_Position_y, a.f_Position_z));\n")
-    strings.write_string(&s,"    particle.velocity = ue_to_mirai_pos(float3(a.f_Velocity_x, a.f_Velocity_y, a.f_Velocity_z));\n")
-    strings.write_string(&s,"    particle.rotation = a.f_SpriteRotation * 0.0174532925;\n")
-    strings.write_string(&s,"    particle.lifetime = max(a.f_Lifetime, 1e-4);\n")
-    strings.write_string(&s,"    particle.age = max(a.f_Age, 0.0);\n")
-    // Evaluate KeepConditions AFTER updating age/lifetime so kill conditions are never overwritten.
-    if has_update {
-        if keeps,has_k:=update_script["KeepConditions"].(json.Array);has_k {
-            for kc in keeps {
-                expr:=emit_expr(kc,field_set,user_params,0)
-                fmt.sbprintf(&s,"    if (!(%s != 0.0)) particle.age = particle.lifetime;\n",expr)
-            }
-        }
-    }
-    strings.write_string(&s,"}\n")
-
-    // render()
-    strings.write_string(&s,"void render(Mirai_Vfx_Context ctx, Parameters p, Mirai_Vfx_Particle particle, Attributes a, inout Mirai_Vfx_Visual visual) {\n")
-    strings.write_string(&s,"    visual.color = float4(max(a.f_Color_x, 0.0), max(a.f_Color_y, 0.0), max(a.f_Color_z, 0.0), saturate(a.f_Color_w));\n")
-    strings.write_string(&s,"    float sz = max(a.f_SpriteSize_x, a.f_SpriteSize_y) * 0.01 * max(p.scale, 0.0);\n")
-    strings.write_string(&s,"    if (sz > 0.0) visual.size = sz;\n")
-    strings.write_string(&s,"    visual.frame = a.f_SubImageIndex;\n")
-    strings.write_string(&s,"    visual.random = a.f_MaterialRandom;\n")
-    // Emit DynamicMaterialParameter0..3 -> visual.data[0..3] when present.
-    for slot in 0..<4 {
-        prefix:=slot==0 ? "DynamicMaterialParameter" : fmt.tprintf("DynamicMaterialParameter%d",slot)
-        fx:=attr_field(fmt.tprintf("%s.x",prefix))
-        if fx in field_set {
-            fy:=attr_field(fmt.tprintf("%s.y",prefix))
-            fz:=attr_field(fmt.tprintf("%s.z",prefix))
-            fw:=attr_field(fmt.tprintf("%s.w",prefix))
-            ex:=fx in field_set ? fmt.tprintf("a.%s",fx) : "0.0"
-            ey:=fy in field_set ? fmt.tprintf("a.%s",fy) : "0.0"
-            ez:=fz in field_set ? fmt.tprintf("a.%s",fz) : "0.0"
-            ew:=fw in field_set ? fmt.tprintf("a.%s",fw) : "0.0"
-            fmt.sbprintf(&s,"    visual.data[%d] = float4(%s, %s, %s, %s); visual.given |= %du;\n",slot,ex,ey,ez,ew,1<<uint(slot))
-        }
-    }
-    strings.write_string(&s,"}\n}\n")
-    return strings.to_string(s)
-}
-
-@(private="file")
-emit_script_outputs :: proc(s:^strings.Builder,sc:json.Object,field_set:map[string]bool,user_params:map[string]f32) {
-    outs,has:=sc["Outputs"].(json.Array)
-    if !has {return}
-    // Snapshot into locals so outputs reading each other see prior-frame attribute values cleanly.
-    for o,i in outs {
-        oobj,ok:=o.(json.Object)
-        if !ok {continue}
-        attr:=jstr(oobj["Attribute"])
-        if attr=="" {continue}
-        f:=attr_field(attr)
-        if !(f in field_set) {continue}
-        expr:=emit_expr(oobj["Value"],field_set,user_params,0)
-        fmt.sbprintf(s,"    float out_%d = %s;\n",i,expr)
-    }
-    for o,i in outs {
-        oobj,ok:=o.(json.Object)
-        if !ok {continue}
-        attr:=jstr(oobj["Attribute"])
-        if attr=="" {continue}
-        f:=attr_field(attr)
-        if !(f in field_set) {continue}
-        fmt.sbprintf(s,"    a.%s = out_%d;\n",f,i)
-    }
-}
-
-@(private="file")
-emit_expr :: proc(v:json.Value,field_set:map[string]bool,user_params:map[string]f32,depth:int) -> string {
-    if depth>32 {return "0.0"}
-    obj,ok:=v.(json.Object)
-    if !ok {
-        if f,fok:=jf32(v);fok {return fmt_slang_f32(f)}
-        return "0.0"
-    }
-    // Literal
-    if lit,has:=obj["Literal"];has {
-        if f,fok:=jf32(lit);fok {return fmt_slang_f32(f)}
-        return "0.0"
-    }
-    // ExecIndex
-    if _,has:=obj["ExecIndex"];has {
-        return "float(particle.seed & 0xFFFFu)"
-    }
-    // Attribute
-    if attr_v,has:=obj["Attribute"];has {
-        attr:=jstr(attr_v)
-        f:=attr_field(attr)
-        if f in field_set {return fmt.tprintf("a.%s",f)}
-        return "0.0"
-    }
-    // Parameter
-    if param_v,has:=obj["Parameter"];has {
-        pname:=jstr(param_v)
-        switch pname {
-        case "Engine.DeltaTime","Engine.WorldDeltaTime": return "ctx.delta_time"
-        case "Engine.InverseDeltaTime": return "vfx_div(1.0, ctx.delta_time)"
-        case "Engine.Time","Engine.RealTime","Engine.System.Age","Emitter.Age": return "ctx.time"
-        case "Engine.Owner.Position.x": return "(-ctx.origin.z * 100.0)"
-        case "Engine.Owner.Position.y": return "(ctx.origin.x * 100.0)"
-        case "Engine.Owner.Position.z": return "(ctx.origin.y * 100.0)"
-        }
-        if val,has_v:=obj["Value"];has_v {
-            if f,fok:=jf32(val);fok {return fmt_slang_f32(f)}
-        }
-        if u,found:=user_params[pname];found {return fmt_slang_f32(u)}
-        return "0.0"
-    }
-    // Op
-    if op_v,has:=obj["Op"];has {
-        op:=jstr(op_v)
-        args_arr,has_a:=obj["Args"].(json.Array)
-        args:=make([]string,has_a ? len(args_arr) : 0,context.temp_allocator)
-        for a,i in args_arr {args[i]=emit_expr(a,field_set,user_params,depth+1)}
-        a0:=len(args)>0 ? args[0] : "0.0"
-        a1:=len(args)>1 ? args[1] : "0.0"
-        a2:=len(args)>2 ? args[2] : "0.0"
-        switch op {
-        case "add","addi": return fmt.tprintf("(%s + %s)",a0,a1)
-        case "sub","subi": return fmt.tprintf("(%s - %s)",a0,a1)
-        case "mul","muli": return fmt.tprintf("(%s * %s)",a0,a1)
-        case "div","divi": return fmt.tprintf("vfx_div(%s, %s)",a0,a1)
-        case "mad": return fmt.tprintf("(%s * %s + %s)",a0,a1,a2)
-        case "lerp": return fmt.tprintf("lerp(%s, %s, %s)",a0,a1,a2)
-        case "clamp","clampi": return fmt.tprintf("clamp(%s, %s, %s)",a0,a1,a2)
-        case "min","mini": return fmt.tprintf("min(%s, %s)",a0,a1)
-        case "max","maxi": return fmt.tprintf("max(%s, %s)",a0,a1)
-        case "pow": return fmt.tprintf("(%s > 1e-8 ? pow(%s, %s) : 0.0)",a0,a0,a1)
-        case "sqrt": return fmt.tprintf("sqrt(max(%s, 0.0))",a0)
-        case "rsq": return fmt.tprintf("(%s > 1e-8 ? rsqrt(%s) : 0.0)",a0,a0)
-        case "rcp": return fmt.tprintf("vfx_div(1.0, %s)",a0)
-        case "neg","negi": return fmt.tprintf("(-%s)",a0)
-        case "abs","absi": return fmt.tprintf("abs(%s)",a0)
-        case "sin": return fmt.tprintf("sin(%s)",a0)
-        case "cos": return fmt.tprintf("cos(%s)",a0)
-        case "tan": return fmt.tprintf("tan(%s)",a0)
-        case "asin": return fmt.tprintf("asin(clamp(%s, -1.0, 1.0))",a0)
-        case "acos": return fmt.tprintf("acos(clamp(%s, -1.0, 1.0))",a0)
-        case "atan": return fmt.tprintf("atan(%s)",a0)
-        case "atan2": return fmt.tprintf("atan2(%s, %s)",a0,a1)
-        case "exp": return fmt.tprintf("exp(%s)",a0)
-        case "exp2": return fmt.tprintf("exp2(%s)",a0)
-        case "log": return fmt.tprintf("(%s > 0.0 ? log(%s) : 0.0)",a0,a0)
-        case "log2": return fmt.tprintf("(%s > 0.0 ? log2(%s) : 0.0)",a0,a0)
-        case "floor": return fmt.tprintf("floor(%s)",a0)
-        case "ceil": return fmt.tprintf("ceil(%s)",a0)
-        case "round": return fmt.tprintf("round(%s)",a0)
-        case "trunc": return fmt.tprintf("trunc(%s)",a0)
-        case "frac": return fmt.tprintf("(%s - trunc(%s))",a0,a0)
-        case "fmod": return fmt.tprintf("fmod(%s, %s)",a0,a1)
-        case "sign","signi": return fmt.tprintf("(%s >= 0.0 ? 1.0 : -1.0)",a0)
-        case "step": return fmt.tprintf("(%s >= %s ? 1.0 : 0.0)",a1,a0)
-        case "random","randomi": return fmt.tprintf("(mirai_vfx_random(seed) * %s)",a0)
-        case "cmplt","cmplti": return fmt.tprintf("(%s < %s ? 1.0 : 0.0)",a0,a1)
-        case "cmple","cmplei": return fmt.tprintf("(%s <= %s ? 1.0 : 0.0)",a0,a1)
-        case "cmpgt","cmpgti": return fmt.tprintf("(%s > %s ? 1.0 : 0.0)",a0,a1)
-        case "cmpge","cmpgei": return fmt.tprintf("(%s >= %s ? 1.0 : 0.0)",a0,a1)
-        case "cmpeq","cmpeqi": return fmt.tprintf("(%s == %s ? 1.0 : 0.0)",a0,a1)
-        case "cmpneq","cmpneqi": return fmt.tprintf("(%s != %s ? 1.0 : 0.0)",a0,a1)
-        case "select": return fmt.tprintf("(%s != 0.0 ? %s : %s)",a0,a1,a2)
-        case "logic_and": return fmt.tprintf("((%s != 0.0 && %s != 0.0) ? 1.0 : 0.0)",a0,a1)
-        case "logic_or": return fmt.tprintf("((%s != 0.0 || %s != 0.0) ? 1.0 : 0.0)",a0,a1)
-        case "logic_xor": return fmt.tprintf("(((%s != 0.0) != (%s != 0.0)) ? 1.0 : 0.0)",a0,a1)
-        case "logic_not": return fmt.tprintf("(%s == 0.0 ? 1.0 : 0.0)",a0)
-        case "bit_and": return fmt.tprintf("float(int(%s) & int(%s))",a0,a1)
-        case "bit_or": return fmt.tprintf("float(int(%s) | int(%s))",a0,a1)
-        case "bit_xor": return fmt.tprintf("float(int(%s) ^ int(%s))",a0,a1)
-        case "bit_not": return fmt.tprintf("float(~int(%s))",a0)
-        case "bit_lshift": return fmt.tprintf("float(int(%s) << clamp(int(%s), 0, 31))",a0,a1)
-        case "bit_rshift": return fmt.tprintf("float(int(%s) >> clamp(int(%s), 0, 31))",a0,a1)
-        case "f2i","i2f": return fmt.tprintf("float(int(%s))",a0)
-        case "f2b","i2b": return fmt.tprintf("(%s > 0.0 ? 1.0 : 0.0)",a0)
-        case "b2f","b2i": return fmt.tprintf("(%s != 0.0 ? 1.0 : 0.0)",a0)
-        case "fasi": return fmt.tprintf("float(asint(%s))",a0)
-        case "iasf": return fmt.tprintf("asfloat(int(%s))",a0)
-        case "half_to_float": return a0
-        }
-    }
-    return "0.0"
-}
-
-@(private="file")
 eval_literal :: proc(v:json.Value) -> (f32,bool) {
     obj,ok:=v.(json.Object)
     if !ok {return jf32(v)}
@@ -832,21 +573,13 @@ sample_gradient_4d :: proc(samples:[]f32) -> (g:effect.Particle_Gradient) {
     return
 }
 
-@(private="file")
-fmt_slang_f32 :: proc(v:f32) -> string {
-    if math.is_nan(v) || math.is_inf(v) {return "0.0"}
-    t:=fmt.tprintf("%g",v)
-    if !strings.contains_any(t,".eE") {t=fmt.tprintf("%s.0",t)}
-    return t
-}
-
-@(private="file")
+@(private)
 jstr :: proc(v:json.Value,fallback:="") -> string {
     if s,ok:=v.(json.String);ok {return s}
     return fallback
 }
 
-@(private="file")
+@(private)
 jbool :: proc(v:json.Value,fallback:=false) -> bool {
     if b,ok:=v.(json.Boolean);ok {return b}
     return fallback

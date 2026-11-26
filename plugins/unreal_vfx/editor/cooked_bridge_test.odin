@@ -128,15 +128,15 @@ cooked_niagara_bridge_builds_particle_and_compiles_vfx_slang :: proc(t:^testing.
     testing.expect_value(t,view.info.render,effect.Particle_Render.Velocity)
     testing.expect_value(t,view.info.blend,effect.Particle_Blend.Additive)
 
-    // Verify generated Vfx Slang shader has consistent age/lifetime seconds,
-    // KeepConditions evaluated AFTER particle.age assignment, and compiles with slangc.
+    // Its scripts as a program: everything they read is answered, the particle takes its
+    // attributes before the script may end it, and the program compiles.
+    testing.expect_value(t,len(em.notes),0)
     testing.expect(t,strings.contains(em.program_source,"//! mirai vfx Cooked_NS_Katana_Slash_SlashArc"))
     testing.expect(t,strings.contains(em.program_source,"visual.data[0]"))
-    testing.expect(t,strings.contains(em.program_source,"ue_to_mirai_pos"))
-    age_idx:=strings.last_index(em.program_source,"particle.age = max(a.f_Age, 0.0);")
-    kill_idx:=strings.index(em.program_source,"particle.age = particle.lifetime;")
-    testing.expectf(t,age_idx>0 && kill_idx>age_idx,"kill condition must follow particle.age assignment (age=%d kill=%d):\n%s",age_idx,kill_idx,em.program_source)
-    testing.expect(t,!strings.contains(em.program_source,"saturate(a.f_Age / a.f_Lifetime)"))
+    testing.expect(t,strings.contains(em.program_source,"a.f_Age = o0;"))
+    leave_idx:=strings.last_index(em.program_source,"nv_leave(ctx, particle, a);")
+    kill_idx:=strings.last_index(em.program_source,"if (!keep) particle.age = particle.lifetime;")
+    testing.expectf(t,leave_idx>0 && kill_idx>leave_idx,"the script ends the particle after it takes its attributes (leave=%d kill=%d):\n%s",leave_idx,kill_idx,em.program_source)
 
     folder:=".mirai/tmp/cooked-vfx-test"
     _=os.make_directory_all(folder)
@@ -335,7 +335,7 @@ cooked_niagara_bridge_names_bitwise_and_zero_leaks :: proc(t:^testing.T) {
     testing.expect_value(t,base.text_get(sys_b.emitters[0].info.program[:]),pb)
     src:=sys_a.emitters[0].program_source
     testing.expect(t,strings.contains(src,"int(") && strings.contains(src," & ") && strings.contains(src," | "))
-    testing.expect(t,strings.contains(src,"asint(") && strings.contains(src,"asfloat("))
+    testing.expect(t,strings.contains(src,"asuint(") && strings.contains(src,"asfloat("))
 
     // Compile the bitwise/cast Slang program via slangc.
     folder:=".mirai/tmp/cooked-vfx-bitwise"
