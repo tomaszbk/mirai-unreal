@@ -1,5 +1,6 @@
 package unreal_vfx_editor
 
+import "core:fmt"
 import "core:mem"
 import "core:os"
 import "core:path/filepath"
@@ -86,7 +87,7 @@ cooked_emitter_runs_its_scripts_as_a_program :: proc(t:^testing.T) {
         // What the emitter's script keeps is read from the state by its particles.
         "mirai_vfx_state_load(ctx, ",
         "keep = keep && (nb(fv(a.f_Age) < fv(a.f_Lifetime))) != 0u;",
-        "visual.size = max(abs(fv(a.f_SpriteSize_x)), abs(fv(a.f_SpriteSize_y))) * 0.01 * max(p.scale, 0.0);",
+        "float2 sides = float2(abs(fv(a.f_SpriteSize_x)), abs(fv(a.f_SpriteSize_y)));",
         "void prepare(Mirai_Vfx_Context ctx, Parameters p) {",
         "uint births(Mirai_Vfx_Context ctx, Parameters p) {",
         // An emitter that is no longer active starts nothing.
@@ -104,7 +105,8 @@ cooked_emitter_runs_its_scripts_as_a_program :: proc(t:^testing.T) {
         testing.expect(t,strings.index(body,"uint t2 = ")>0&&strings.index(body,"uint t2 = ")<strings.index(body,"uint n1 = "))
         testing.expect(t,strings.contains(body,"uint t1 = nf(fv(s"),"the system's own temporary, read through what the emitter reads of it")
     }
-    testing.expect(t,len(em.limits)==1&&strings.contains(em.limits[0],"SpriteSize"))
+    testing.expect_value(t,len(em.limits),0)
+    testing.expect(t,strings.contains(src,"visual.scale = float3(sides / largest, 1.0);"))
 
     folder:=".mirai/tmp/cooked-vfx-program"
     _=os.make_directory_all(folder)
@@ -162,4 +164,133 @@ cooked_program_survives_what_is_no_system :: proc(t:^testing.T) {
         cooked_vfx_system_destroy(&sys,alloc)
     }
     testing.expect_value(t,len(tracking.allocation_map),0)
+}
+
+// A script that samples a static vector field reads it from a texture of the program, with
+// the box, the cells and the values of the field as it is extracted; one that is not extracted
+// is a note.
+@(test)
+cooked_emitter_samples_a_vector_field :: proc(t:^testing.T) {
+    arena:mem.Dynamic_Arena
+    mem.dynamic_arena_init(&arena)
+    defer mem.dynamic_arena_destroy(&arena)
+    alloc:=mem.dynamic_arena_allocator(&arena)
+    doc:=`{
+  "Schema": "ue5parse.niagara/2", "Name": "NS_Field",
+  "Emitters": [{
+    "Name": "Curl",
+    "Scripts": [
+      {"Usage": "ParticleSpawnScript", "Target": "CPU",
+       "Modules": [{"Name": "Main", "Calls": [{"Name": "t1", "DataInterface": "Curl.Field", "Function": "SampleField", "Outputs": 3,
+          "Args": [{"Literal": 10.0, "Type": "float"}, {"Literal": 20.0, "Type": "float"}, {"Literal": 30.0, "Type": "float"}]}]}],
+       "Outputs": [
+         {"Attribute": "Lifetime", "Value": {"Literal": 1.0, "Type": "float"}},
+         {"Attribute": "Velocity", "Components": {"x": {"Call": "t1", "Output": 0}, "y": {"Call": "t1", "Output": 1}, "z": {"Call": "t1", "Output": 2}}}
+       ]}
+    ],
+    "DataInterfaces": [{"Name": "Curl.Field", "Class": "NiagaraDataInterfaceVectorField",
+      "Properties": {"Field": "/Game/Fields/Curl.Curl", "bTileX": true, "bTileY": false, "bTileZ": true}}],
+    "Renderers": [{"Kind": "sprite", "Class": "NiagaraSpriteRendererProperties"}]
+  }]
+}`
+    fields:=[]Cooked_Field{{path="/Game/Fields/Curl.Curl",size={16,8,4},low={-500,-500,0},high={500,500,1000},value_low=-1,value_high=1}}
+    sys,err:=cooked_niagara_build(doc,alloc,nil,fields)
+    _,bad:=err.?
+    if !testing.expect(t,!bad)||!testing.expect(t,len(sys.emitters)==1&&len(sys.emitters[0].layers)==1) {return}
+    layer:=sys.emitters[0].layers[0]
+    testing.expect_value(t,len(layer.notes),0)
+    if testing.expect_value(t,len(layer.textures),1) {testing.expect_value(t,layer.textures[0],"/Game/Fields/Curl.Curl")}
+    src:=layer.program_source
+    testing.expect(t,strings.contains(src,"//! parameter field0 {\"kind\":\"texture\"}"))
+    testing.expect(t,strings.contains(src,"uint field0;"))
+    testing.expect(t,strings.contains(src,"nv_field(p.field0, float3(16.0, 8.0, 4.0), float3(-500.0, -500.0, 0.0), float3(500.0, 500.0, 1000.0), float3(1.0, 0.0, 1.0), -1.0, 1.0,"))
+    folder:=".mirai/tmp/cooked-vfx-field"
+    _=os.make_directory_all(folder)
+    shader_path,_:=filepath.join({folder,strings.concatenate({layer.program_name,".slang"},context.temp_allocator)},context.temp_allocator)
+    _=os.write_entire_file(shader_path,transmute([]u8)src)
+    root,cwd_err:=os.get_working_directory(context.temp_allocator)
+    if testing.expectf(t,cwd_err==nil,"cwd failed: %v",cwd_err) {
+        vfx_dir,_:=filepath.join({root,"plugins","vfx","shaders"},context.temp_allocator)
+        sources:=os.exists(vfx_dir) ? []shaders.Source{{name="vfx",folder=vfx_dir}} : nil
+        res:=shaders.program_check({root=root,project=folder,sources=sources,path=shader_path},context.temp_allocator)
+        testing.expectf(t,res.error==""&&res.errors==0,"the program does not compile: %s %v",res.error,res.diagnostics)
+    }
+    // Without the field: a note, and no program.
+    other,_:=cooked_niagara_build(doc,alloc)
+    if testing.expect(t,len(other.emitters)==1&&len(other.emitters[0].layers)==1) {
+        testing.expect_value(t,other.emitters[0].layers[0].program_name,"")
+        testing.expect(t,len(other.emitters[0].layers[0].notes)==1&&strings.contains(other.emitters[0].layers[0].notes[0],"not extracted"))
+    }
+    // A field of no cells is not sampled.
+    empty:=[]Cooked_Field{{path="/Game/Fields/Curl.Curl"}}
+    none,_:=cooked_niagara_build(doc,alloc,nil,empty)
+    testing.expect(t,len(none.emitters)==1&&none.emitters[0].layers[0].program_name=="")
+}
+
+// The scripts ask a skeletal mesh where one of its sockets is: the layer says which, for
+// whoever lays the effect to put its emitter there, and the program reads its emitter.
+@(test)
+cooked_emitter_follows_a_socket_of_a_skeletal_mesh :: proc(t:^testing.T) {
+    arena:mem.Dynamic_Arena
+    mem.dynamic_arena_init(&arena)
+    defer mem.dynamic_arena_destroy(&arena)
+    alloc:=mem.dynamic_arena_allocator(&arena)
+    Case :: struct {function,index:string, follows:string, socket:bool, note:string}
+    cases:=[]Case{
+        {"GetFilteredSocket",`{"Literal": 1, "Type": "int"}`,"Tip",true,""},
+        {"GetFilteredBone",`{"Literal": 0, "Type": "int"}`,"spine_01",false,""},
+        // Hostile: a number past the list, a negative one, one the scripts compute.
+        {"GetFilteredSocket",`{"Literal": 7, "Type": "int"}`,"",false,"a number the scripts compute"},
+        {"GetFilteredSocket",`{"Literal": -1, "Type": "int"}`,"",false,"a number the scripts compute"},
+        {"GetFilteredBone",`{"Call": "t9", "Output": 0}`,"",false,"a number the scripts compute"},
+    }
+    for c in cases {
+        template:=`{
+  "Schema": "ue5parse.niagara/2", "Name": "NS_Follow",
+  "Emitters": [{
+    "Name": "Tip",
+    "Scripts": [
+      {"Usage": "ParticleSpawnScript", "Target": "CPU",
+       "Modules": [{"Name": "Main", "Calls": [
+         {"Name": "t0", "DataInterface": "Tip.Mesh", "Function": "FUNCTION", "Outputs": 1, "Args": [INDEX]},
+         {"Name": "t1", "DataInterface": "Tip.Mesh", "Function": "GetSkinnedBoneDataWS", "Outputs": 13, "Args": [{"Call": "t0", "Output": 0}]}]}],
+       "Outputs": [
+         {"Attribute": "Lifetime", "Value": {"Literal": 1.0, "Type": "float"}},
+         {"Attribute": "Position", "Components": {"x": {"Call": "t1", "Output": 0}, "y": {"Call": "t1", "Output": 1}, "z": {"Call": "t1", "Output": 2}}}
+       ]}
+    ],
+    "DataInterfaces": [{"Name": "Tip.Mesh", "Class": "NiagaraDataInterfaceSkeletalMesh",
+      "Properties": {"FilteredSockets": ["Hilt", "Tip"], "FilteredBones": ["spine_01"]}}],
+    "Renderers": [{"Kind": "sprite", "Class": "NiagaraSpriteRendererProperties"}]
+  }]
+}`
+        doc,_:=strings.replace_all(template,"FUNCTION",c.function,context.temp_allocator)
+        doc,_=strings.replace_all(doc,"INDEX",c.index,context.temp_allocator)
+        sys,err:=cooked_niagara_build(doc,alloc)
+        e,bad:=err.?
+        if !testing.expectf(t,!bad,"%s %s: the build fails: %v",c.function,c.index,e)||!testing.expect(t,len(sys.emitters)==1&&len(sys.emitters[0].layers)==1) {continue}
+        layer:=sys.emitters[0].layers[0]
+        testing.expectf(t,layer.follows==c.follows&&layer.follows_socket==c.socket,"%s %s follows %q (socket %v)",c.function,c.index,layer.follows,layer.follows_socket)
+        if c.note!="" {
+            found:=false
+            for n in layer.notes {found|=strings.contains(n,c.note)}
+            testing.expectf(t,found,"%s %s: no note of it in %v",c.function,c.index,layer.notes)
+            testing.expect_value(t,layer.program_name,"")
+            continue
+        }
+        testing.expectf(t,len(layer.notes)==0,"%s %s: %v",c.function,c.index,layer.notes)
+        src:=layer.program_source
+        testing.expect(t,strings.contains(src,"nv_turn_back(nv_emitter_turn(ctx))")&&strings.contains(src,"nf(e.owner.x)"))
+        folder:=".mirai/tmp/cooked-vfx-follow"
+        _=os.make_directory_all(folder)
+        shader_path,_:=filepath.join({folder,strings.concatenate({layer.program_name,".slang"},context.temp_allocator)},context.temp_allocator)
+        _=os.write_entire_file(shader_path,transmute([]u8)src)
+        root,cwd_err:=os.get_working_directory(context.temp_allocator)
+        if testing.expectf(t,cwd_err==nil,"cwd failed: %v",cwd_err) {
+            vfx_dir,_:=filepath.join({root,"plugins","vfx","shaders"},context.temp_allocator)
+            sources:=os.exists(vfx_dir) ? []shaders.Source{{name="vfx",folder=vfx_dir}} : nil
+            res:=shaders.program_check({root=root,project=folder,sources=sources,path=shader_path},context.temp_allocator)
+            testing.expectf(t,res.error==""&&res.errors==0,"the program does not compile: %s %v",res.error,res.diagnostics)
+        }
+    }
 }

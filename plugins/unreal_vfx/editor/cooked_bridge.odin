@@ -27,6 +27,9 @@ Cooked_Vfx_Layer :: struct {
     material_path:string,  // of the game: what draws its particles
     mesh_paths:[]string,   // of the game: what its particles are, for a mesh renderer
     order:i32,             // among the layers of its system, the lower drawn first (SortOrderHint)
+    textures:[]string,     // what the parameters field0, field1... of its program take: vector fields of the game, by path
+    follows:string,        // the socket or bone of a skeletal mesh its emitter goes on; "" for none
+    follows_socket:bool,
 }
 
 Cooked_Vfx_Emitter :: struct {
@@ -62,6 +65,9 @@ cooked_vfx_system_destroy :: proc(sys:^Cooked_Vfx_System,allocator:=context.allo
             delete(layer.notes,allocator)
             for n in layer.limits {delete(n,allocator)}
             delete(layer.limits,allocator)
+            for n in layer.textures {delete(n,allocator)}
+            delete(layer.textures,allocator)
+            delete(layer.follows,allocator)
         }
         delete(em.layers,allocator)
         for w in em.warnings {delete(w,allocator)}
@@ -174,7 +180,7 @@ niagara_particle_light :: proc(p:Niagara_Light_Params) -> effect.Particle_Light 
 // name of the parameter ("User.ColorVariant").
 Cooked_User_Value :: struct {name:string,value:f64}
 
-cooked_niagara_build :: proc(json_text:string,allocator:=context.allocator,user:[]Cooked_User_Value=nil) -> (sys:Cooked_Vfx_System,err:Maybe(cooked.Error)) {
+cooked_niagara_build :: proc(json_text:string,allocator:=context.allocator,user:[]Cooked_User_Value=nil,fields:[]Cooked_Field=nil) -> (sys:Cooked_Vfx_System,err:Maybe(cooked.Error)) {
     if len(json_text)==0 {return {},cooked.Error{"niagara","empty JSON"}}
     root,jerr:=json.parse_string(json_text,allocator=context.temp_allocator)
     if jerr!=.None {return {},cooked.Error{"niagara","malformed JSON"}}
@@ -222,7 +228,7 @@ cooked_niagara_build :: proc(json_text:string,allocator:=context.allocator,user:
         for item in emitters {
             eobj,eok:=item.(json.Object)
             if !eok {continue}
-            append(&em_list,build_cooked_emitter(sys.name,obj,eobj,mat_by_path,allocator))
+            append(&em_list,build_cooked_emitter(sys.name,obj,eobj,mat_by_path,fields,allocator))
         }
     }
     sys.emitters=em_list[:]
@@ -246,6 +252,7 @@ build_cooked_emitter :: proc(
     system:json.Object,
     eobj:json.Object,
     mat_by_path:map[string]^cooked.Cooked_Material,
+    fields:[]Cooked_Field,
     allocator:mem.Allocator,
 ) -> (out:Cooked_Vfx_Emitter) {
     out.name=strings.clone(jstr(eobj["Name"],"Emitter"),allocator)
@@ -323,9 +330,6 @@ build_cooked_emitter :: proc(
             switch {
             case strings.contains(facing,"Velocity"):
                 layer.info.facing=.Velocity
-            case strings.contains(facing,"Camera"):
-                layer.info.facing=.Emitter
-                append(&limits,fmt.aprintf("meshes that face as %s: they keep the turn of their emitter",facing[strings.last_index(facing,":")+1:],allocator=allocator))
             case:
                 layer.info.facing=.Emitter
             }
@@ -341,14 +345,6 @@ build_cooked_emitter :: proc(
                 // What the renderer gives its first mesh, along Mirai's axes.
                 if ms,has_scale:=jvec3(mobj["Scale"]);has_scale&&ms.x>0&&ms.y>0&&ms.z>0 {
                     layer.info.scale=cooked.unreal_scale_to_mirai(ms)
-                }
-                if rot,has_rot:=mobj["Rotation"].(json.Object);has_rot {
-                    pitch,_:=jf32(rot["Pitch"],0)
-                    yaw,_:=jf32(rot["Yaw"],0)
-                    roll,_:=jf32(rot["Roll"],0)
-                    if abs(pitch)>1e-3 || abs(yaw)>1e-3 || abs(roll)>1e-3 {
-                        append(&limits,fmt.aprintf("the turn the renderer gives its mesh (pitch %.0f, yaw %.0f, roll %.0f)",pitch,yaw,roll,allocator=allocator))
-                    }
                 }
                 if pivot,has_pivot:=jvec3(mobj["PivotOffset"]);has_pivot && pivot!={} {
                     append(&limits,strings.clone("the pivot the renderer gives its mesh",allocator))
@@ -405,8 +401,10 @@ build_cooked_emitter :: proc(
         // The program that runs its scripts, where everything they read is answered.
         if has_scripts {
             prog_name:=cooked_program_name(system_name,index==0 ? out.name : fmt.tprintf("%s_%d",out.name,index),allocator)
-            program:=cooked_vfx_program(prog_name,system,eobj,robj,allocator)
+            program:=cooked_vfx_program(prog_name,system,eobj,robj,allocator,fields)
             layer.notes=program.notes
+            layer.textures=program.textures
+            layer.follows,layer.follows_socket=program.follows,program.follows_socket
             for limit in program.limits {append(&limits,limit)}
             delete(program.limits,allocator)
             if len(program.notes)==0 {
@@ -473,7 +471,7 @@ jbool :: proc(v:json.Value,fallback:=false) -> bool {
     return fallback
 }
 
-@(private="file")
+@(private)
 jf32 :: proc(v:json.Value,fallback:f32=0) -> (f32,bool) {
     #partial switch x in v {
     case json.Float:

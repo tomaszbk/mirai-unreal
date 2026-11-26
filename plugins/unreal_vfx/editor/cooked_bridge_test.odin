@@ -131,7 +131,10 @@ cooked_niagara_bridge_gives_a_layer_for_each_renderer :: proc(t:^testing.T) {
     testing.expect_value(t,mesh.info.facing,effect.Particle_Facing.Emitter)
     if testing.expect_value(t,len(mesh.mesh_paths),1) {testing.expect_value(t,mesh.mesh_paths[0],"/Game/FX/SM_Arc.SM_Arc")}
     testing.expect(t,mesh.info.scale!=[3]f32{1,1,1})
-    testing.expect(t,len(mesh.limits)>=2) // facing the camera and the turn of the mesh
+    // It faces the eye, turned as its renderer turns the mesh, each side its own share of its size.
+    testing.expect(t,strings.contains(mesh.program_source,"nv_look(mirai_vfx_view().position - particle.position)"))
+    testing.expect(t,strings.contains(mesh.program_source,"visual.orientation = ")&&strings.contains(mesh.program_source,"visual.scale = sides / largest;"))
+    testing.expect(t,strings.contains(sprite.program_source,"visual.scale = float3(sides / largest, 1.0);"))
 
     ribbon:=em.layers[3]
     testing.expect_value(t,ribbon.factory,"NiagaraRibbonVF")

@@ -53,15 +53,38 @@ cooked_shader_program_destroy :: proc(p:^Cooked_Shader_Program,allocator:=contex
 // carry: a build of the engine that lays one out differently has another hash, and its
 // materials are refused instead of read wrong.
 @(private="file")
-KNOWN_LAYOUTS :: [5][2]string{{"View","cfe9c681"},{"Scene","f7e1b302"},{"LocalVF","3aef5598"},{SKIN_PASS_THROUGH,"fc97ef48"},{TRANSLUCENT_PASS,"642995f2"}}
+KNOWN_LAYOUTS :: [6][2]string{{"View","cfe9c681"},{"Scene","f7e1b302"},{"LocalVF","3aef5598"},{SKIN_PASS_THROUGH,"fc97ef48"},{TRANSLUCENT_PASS,"642995f2"},{OPAQUE_PASS,"1a15d850"}}
 
 // The uniform buffer of the pass that draws what blends. Its constants are those of the fog of
 // the scene, off here (Mirai fogs what it draws itself); of its resources a program reads the
-// depth of the scene behind the surface and how much the eye has adapted.
+// depth of the scene behind the surface, the custom depth and how much the eye has adapted.
 @(private="file") TRANSLUCENT_PASS :: "TranslucentBasePass"
 @(private="file") TRANSLUCENT_SCENE_DEPTH :: 35
 @(private="file") TRANSLUCENT_FOG_VOLUME :: 23
+// The custom depth of the scene textures: nothing draws into it here, so it is as far as can be.
+@(private="file") TRANSLUCENT_CUSTOM_DEPTH :: 46
+@(private="file") CUSTOM_DEPTH_FAR :: "float4(1e9)"
 @(private="file") TRANSLUCENT_EYE_ADAPTATION :: 95
+// What lights a surface that blends and takes light. A program is not told the lights of the
+// scene, so of those one is left: the sky, even and white. The volume of the lights near the
+// view (two cascades, 68 to 71), that of the bounced light (90) and the noise that dithers
+// them (98, 99) are empty, as is the shadow a surface casts on itself.
+@(private="file") TRANSLUCENT_LIGHT_VOLUME :: [4]int{68,69,70,71}
+@(private="file") TRANSLUCENT_BOUNCED_LIGHT :: 90
+@(private="file") TRANSLUCENT_NOISE :: [2]int{98,99}
+@(private="file") TRANSLUCENT_SELF_SHADOW :: "TranslucentSelfShadow"
+// The light of the sky in the view's buffer: its colour, and seven rows of spherical
+// harmonics, of which the fourth value of the first three is the even part of each channel.
+@(private="file") VIEW_SKY_COLOR :: 216
+@(private="file") VIEW_SKY_IRRADIANCE :: 48
+@(private="file") LIMIT_EVEN_SKY :: "the lights of the scene on a surface that blends: an even white sky instead"
+
+// The uniform buffer of the pass that draws what is opaque: of its resources a program reads
+// how much the eye has adapted.
+@(private="file") OPAQUE_PASS :: "OpaqueBasePass"
+@(private="file") OPAQUE_EYE_ADAPTATION :: 51
+// The direction of the sun in the view's buffer. A program does not know where the sun is.
+@(private="file") VIEW_SUN_DIRECTION :: 190
 
 // The registers of the primitive a pixel shader reads only to mark what is out of its bounds,
 // which the view never asks for here.
@@ -334,6 +357,8 @@ stage_rewrite :: proc(w:^strings.Builder,source:string,s:^Stage,feeds:^Stage,is_
             case TRANSLUCENT_PASS:
                 // The fog of the scene: none.
                 strings.write_string(w,integer ? "int4(0)" : "float4(0.0)")
+            case TRANSLUCENT_SELF_SHADOW:
+                strings.write_string(w,integer ? "int4(0)" : "float4(0.0)")
             case "Primitive":
                 reg,is_literal:=literal(args[2])
                 checks:=PRIMITIVE_BOUNDS_CHECK
@@ -379,6 +404,15 @@ stage_rewrite :: proc(w:^strings.Builder,source:string,s:^Stage,feeds:^Stage,is_
                 strings.write_string(w,"float4(0.0)")
                 continue
             }
+            if b.buffer==TRANSLUCENT_PASS&&b.resource==TRANSLUCENT_CUSTOM_DEPTH {
+                strings.write_string(w,CUSTOM_DEPTH_FAR)
+                continue
+            }
+            volume,noise:=TRANSLUCENT_LIGHT_VOLUME,TRANSLUCENT_NOISE
+            if b.buffer==TRANSLUCENT_SELF_SHADOW||b.buffer==TRANSLUCENT_PASS&&(slice.contains(volume[:],b.resource)||slice.contains(noise[:],b.resource)||b.resource==TRANSLUCENT_BOUNCED_LIGHT) {
+                strings.write_string(w,"float4(0.0)")
+                continue
+            }
             if b.buffer!="Material"||!bound {
                 note_add(notes,fmt.tprintf("the texture %d of %s",b.resource,b.buffer!="" ? b.buffer : "no uniform buffer"))
                 strings.write_string(w,"float4(0.0)")
@@ -399,7 +433,9 @@ stage_rewrite :: proc(w:^strings.Builder,source:string,s:^Stage,feeds:^Stage,is_
                 fmt.sbprintf(w,integer ? "asint(dx_primitive(e,%s))" : "dx_primitive(e,%s)",args[2])
             case b.buffer=="Scene"&&b.resource==SCENE_INSTANCE_DATA:
                 strings.write_string(w,integer ? "int4(0)" : "float4(0.0)")
-            case b.buffer==TRANSLUCENT_PASS&&b.resource==TRANSLUCENT_EYE_ADAPTATION:
+            case b.buffer=="View"&&b.resource==VIEW_SKY_IRRADIANCE:
+                fmt.sbprintf(w,integer ? "asint(dx_sky(%s))" : "dx_sky(%s)",args[2])
+            case b.buffer==TRANSLUCENT_PASS&&b.resource==TRANSLUCENT_EYE_ADAPTATION,b.buffer==OPAQUE_PASS&&b.resource==OPAQUE_EYE_ADAPTATION:
                 // How much the eye has adapted: the exposure is Mirai's, so one.
                 strings.write_string(w,integer ? "asint(float4(1.0))" : "float4(1.0)")
             case:
@@ -538,6 +574,9 @@ struct Dx_Env {
     D uv[4];             // the first two texture coordinates of the mesh
     float4 color;        // of the mesh at the point, or of the particle that draws it
     float scene_depth;   // of what is drawn behind the point, along the view
+    float4 particle_color; // of the particle that draws the point, at its age
+    float particle_life;   // the share of its life that particle lived
+    float3 eye;            // unit, from the point toward the eye
     float4 particle_data[4]; // what the particle gives its material, and which of them (bit i)
     uint particle_given;
     float particle_random;
@@ -587,6 +626,9 @@ void dx_env_fill(inout Dx_Env e, Mirai_Surface_Context ctx) {
     e.uv[2] = d_make(uv1.value.x, uv1.dx.x, uv1.dy.x);
     e.uv[3] = d_make(uv1.value.y, uv1.dx.y, uv1.dy.y);
     e.color = ctx.vertex_color;
+    e.particle_color = ctx.particle_color;
+    e.particle_life = ctx.particle_life;
+    e.eye = dx_to_unreal(ctx.view_direction);
     e.scene_depth = ctx.scene_depth * 100.0;
     for (int i = 0; i < 4; i++) e.particle_data[i] = ctx.particle_data[i];
     e.particle_given = ctx.particle_given;
@@ -599,8 +641,8 @@ void dx_env_fill(inout Dx_Env e, Mirai_Surface_Context ctx) {
 }
 
 // The view's uniform buffer, by register. The world it speaks of is the render's: no
-// translation, no tile. A program has no eye, so the camera is where the point faces it
-// from, as far as the point is deep. The point's place in the image and its place in the
+// translation, no tile. The camera is toward the eye, as far as the point is deep. The
+// point's place in the image and its place in the
 // world are tied by SVPositionToTranslatedWorld (44 to 47), which here takes the pixel of
 // the point to the point with the derivatives of the surface.
 float4 dx_view(inout Dx_Env e, int reg) {
@@ -612,19 +654,21 @@ float4 dx_view(inout Dx_Env e, int reg) {
     // CameraViewToTranslatedWorld: the right, the up and the front of the camera, and where it is.
     case 24: return float4(normalize(e.position_dx), 0.0);
     case 25: return float4(-normalize(e.position_dy), 0.0);
-    case 26: return float4(-e.normal, 0.0);
-    case 27: return float4(e.position + e.normal * e.depth, 1.0);
+    case 26: return float4(-e.eye, 0.0);
+    case 27: return float4(e.position + e.eye * e.depth, 1.0);
     case 31: return float4(0.0, 0.0, 10.0, 0.0);                      // ViewToClip, its last row: a perspective
-    case 77: return float4(-e.normal, 0.0);                           // ViewForward
+    case 77: return float4(-e.eye, 0.0);                              // ViewForward
     case 82: return float4(1.0, 0.0, 0.0, 1e30);                      // InvDeviceZToWorldZTransform: a device depth is the depth
     case 83: return float4(0.5, -0.5, 0.5, 0.5);                      // ScreenPositionScaleBias
-    case 126: return float4(e.position + e.normal * e.depth, 0.0);    // RelativeWorldCameraOriginTO
-    case 84: return float4(e.position + e.normal * e.depth, 0.0);     // ViewOriginLow
-    case 85: return float4(e.position + e.normal * e.depth, 0.0);     // TranslatedWorldCameraOrigin
-    case 87: return float4(e.position + e.normal * e.depth, 0.0);     // WorldViewOriginLow
+    case 126: return float4(e.position + e.eye * e.depth, 0.0);    // RelativeWorldCameraOriginTO
+    case 84: return float4(e.position + e.eye * e.depth, 0.0);     // ViewOriginLow
+    case 85: return float4(e.position + e.eye * e.depth, 0.0);     // TranslatedWorldCameraOrigin
+    case 87: return float4(e.position + e.eye * e.depth, 0.0);     // WorldViewOriginLow
     case 156: return float4(e.image, 1.0 / max(e.image, float2(1.0))); // ViewSizeAndInvSize
     case 159: return float4(e.image, 1.0 / max(e.image, float2(1.0))); // BufferSizeAndInvSize
     case 163: return float4(asfloat(1), 1.0, 1.0, 1.0);               // samples, depth thickness, PreExposure and its inverse
+    case 181: return float4(0.0, 1.0, 0.0, 0.0);                      // TemporalAAParams: the first of one sample, no jitter
+    case 216: return float4(1.0, 1.0, 1.0, 0.0);                      // SkyLightColor
     case 164: return float4(0.0, 0.0, 0.0, 1.0);                      // DiffuseOverrideParameter: add, times
     case 165: return float4(0.0, 0.0, 0.0, 1.0);                      // SpecularOverrideParameter
     case 166: return float4(0.0, 0.0, 0.0, 1.0);                      // NormalOverrideParameter
@@ -637,6 +681,9 @@ float4 dx_view(inout Dx_Env e, int reg) {
     default: return float4(0.0);
     }
 }
+
+// The light of the sky as spherical harmonics, by row: even and white.
+float4 dx_sky(int row) { return row >= 0 && row < 3 ? float4(0.0, 0.0, 0.0, 1.0) : float4(0.0); }
 
 // The rows of the primitive the point is of, as the scene's primitive buffer has them.
 float4 dx_primitive(inout Dx_Env e, int row) {
@@ -890,14 +937,13 @@ cooked_shader_program :: proc(description,pixel,vertex:string,allocator:=context
             answered:=true
             switch {
             case is(in_,f.color):
-                for i in 0..<4 {set(&w,"pin",in_.base+i,fmt.tprintf("d_c(e.color[%d])",i))}
+                for i in 0..<4 {set(&w,"pin",in_.base+i,fmt.tprintf("d_c(e.particle_color[%d])",i))}
             case is(in_,f.texcoords):
                 for row in 0..<in_.rows {
                     for i in 0..<4 {set(&w,"pin",in_.base+row*4+i,row==0 ? fmt.tprintf("e.uv[%d]",i) : "d_c(0.0)")}
                 }
             case is(in_,f.vertex_color):
-                for i in 0..<4 {set(&w,"pin",in_.base+i,"d_c(1.0)")}
-                note_add(&limits,"the vertex colours of the mesh a particle draws: white")
+                for i in 0..<4 {set(&w,"pin",in_.base+i,fmt.tprintf("d_c(e.color[%d])",i))}
             case in_.semantic=="PARTICLE_RANDOM":
                 set(&w,"pin",in_.base,"d_c(e.particle_random)")
             case in_.semantic=="PARTICLE_SUBUVS":
@@ -910,7 +956,7 @@ cooked_shader_program :: proc(description,pixel,vertex:string,allocator:=context
                 set(&w,"pin",in_.base+2,"d_c(1.0)")
                 note_add(&limits,"the velocity of the particle: none")
             case in_.semantic=="PARTICLE_TIME":
-                note_add(&limits,"the age of the particle over its life: zero")
+                set(&w,"pin",in_.base,"d_c(e.particle_life)")
             case in_.semantic=="PARTICLE_LIGHTING_OFFSET":
                 // no offset
             case:
@@ -1001,11 +1047,16 @@ cooked_shader_program :: proc(description,pixel,vertex:string,allocator:=context
         }
     }
     // View registers the shaders read that dx_view does not answer.
-    // (4 to 7, 76, 261, 262, 267 and 362 place the fog volume, which is off: zero.)
-    answered:=[?]int{4,5,6,7,24,25,26,27,31,44,45,46,47,76,77,82,83,84,85,87,125,126,128,148,155,156,159,163,164,165,166,167,168,169,170,171,172,173,174,212,261,262,267,361,362}
+    // (4 to 7, 76, 261, 262, 267 and 362 place the fog volume, which is off: zero. 259 and 280
+    // say whether subsurface scattering runs after the pass: it does not. 190 is the direction
+    // of the sun, which a program does not know: zero, and what the material lights by it is off.)
+    // 177 to 180 place the volume of the lights near the view, which is empty: zero.
+    answered:=[?]int{4,5,6,7,24,25,26,27,31,177,178,179,180,181,VIEW_SUN_DIRECTION,VIEW_SKY_COLOR,259,280,44,45,46,47,76,77,82,83,84,85,87,125,126,128,148,155,156,159,163,164,165,166,167,168,169,170,171,172,173,174,212,261,262,267,361,362}
     for stage in stages {
         for r in stage.registers["View"] {
             if !slice.contains(answered[:],r) {note_add(&notes,fmt.tprintf("the register %d of the view",r))}
+            if r==VIEW_SUN_DIRECTION {note_add(&limits,"what the material lights by the direction of the sun: off")}
+            if r==VIEW_SKY_COLOR {note_add(&limits,LIMIT_EVEN_SKY)}
         }
     }
     p.notes=make([]string,len(notes),allocator)

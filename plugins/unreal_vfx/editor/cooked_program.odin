@@ -3,6 +3,7 @@ package unreal_vfx_editor
 import "core:encoding/json"
 import "core:fmt"
 import "core:strings"
+import cooked "project:plugins/unreal/editor/cooked"
 
 // A cooked Niagara emitter as the Vfx program that runs its scripts. `ue5parse niagara` gives
 // each script as the values it writes, expression trees over the operations of Niagara's VM
@@ -22,6 +23,21 @@ Cooked_Vfx_Program :: struct {
     notes:[]string,
     limits:[]string,
     births:bool, // the program gives the births of its emitter
+    textures:[]string, // what its texture parameters field0, field1... take: the vector fields its scripts sample, by their paths in the game
+    // The socket or the bone of a skeletal mesh its scripts read the place of, "" for none:
+    // the program takes it to be where its emitter is, so the emitter goes on it.
+    follows:string,
+    follows_socket:bool, // a socket of the skeleton; otherwise a bone
+}
+
+// A static vector field of the game as `ue5parse texture` wrote it: an image of its slices
+// side by side along x, and beside it its size in cells, its box in centimetres and the
+// values the 0 and the 1 of the image stand for.
+Cooked_Field :: struct {
+    path:string, // of the field in the game ("/Niagara/VectorFields/Assets/TilingCurl16.TilingCurl16")
+    size:[3]int,
+    low,high:[3]f32,
+    value_low,value_high:f32,
 }
 
 @(private="file")
@@ -46,6 +62,10 @@ Translation :: struct {
     state_outputs:map[string]json.Value, // what their scripts write, by the same names
     notes,limits:[dynamic]string,
     data:strings.Builder,                // the data of the interfaces and the functions that read them
+    given_fields:[]Cooked_Field,         // the vector fields that are extracted
+    textures:[dynamic]string,            // the paths of those the scripts sample, in the order of their parameters
+    follows:string,                      // the socket or bone of a skeletal mesh the scripts read
+    follows_socket:bool,
 }
 
 @(private="file")
@@ -287,6 +307,69 @@ call_write :: proc(sc:^Scope,name:string,def:json.Object,depth:int) {
                 fmt.sbprintf(&sc.out,"    {{ int nv_i = clamp(int(%s), 0, %d);",exprs[len(exprs)-1],di.count-1)
                 for k in 0..<outputs {fmt.sbprintf(&sc.out," %s_%d = nf(NV_DATA%d[nv_i * %d + %d]);",name,k,di.index,di.width,k)}
                 strings.write_string(&sc.out," }\n")
+                answered=true
+            }
+        case "GetFilteredSocket","GetFilteredBone":
+            // Which of the sockets or bones the interface lists: the scripts go on to read where
+            // it is, and a program reads that as where its emitter is.
+            if strings.contains(di.class,"SkeletalMesh")&&outputs==1 {
+                last,_:=args[len(args)-1].(json.Object)
+                index,known:=whole(last["Literal"])
+                if !known {index,known=whole(last["Value"])}
+                props,_:=di.object["Properties"].(json.Object)
+                names,_:=props[function=="GetFilteredSocket" ? "FilteredSockets" : "FilteredBones"].(json.Array)
+                if !known||index<0||int(index)>=len(names) {
+                    note(&t.notes,fmt.tprintf("%s of a skeletal mesh by a number the scripts compute",function))
+                } else {
+                    target:=jstr(names[index])
+                    socket:=function=="GetFilteredSocket"
+                    if t.follows!=""&&(t.follows!=target||t.follows_socket!=socket) {
+                        note(&t.notes,fmt.tprintf("%s and %s of a skeletal mesh: an emitter is on one",t.follows,target))
+                    }
+                    t.follows,t.follows_socket=target,socket
+                    fmt.sbprintf(&sc.out,"    %s_0 = %du;\n",name,u32(index))
+                }
+                answered=true
+            }
+        case "GetSkinnedBoneDataWS","GetSkinnedBoneDataWSInterpolated":
+            // Its place, turn, scale and velocity in the world: those of the emitter.
+            if strings.contains(di.class,"SkeletalMesh")&&outputs==13&&t.follows!="" {
+                fmt.sbprintf(&sc.out,"    {{ float4 nv_q = nv_turn_back(nv_emitter_turn(ctx)); %s_0 = nf(e.owner.x); %s_1 = nf(e.owner.y); %s_2 = nf(e.owner.z); %s_3 = nf(nv_q.x); %s_4 = nf(nv_q.y); %s_5 = nf(nv_q.z); %s_6 = nf(nv_q.w);",name,name,name,name,name,name,name)
+                fmt.sbprintf(&sc.out," %s_7 = nf(1.0); %s_8 = nf(1.0); %s_9 = nf(1.0); %s_10 = nf(e.velocity.x); %s_11 = nf(e.velocity.y); %s_12 = nf(e.velocity.z); }}\n",name,name,name,name,name,name)
+                answered=true
+            }
+        case "SampleField":
+            if strings.contains(di.class,"VectorField")&&len(exprs)>=3&&outputs==3 {
+                props,_:=di.object["Properties"].(json.Object)
+                path:=jstr(props["Field"])
+                field:^Cooked_Field
+                for &f in t.given_fields {
+                    if f.path==path {field=&f}
+                }
+                if field==nil||field.size.x<=0||field.size.y<=0||field.size.z<=0 {
+                    note(&t.notes,fmt.tprintf("the vector field %s, which is not extracted",path))
+                    answered=true
+                    break
+                }
+                at:=-1
+                for have,i in t.textures {
+                    if have==path {at=i}
+                }
+                if at<0 {
+                    append(&t.textures,path)
+                    at=len(t.textures)-1
+                }
+                tile:[3]int
+                for key,i in ([3]string{"bTileX","bTileY","bTileZ"}) {
+                    if on,has:=props[key].(json.Boolean);has&&on {tile[i]=1}
+                }
+                n:=len(exprs)
+                fmt.sbprintf(&sc.out,"    {{ float3 nv_v = nv_field(p.field%d, float3(%d.0, %d.0, %d.0), float3(%s, %s, %s), float3(%s, %s, %s), float3(%d.0, %d.0, %d.0), %s, %s, float3(fv(%s), fv(%s), fv(%s)));",
+                    at,field.size.x,field.size.y,field.size.z,
+                    slang_f32(field.low.x),slang_f32(field.low.y),slang_f32(field.low.z),
+                    slang_f32(field.high.x),slang_f32(field.high.y),slang_f32(field.high.z),
+                    tile[0],tile[1],tile[2],slang_f32(field.value_low),slang_f32(field.value_high),exprs[n-3],exprs[n-2],exprs[n-1])
+                fmt.sbprintf(&sc.out," %s_0 = nf(nv_v.x); %s_1 = nf(nv_v.y); %s_2 = nf(nv_v.z); }}\n",name,name,name)
                 answered=true
             }
         case "Length":
@@ -697,13 +780,87 @@ float3 nv_place_back(Mirai_Vfx_Context ctx, float3 p, bool local) {
     if (!local) return nv_unreal(p) * 100.0;
     return nv_way_back(ctx, p - float3(ctx.world[0].w, ctx.world[1].w, ctx.world[2].w), true);
 }
+// A static vector field at a point of its space, as the game samples it: the image keeps its
+// slices side by side along x, each value between low and high; the point goes from the box
+// of the field to its cells, half a cell back as a cell holds the value of its centre, and
+// the eight cells around it are mixed. An axis that tiles wraps; another keeps its edge.
+float3 nv_field_cell(uint image, float3 size, float3 cell, float3 tile) {
+    float3 wrapped = cell - floor(cell / size) * size;
+    float3 c = lerp(clamp(cell, float3(0.0), size - 1.0), wrapped, tile);
+    float2 uv = float2((c.x + 0.5 + c.z * size.x) / (size.x * size.z), (c.y + 0.5) / size.y);
+    return mirai_vfx_texture(image, uv, 0.0).xyz;
+}
+float3 nv_field(uint image, float3 size, float3 low, float3 high, float3 tile, float value_low, float value_high, float3 point) {
+    float3 at = (point - low) / max(high - low, float3(1e-20)) * size - 0.5;
+    float3 base = floor(at);
+    float3 f = at - base;
+    float3 v = float3(0.0);
+    for (int i = 0; i < 8; i++) {
+        float3 corner = float3(float(i & 1), float((i >> 1) & 1), float((i >> 2) & 1));
+        float3 weight = lerp(1.0 - f, f, corner);
+        v += nv_field_cell(image, size, base + corner, tile) * (weight.x * weight.y * weight.z);
+    }
+    return value_low + v * (value_high - value_low);
+}
+// Turns as quaternions (xyzw). nv_turn takes one of the scripts, in Unreal's axes, to Mirai's.
+float4 nv_turn(float4 q) {
+    float4 m = float4(-q.y, -q.z, q.x, q.w);
+    float l = length(m);
+    return l > 1e-20 ? m / l : float4(0.0, 0.0, 0.0, 1.0);
+}
+float4 nv_turn_back(float4 m) { return float4(m.z, -m.x, -m.y, m.w); }
+float4 nv_qmul(float4 a, float4 b) {
+    return float4(a.w * b.xyz + b.w * a.xyz + cross(a.xyz, b.xyz), a.w * b.w - dot(a.xyz, b.xyz));
+}
+// The turn of three unit axes square to each other, the columns of a rotation.
+float4 nv_axes_turn(float3 x, float3 y, float3 z) {
+    float trace = x.x + y.y + z.z;
+    float4 q;
+    if (trace > 0.0) {
+        float s = sqrt(trace + 1.0) * 2.0;
+        q = float4((y.z - z.y) / s, (z.x - x.z) / s, (x.y - y.x) / s, 0.25 * s);
+    } else if (x.x > y.y && x.x > z.z) {
+        float s = sqrt(1.0 + x.x - y.y - z.z) * 2.0;
+        q = float4(0.25 * s, (y.x + x.y) / s, (z.x + x.z) / s, (y.z - z.y) / s);
+    } else if (y.y > z.z) {
+        float s = sqrt(1.0 + y.y - x.x - z.z) * 2.0;
+        q = float4((y.x + x.y) / s, 0.25 * s, (z.y + y.z) / s, (z.x - x.z) / s);
+    } else {
+        float s = sqrt(1.0 + z.z - x.x - y.y) * 2.0;
+        q = float4((z.x + x.z) / s, (z.y + y.z) / s, 0.25 * s, (x.y - y.x) / s);
+    }
+    return q / max(length(q), 1e-20);
+}
+// The turn of the emitter in the world.
+float4 nv_emitter_turn(Mirai_Vfx_Context ctx) {
+    float3 x = normalize(float3(ctx.world[0].x, ctx.world[1].x, ctx.world[2].x));
+    float3 y = float3(ctx.world[0].y, ctx.world[1].y, ctx.world[2].y);
+    float3 z = normalize(cross(x, y));
+    return nv_axes_turn(x, cross(z, x), z);
+}
+// The turn that takes the front of a mesh of the game (Unreal's x, Mirai's -z) along a way,
+// its up as near the up of the world as that leaves it.
+float4 nv_look(float3 way) {
+    float3 front = normalize(way);
+    float3 side = cross(float3(0.0, 1.0, 0.0), -front);
+    side = length(side) > 1e-4 ? normalize(side) : float3(1.0, 0.0, 0.0);
+    return nv_axes_turn(side, cross(-front, side), -front);
+}
 `
+
+@(private="file")
+slang_f32 :: proc(v:f32) -> string {
+    text:=fmt.tprintf("%.9g",v)
+    if strings.contains_any(text,"nNiI") {return "0.0"}
+    if !strings.contains_any(text,".e") {text=fmt.tprintf("%s.0",text)}
+    return text
+}
 
 // The program of one emitter of a system `ue5parse niagara` described, as one of its renderers
 // draws it: renderer is that renderer of the description, whose Bindings name the attribute
 // each thing a particle shows comes from (its place, colour, size, rotation, frame and what it
 // gives its material).
-cooked_vfx_program :: proc(name:string,system,emitter,renderer:json.Object,allocator:=context.allocator) -> (p:Cooked_Vfx_Program) {
+cooked_vfx_program :: proc(name:string,system,emitter,renderer:json.Object,allocator:=context.allocator,fields:[]Cooked_Field=nil) -> (p:Cooked_Vfx_Program) {
     bindings,_:=renderer["Bindings"].(json.Object)
     kind:=jstr(renderer["Kind"])
     bound :: proc(bindings:json.Object,key,fallback:string) -> string {
@@ -720,9 +877,12 @@ cooked_vfx_program :: proc(name:string,system,emitter,renderer:json.Object,alloc
     rotation_attribute:=bound(bindings,"SpriteRotationBinding","SpriteRotation")
     frame_attribute:=bound(bindings,"SubImageIndexBinding","SubImageIndex")
     random_attribute:=bound(bindings,"MaterialRandomBinding","MaterialRandom")
+    orientation_attribute:=bound(bindings,"MeshOrientationBinding","MeshOrientation")
     t:=Translation{
         emitter=jstr(emitter["Name"]),
         interfaces=make([dynamic]Interface,context.temp_allocator),
+        given_fields=fields,
+        textures=make([dynamic]string,context.temp_allocator),
         fields=make([dynamic]string,context.temp_allocator),
         words=make([dynamic]string,context.temp_allocator),
         state_outputs=make(map[string]json.Value,allocator=context.temp_allocator),
@@ -822,8 +982,11 @@ cooked_vfx_program :: proc(name:string,system,emitter,renderer:json.Object,alloc
     fmt.sbprintf(&w,"//! mirai vfx %s\n//! moves\n",name)
     if p.births {strings.write_string(&w,"//! prepare\n//! births\n")}
     strings.write_string(&w,"//! parameter scale {\"default\":1,\"min\":0,\"max\":100}\n")
+    for _,i in t.textures {fmt.sbprintf(&w,"//! parameter field%d {{\"kind\":\"texture\"}}\n",i)}
     strings.write_string(&w,"// The scripts of a Niagara emitter as one Vfx program: generated, not written.\n")
-    fmt.sbprintf(&w,"namespace %s {{\nstruct Parameters {{ float scale; }};\nstruct Attributes {{\n",name)
+    fmt.sbprintf(&w,"namespace %s {{\nstruct Parameters {{ float scale;",name)
+    for _,i in t.textures {fmt.sbprintf(&w," uint field%d;",i)}
+    strings.write_string(&w," };\nstruct Attributes {\n")
     for f in t.fields {fmt.sbprintf(&w,"    uint %s;\n",ident("f_",f))}
     if len(t.fields)==0 {strings.write_string(&w,"    uint unused;\n")}
     strings.write_string(&w,"};\n")
@@ -896,22 +1059,70 @@ cooked_vfx_program :: proc(name:string,system,emitter,renderer:json.Object,alloc
         alpha:=has_field(&t,fmt.tprintf("%s.w",color_attribute)) ? fmt.tprintf("saturate(fv(a.%s))",ident("f_",fmt.tprintf("%s.w",color_attribute))) : "1.0"
         fmt.sbprintf(&w,"    visual.color = float4(max(%s, float3(0.0)), %s);\n",color,alpha)
     }
+    // The size of a particle is its largest side, and its scale what each side is of it: a
+    // sprite in centimetres, a mesh as how many times its own size along each of its axes.
+    side :: proc(t:^Translation,attribute,c:string) -> string {
+        name:=fmt.tprintf("%s.%s",attribute,c)
+        return has_field(t,name) ? fmt.tprintf("abs(fv(a.%s))",ident("f_",name)) : ""
+    }
     switch {
     case kind=="light":
         // A light renderer draws no particle.
         strings.write_string(&w,"    visual.color = float4(0.0);\n    visual.size = 0.0;\n")
     case has_field(&t,fmt.tprintf("%s.x",size_attribute)):
-        parts:=make([dynamic]string,context.temp_allocator)
-        for c in ([3]string{"x","y","z"}) {
-            if has_field(&t,fmt.tprintf("%s.%s",size_attribute,c)) {append(&parts,fmt.tprintf("abs(fv(a.%s))",ident("f_",fmt.tprintf("%s.%s",size_attribute,c))))}
+        x,y,z:=side(&t,size_attribute,"x"),side(&t,size_attribute,"y"),side(&t,size_attribute,"z")
+        if y=="" {y=x}
+        if z=="" {z=kind=="mesh" ? x : "1.0"}
+        if kind=="mesh" {
+            // Unreal's x is Mirai's z, its y Mirai's x, its z Mirai's y.
+            fmt.sbprintf(&w,"    float3 sides = float3(%s, %s, %s);\n    float largest = max(sides.x, max(sides.y, sides.z));\n",y,z,x)
+            strings.write_string(&w,"    visual.size = largest * max(p.scale, 0.0);\n    if (largest > 0.0) visual.scale = sides / largest;\n")
+        } else {
+            fmt.sbprintf(&w,"    float2 sides = float2(%s, %s);\n    float largest = max(sides.x, sides.y);\n",x,y)
+            strings.write_string(&w,"    visual.size = largest * 0.01 * max(p.scale, 0.0);\n    if (largest > 0.0) visual.scale = float3(sides / largest, 1.0);\n")
         }
-        largest:=parts[0]
-        for part in parts[1:] {largest=fmt.tprintf("max(%s, %s)",largest,part)}
-        // A mesh takes its size as how many times its own; a sprite as metres across.
-        fmt.sbprintf(&w,"    visual.size = %s * %s * max(p.scale, 0.0);\n",largest,kind=="mesh" ? "1.0" : "0.01")
-        if len(parts)>1 {note(&t.limits,fmt.tprintf("%s of each axis: a particle takes the largest",size_attribute))}
     case has_field(&t,size_attribute):
         fmt.sbprintf(&w,"    visual.size = abs(fv(a.%s)) * 0.01 * max(p.scale, 0.0);\n",ident("f_",size_attribute))
+    }
+    // How a mesh is turned: by the turn of its particle, in the space of its emitter where the
+    // emitter is local, or toward the eye; then by the turn its renderer gives the mesh. A
+    // mesh that follows its velocity is turned by its effect.
+    if kind=="mesh" {
+        settings,_:=renderer["Settings"].(json.Object)
+        facing:=jstr(settings["FacingMode"])
+        if !strings.contains(facing,"Velocity") {
+            strings.write_string(&w,"    float4 turn = float4(0.0, 0.0, 0.0, 1.0);\n")
+            if has_field(&t,fmt.tprintf("%s.w",orientation_attribute)) {
+                q:[4]string
+                for c,i in ([4]string{"x","y","z","w"}) {
+                    name:=fmt.tprintf("%s.%s",orientation_attribute,c)
+                    q[i]=has_field(&t,name) ? fmt.tprintf("fv(a.%s)",ident("f_",name)) : "0.0"
+                }
+                fmt.sbprintf(&w,"    turn = nv_turn(float4(%s, %s, %s, %s));\n",q[0],q[1],q[2],q[3])
+            }
+            switch {
+            case strings.contains(facing,"CameraPosition"):
+                strings.write_string(&w,"    turn = nv_qmul(nv_look(mirai_vfx_view().position - particle.position), turn);\n")
+            case strings.contains(facing,"CameraPlane"):
+                strings.write_string(&w,"    turn = nv_qmul(nv_look(-mirai_vfx_view().forward), turn);\n")
+            case:
+                strings.write_string(&w,"    if (NV_LOCAL) turn = nv_qmul(nv_emitter_turn(ctx), turn);\n")
+            }
+            meshes,_:=renderer["Meshes"].(json.Array)
+            if len(meshes)>0 {
+                first,_:=meshes[0].(json.Object)
+                if rot,has_rot:=first["Rotation"].(json.Object);has_rot {
+                    pitch,_:=jf32(rot["Pitch"],0)
+                    yaw,_:=jf32(rot["Yaw"],0)
+                    roll,_:=jf32(rot["Roll"],0)
+                    if abs(pitch)>1e-3||abs(yaw)>1e-3||abs(roll)>1e-3 {
+                        m:=cooked.unreal_rotator_to_mirai(pitch,yaw,roll)
+                        fmt.sbprintf(&w,"    turn = nv_qmul(turn, float4(%s, %s, %s, %s));\n",slang_f32(m.x),slang_f32(m.y),slang_f32(m.z),slang_f32(m.w))
+                    }
+                }
+            }
+            strings.write_string(&w,"    visual.orientation = turn / max(length(turn), 1e-20);\n")
+        }
     }
     if has_field(&t,frame_attribute) {fmt.sbprintf(&w,"    visual.frame = fv(a.%s);\n",ident("f_",frame_attribute))}
     if has_field(&t,random_attribute) {fmt.sbprintf(&w,"    visual.random = fv(a.%s);\n",ident("f_",random_attribute))}
@@ -925,7 +1136,7 @@ cooked_vfx_program :: proc(name:string,system,emitter,renderer:json.Object,alloc
         fmt.sbprintf(&w,"    visual.data[%d] = float4(%s, %s, %s, %s); visual.given |= %du;\n",slot,parts[0],parts[1],parts[2],parts[3],1<<uint(slot))
     }
     strings.write_string(&w,"}\n")
-    for unseen in ([]string{"MeshOrientation","CameraOffset","SpriteFacing","SpriteAlignment","PivotOffset"}) {
+    for unseen in ([]string{"CameraOffset","SpriteFacing","SpriteAlignment","PivotOffset"}) {
         if has_field(&t,unseen)||has_field(&t,fmt.tprintf("%s.x",unseen)) {note(&t.limits,fmt.tprintf("%s of each particle",unseen))}
     }
 
@@ -958,6 +1169,10 @@ cooked_vfx_program :: proc(name:string,system,emitter,renderer:json.Object,alloc
     for n,i in t.notes {p.notes[i]=strings.clone(n,allocator)}
     p.limits=make([]string,len(t.limits),allocator)
     for n,i in t.limits {p.limits[i]=strings.clone(n,allocator)}
+    p.follows=strings.clone(t.follows,allocator)
+    p.follows_socket=t.follows_socket
+    p.textures=make([]string,len(t.textures),allocator)
+    for n,i in t.textures {p.textures[i]=strings.clone(n,allocator)}
     return
 }
 
@@ -967,5 +1182,8 @@ cooked_vfx_program_destroy :: proc(p:^Cooked_Vfx_Program,allocator:=context.allo
     delete(p.notes,allocator)
     for n in p.limits {delete(n,allocator)}
     delete(p.limits,allocator)
+    for n in p.textures {delete(n,allocator)}
+    delete(p.textures,allocator)
+    delete(p.follows,allocator)
     p^={}
 }
