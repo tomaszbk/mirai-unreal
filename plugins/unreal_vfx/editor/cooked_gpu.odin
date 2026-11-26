@@ -545,11 +545,12 @@ struct Dx_Env {{
         }
         field,texture:=gpu_field(t,d.di)
         if field==nil {continue}
-        fmt.sbprintf(&samples,"    if (t == %d) return d4_c(float4(nv_field_unit(x.p.field%d, float3(%d.0, %d.0, %d.0), float3(%d.0, %d.0, %d.0), %s, %s, float3(u.v, v.v, w.v)), 0.0));\n",
+        fmt.sbprintf(&samples,"    if (t == %d) return float4(nv_field_unit(x.p.field%d, float3(%d.0, %d.0, %d.0), float3(%d.0, %d.0, %d.0), %s, %s, float3(u.v, v.v, w.v)), 0.0);\n",
             r.slot,texture,field.size.x,field.size.y,field.size.z,int(gpu_tile(d.di,0)),int(gpu_tile(d.di,1)),int(gpu_tile(d.di,2)),
             slang_f32(field.value_low),slang_f32(field.value_high))
     }
-    fmt.sbprintf(&w,"D4 dx_sample_level3(Dx_Env x, int t, int s, D u, D v, D w, float lod) {{\n%s    return d4_c(float4(0.0));\n}}\n",strings.to_string(samples))
+    // A sample is four floats, as the translation reads it.
+    fmt.sbprintf(&w,"float4 dx_sample_level3(Dx_Env x, int t, int s, D u, D v, D w, float lod) {{\n%s    return float4(0.0);\n}}\n",strings.to_string(samples))
     for unread in ([]string{"dx_sample_level(","dx_sample(","dx_sample_grad(","dx_load(","dx_raw(","dx_raw_i(","dx_input","dx_output","dx_discard("}) {
         if strings.contains(source,unread) {note(&t.notes,fmt.tprintf("what the GPU shader reads by %s",strings.trim_suffix(unread,"(")))}
     }
