@@ -125,6 +125,17 @@ cooked_shader_program_answers_what_its_functions_read :: proc(t:^testing.T) {
     }
     testing.expect_value(t,len(tracking.allocation_map),0)
 
+    // A volume the shaders sample is answered by its binding as an image is: one of the
+    // material is a note, not a program that fails to build.
+    volume,_:=strings.replace_all(PROGRAM_PIXEL,"dx_sample(e,4,0,v1,v1,0.0)","dx_sample_level3(e,4,0,v1,v1,v1,0.0)",context.temp_allocator)
+    vp,verr:=cooked_shader_program(description,volume,PROGRAM_VERTEX,alloc)
+    _,vbad:=verr.?
+    if testing.expect(t,!vbad,"a program that samples a volume builds") {
+        testing.expect(t,len(vp.notes)==1&&strings.contains(vp.notes[0],"volume texture 2 of the material"))
+        cooked_shader_program_destroy(&vp,alloc)
+    }
+    testing.expect_value(t,len(tracking.allocation_map),0)
+
     // An engine buffer of another layout is refused, not read wrong.
     other,_:=strings.replace_all(PROGRAM_DESCRIPTION,"VIEW_LAYOUT","deadbeef",context.temp_allocator)
     _,err=cooked_shader_program(other,PROGRAM_PIXEL,PROGRAM_VERTEX,alloc)

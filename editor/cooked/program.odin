@@ -310,6 +310,7 @@ stage_rewrite :: proc(w:^strings.Builder,source:string,s:^Stage,feeds:^Stage,is_
         case "dx_output","dx_output_i":needs=5
         case "dx_cb","dx_cb_i","dx_buffer","dx_buffer_i","dx_raw","dx_raw_i":needs=3
         case "dx_sample","dx_sample_level":needs=6
+        case "dx_sample_level3":needs=7
         case "dx_sample_grad":needs=7
         case "dx_load":needs=4
         }
@@ -391,7 +392,7 @@ stage_rewrite :: proc(w:^strings.Builder,source:string,s:^Stage,feeds:^Stage,is_
                     strings.write_string(w,integer ? "int4(0)" : "float4(0.0)")
                 }
             }
-        case "dx_sample","dx_sample_level","dx_sample_grad","dx_load":
+        case "dx_sample","dx_sample_level","dx_sample_level3","dx_sample_grad","dx_load":
             slot,_:=literal(args[1])
             b,_:=bind_find(s,{"Texture"},slot)
             k,bound:=textures[b.resource]
@@ -419,6 +420,10 @@ stage_rewrite :: proc(w:^strings.Builder,source:string,s:^Stage,feeds:^Stage,is_
                 continue
             }
             switch name {
+            case "dx_sample_level3":
+                // A volume texture of the material: its textures are images.
+                note_add(notes,fmt.tprintf("the volume texture %d of the material",b.resource))
+                strings.write_string(w,"float4(0.0)")
             case "dx_sample":fmt.sbprintf(w,"dx_tex_sample(e.p.t%d,%s,%s,%s)",k,args[3],args[4],args[5])
             case "dx_sample_level":fmt.sbprintf(w,"dx_tex_level(e.p.t%d,%s,%s,%s)",k,args[3],args[4],args[5])
             case "dx_sample_grad":fmt.sbprintf(w,"dx_tex_grad(e.p.t%d,%s,%s,%s,%s)",k,args[3],args[4],args[5],args[6])
@@ -488,12 +493,9 @@ slang_float :: proc(v:f32) -> string {
     return text
 }
 
-// What every program starts with, inside its namespace after struct Parameters and the sizes
-// of the arrays of Dx_Env. Lengths are Unreal's (cm) and axes Unreal's (x forward, y right, z
-// up), so the functions read what they were compiled against; dx_to_unreal and dx_to_mirai
-// turn directions, and a length takes 100.
-@(private="file")
-PROGRAM_PRELUDE :: `
+// The values with derivatives and the integer operations every translated shader reads
+// (dxil.translate): a program that runs one defines its dx_* functions after them.
+DX_DUAL_PRELUDE :: `
 // A value and how it changes to the next pixel along x and along y.
 struct D { float v; float2 d; };
 struct D4 { D x; D y; D z; D w; };
@@ -544,6 +546,14 @@ int dx_bfe(bool is_signed, int width, int offset, int value) {
 int dx_sdiv(int a, int b) { return b == 0 ? 0 : a / b; }
 int dx_srem(int a, int b) { return b == 0 ? 0 : a % b; }
 
+`
+
+// What every program starts with, inside its namespace after struct Parameters and the sizes
+// of the arrays of Dx_Env. Lengths are Unreal's (cm) and axes Unreal's (x forward, y right, z
+// up), so the functions read what they were compiled against; dx_to_unreal and dx_to_mirai
+// turn directions, and a length takes 100.
+@(private="file")
+PROGRAM_PRELUDE :: DX_DUAL_PRELUDE + `
 float3 dx_to_unreal(float3 v) { return float3(-v.z, v.x, v.y); }
 float3 dx_to_mirai(float3 v) { return float3(v.y, v.z, -v.x); }
 

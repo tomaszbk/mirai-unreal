@@ -40,7 +40,7 @@ Cooked_Field :: struct {
     value_low,value_high:f32,
 }
 
-@(private="file")
+@(private)
 Interface :: struct {
     name:string,   // of the data interface, as the calls name it
     class:string,
@@ -50,7 +50,7 @@ Interface :: struct {
     count:int,     // entries
 }
 
-@(private="file")
+@(private)
 Translation :: struct {
     emitter:string,
     random_seed:i64,
@@ -68,7 +68,7 @@ Translation :: struct {
     follows_socket:bool,
 }
 
-@(private="file")
+@(private)
 Scope :: struct {
     t:^Translation,
     out:strings.Builder,
@@ -84,7 +84,7 @@ Scope :: struct {
 // The first words of the state: whether the emitter has run a frame, and where it was then.
 @(private="file") RESERVED_WORDS :: 4
 
-@(private="file")
+@(private)
 note :: proc(list:^[dynamic]string,text:string) {
     for n in list {
         if n==text {return}
@@ -92,7 +92,7 @@ note :: proc(list:^[dynamic]string,text:string) {
     append(list,strings.clone(text,context.temp_allocator))
 }
 
-@(private="file")
+@(private)
 ident :: proc(prefix,name:string) -> string {
     b:=strings.builder_make(context.temp_allocator)
     strings.write_string(&b,prefix)
@@ -103,7 +103,7 @@ ident :: proc(prefix,name:string) -> string {
     return strings.to_string(b)
 }
 
-@(private="file")
+@(private)
 field_of :: proc(t:^Translation,name:string) -> string {
     for f in t.fields {
         if f==name {return ident("f_",name)}
@@ -112,7 +112,7 @@ field_of :: proc(t:^Translation,name:string) -> string {
     return ident("f_",name)
 }
 
-@(private="file")
+@(private)
 has_field :: proc(t:^Translation,name:string) -> bool {
     for f in t.fields {
         if f==name {return true}
@@ -120,7 +120,7 @@ has_field :: proc(t:^Translation,name:string) -> bool {
     return false
 }
 
-@(private="file")
+@(private)
 word_of :: proc(t:^Translation,name:string) -> int {
     for w,i in t.words {
         if w==name {return i}
@@ -129,17 +129,17 @@ word_of :: proc(t:^Translation,name:string) -> int {
     return len(t.words)-1
 }
 
-@(private="file")
+@(private)
 float_bits :: proc(v:f64) -> string {
     return fmt.tprintf("0x%08xu",transmute(u32)f32(v))
 }
 
-@(private="file")
+@(private)
 int_bits :: proc(v:i64) -> string {
     return fmt.tprintf("0x%08xu",u32(u64(v)&0xffffffff))
 }
 
-@(private="file")
+@(private)
 number :: proc(v:json.Value) -> (f64,bool) {
     #partial switch x in v {
     case json.Float:return f64(x),true
@@ -149,7 +149,7 @@ number :: proc(v:json.Value) -> (f64,bool) {
     return 0,false
 }
 
-@(private="file")
+@(private)
 whole :: proc(v:json.Value) -> (i64,bool) {
     #partial switch x in v {
     case json.Integer:return i64(x),true
@@ -161,7 +161,7 @@ whole :: proc(v:json.Value) -> (i64,bool) {
 }
 
 // A value the cooked data holds, as the bits of its type.
-@(private="file")
+@(private)
 typed_bits :: proc(value:json.Value,type:string) -> (string,bool) {
     low:=strings.to_lower(type,context.temp_allocator)
     switch {
@@ -177,7 +177,7 @@ typed_bits :: proc(value:json.Value,type:string) -> (string,bool) {
 }
 
 // A parameter of the user, by its name and the component the scripts read of it.
-@(private="file")
+@(private)
 user_bits :: proc(t:^Translation,name:string) -> (string,bool) {
     plain:=strings.trim_prefix(name,"PREV_")
     for item in t.user {
@@ -200,7 +200,7 @@ user_bits :: proc(t:^Translation,name:string) -> (string,bool) {
     return "",false
 }
 
-@(private="file")
+@(private)
 interface_find :: proc(t:^Translation,name:string) -> ^Interface {
     for &i in t.interfaces {
         if i.name==name {return &i}
@@ -209,7 +209,7 @@ interface_find :: proc(t:^Translation,name:string) -> ^Interface {
 }
 
 // The data of an interface a call needs, written once: its values in one array.
-@(private="file")
+@(private)
 interface_data :: proc(t:^Translation,di:^Interface) -> bool {
     if di.index>=0 {return di.count>0}
     values:=make([dynamic]f64,context.temp_allocator)
@@ -272,7 +272,7 @@ interface_data :: proc(t:^Translation,di:^Interface) -> bool {
 }
 
 // The statements of a call, which leave its outputs in <name>_0, <name>_1...
-@(private="file")
+@(private)
 call_write :: proc(sc:^Scope,name:string,def:json.Object,depth:int) {
     t:=sc.t
     outputs:=0
@@ -387,7 +387,7 @@ call_write :: proc(sc:^Scope,name:string,def:json.Object,depth:int) {
 }
 
 // Writes the temporary or call of that name before what reads it.
-@(private="file")
+@(private)
 need :: proc(sc:^Scope,name:string,depth:int) {
     if sc.done[name] {return}
     sc.done[name]=true
@@ -405,7 +405,7 @@ need :: proc(sc:^Scope,name:string,depth:int) {
     fmt.sbprintf(&sc.out,"    uint %s = %s;\n",name,value)
 }
 
-@(private="file")
+@(private)
 parameter :: proc(sc:^Scope,obj:json.Object) -> string {
     t:=sc.t
     name:=jstr(obj["Parameter"])
@@ -460,7 +460,7 @@ parameter :: proc(sc:^Scope,obj:json.Object) -> string {
 }
 
 // What the engine gives the scripts of the system each frame.
-@(private="file")
+@(private)
 engine_attribute :: proc(sc:^Scope,name:string) -> string {
     t:=sc.t
     switch name {
@@ -489,7 +489,7 @@ engine_attribute :: proc(sc:^Scope,name:string) -> string {
 }
 
 // A tree as an expression of the 32 bits it leaves.
-@(private="file")
+@(private)
 expr :: proc(sc:^Scope,v:json.Value,depth:int) -> string {
     t:=sc.t
     obj,ok:=v.(json.Object)
@@ -633,7 +633,7 @@ expr :: proc(sc:^Scope,v:json.Value,depth:int) -> string {
 }
 
 // The temporaries and calls of the modules of a script, by name.
-@(private="file")
+@(private)
 defs_add :: proc(defs:^map[string]json.Object,script:json.Object) {
     modules,_:=script["Modules"].(json.Array)
     for m in modules {
@@ -651,10 +651,10 @@ defs_add :: proc(defs:^map[string]json.Object,script:json.Object) {
 }
 
 // Every scalar a script writes: its attribute with the component, and the tree.
-@(private="file")
+@(private)
 Written :: struct {name:string,value:json.Value}
 
-@(private="file")
+@(private)
 outputs_of :: proc(t:^Translation,script:json.Object,particles:bool) -> []Written {
     out:=make([dynamic]Written,context.temp_allocator)
     list,_:=script["Outputs"].(json.Array)
@@ -685,7 +685,7 @@ outputs_of :: proc(t:^Translation,script:json.Object,particles:bool) -> []Writte
 }
 
 // The body of initialize or update: the script's values, then its attributes, and whether the particle stays.
-@(private="file")
+@(private)
 particle_script :: proc(t:^Translation,script:json.Object) -> string {
     sc:=Scope{t=t,defs=make(map[string]json.Object,allocator=context.temp_allocator),done=make(map[string]bool,allocator=context.temp_allocator)}
     sc.out=strings.builder_make(context.temp_allocator)
@@ -705,7 +705,7 @@ particle_script :: proc(t:^Translation,script:json.Object) -> string {
     return strings.to_string(sc.out)
 }
 
-@(private="file")
+@(private)
 PROGRAM_PRELUDE :: `
 // The bits of a float, a float of bits, and the mask of a comparison.
 uint nf(float v) { return asuint(v); }
@@ -848,7 +848,7 @@ float4 nv_look(float3 way) {
 }
 `
 
-@(private="file")
+@(private)
 slang_f32 :: proc(v:f32) -> string {
     text:=fmt.tprintf("%.9g",v)
     if strings.contains_any(text,"nNiI") {return "0.0"}
@@ -905,21 +905,29 @@ cooked_vfx_program :: proc(name:string,system,emitter,renderer:json.Object,alloc
     }
     for w in ([RESERVED_WORDS]string{"nv.started","nv.origin.x","nv.origin.y","nv.origin.z"}) {word_of(&t,w)}
 
-    spawn,update:json.Object
-    has_spawn,has_update,gpu:=false,false,false
+    spawn,update,compute:json.Object
+    has_spawn,has_update,gpu,has_compute:=false,false,false,false
     scripts,_:=emitter["Scripts"].(json.Array)
     for s in scripts {
         obj,ok:=s.(json.Object)
         if !ok {continue}
         usage:=jstr(obj["Usage"])
         switch {
-        case strings.contains(usage,"GPUCompute"):gpu=true
+        case strings.contains(usage,"GPUCompute"):
+            gpu=true
+            if _,has:=obj["Shader"].(json.Object);has {compute,has_compute=obj,true}
         case strings.contains(usage,"Spawn"):spawn,has_spawn=obj,true
         case strings.contains(usage,"Update"):update,has_update=obj,true
         }
     }
-    if gpu {note(&t.notes,"scripts the game compiled for the GPU and keeps as shaders")}
-    if !has_spawn&&!has_update {note(&t.notes,"no particle script")}
+    // A GPU emitter runs its compute shader (cooked_gpu.odin); its spawn and update scripts
+    // are in that shader, not in the VM.
+    if gpu {
+        has_spawn,has_update=false,false
+        if !has_compute {note(&t.notes,"scripts the game compiled for the GPU, whose shader is not described (extract with ue5parse niagara --dxc)")}
+    } else if !has_spawn&&!has_update {
+        note(&t.notes,"no particle script")
+    }
 
     // The scripts of the system and the emitter: what they write is the state.
     system_scope:=Scope{t=&t,system=true,defs=make(map[string]json.Object,allocator=context.temp_allocator),done=make(map[string]bool,allocator=context.temp_allocator),
@@ -968,11 +976,41 @@ cooked_vfx_program :: proc(name:string,system,emitter,renderer:json.Object,alloc
         fmt.sbprintf(&system_scope.out,"    uint n%d = %s;\n",at,value)
         append(&computed,output)
     }
+    spawns:=make([dynamic]Gpu_Spawn,context.temp_allocator)
     for w in emitter_outputs {
         // The spawn infos of the emitter: how many particles each starts this frame.
         if !strings.has_suffix(w.name,".Count") {continue}
         base:=strings.trim_suffix(w.name,".Count")
-        if _,info:=t.state_outputs[fmt.tprintf("%s.InterpStartDt",base)];info {append(&counts,word_of(&t,w.name))}
+        if _,info:=t.state_outputs[fmt.tprintf("%s.InterpStartDt",base)];info {
+            append(&counts,word_of(&t,w.name))
+            kept :: proc(t:^Translation,name:string) -> int {
+                if _,has:=t.state_outputs[name];has {return word_of(t,name)}
+                return -1
+            }
+            append(&spawns,Gpu_Spawn{word_of(&t,w.name),kept(&t,fmt.tprintf("%s.InterpStartDt",base)),
+                kept(&t,fmt.tprintf("%s.IntervalDt",base)),kept(&t,fmt.tprintf("%s.SpawnGroup",base))})
+        }
+    }
+    gpu_host:string
+    if has_compute {
+        if host,init_body,update_body_gpu,ok:=gpu_program(&t,emitter,compute,spawns[:]);ok {
+            gpu_host,spawn_body,update_body=host,init_body,update_body_gpu
+            has_spawn,has_update=true,true
+        }
+    }
+    // What the particles read of the emitter's and the system's values that prepare does not
+    // compute yet.
+    for name in t.words {
+        if _,kept:=t.state_outputs[name];!kept {continue}
+        known:=false
+        for have in system_scope.pending {known||=have==name}
+        if !known {append(&system_scope.pending,name)}
+    }
+    for at:=len(computed);at<len(system_scope.pending);at+=1 {
+        output:=system_scope.pending[at]
+        value:=expr(&system_scope,t.state_outputs[output],0)
+        fmt.sbprintf(&system_scope.out,"    uint n%d = %s;\n",at,value)
+        append(&computed,output)
     }
     p.births=len(emitter_outputs)>0&&len(counts)>0
     if len(t.words)>STATE_WORDS {note(&t.notes,fmt.tprintf("%d values of the emitter and the system, more than the state of a program holds",len(t.words)))}
@@ -993,6 +1031,7 @@ cooked_vfx_program :: proc(name:string,system,emitter,renderer:json.Object,alloc
     strings.write_string(&w,PROGRAM_PRELUDE)
     strings.write_string(&w,strings.to_string(t.data))
     fmt.sbprintf(&w,"static const bool NV_LOCAL = %s;\n",t.local ? "true" : "false")
+    strings.write_string(&w,gpu_host)
 
     vector :: proc(t:^Translation,name:string) -> (string,bool) {
         if !has_field(t,fmt.tprintf("%s.x",name)) {return "",false}
