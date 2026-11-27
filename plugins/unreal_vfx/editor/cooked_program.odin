@@ -2,6 +2,7 @@ package unreal_vfx_editor
 
 import "core:encoding/json"
 import "core:fmt"
+import "core:slice"
 import "core:strings"
 import cooked "project:plugins/unreal/editor/cooked"
 
@@ -790,11 +791,15 @@ outputs_of :: proc(t:^Translation,script:json.Object,particles:bool) -> []Writte
         for key in ([]string{"x","y","z","w","r","g","b","a"}) {
             if value,has:=components[key];has {append(&out,Written{fmt.tprintf("%s.%s",name,key),value})}
         }
-        for key,value in components {
+        // Others (an id's Index and AcquireTag) by name: a program comes out the same each time.
+        others:=make([dynamic]string,context.temp_allocator)
+        for key in components {
             known:=false
             for k in ([]string{"x","y","z","w","r","g","b","a"}) {known||=k==key}
-            if !known {append(&out,Written{fmt.tprintf("%s.%s",name,key),value})}
+            if !known {append(&others,key)}
         }
+        slice.sort(others[:])
+        for key in others {append(&out,Written{fmt.tprintf("%s.%s",name,key),components[key]})}
     }
     return out[:]
 }
