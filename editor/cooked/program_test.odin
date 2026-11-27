@@ -165,3 +165,36 @@ cooked_shader_program_answers_what_its_functions_read :: proc(t:^testing.T) {
     }
     testing.expect_value(t,len(tracking.allocation_map),0)
 }
+
+// A surface that blends and takes light: its shaders light it by the sky they read, which a
+// program answers even and white, and once more by none; the light it adds is the colour it
+// reflects, which Mirai lights with the lights at the point, and what it shows unlit its glow.
+// One that reads no sky shows its colour as it is.
+@(test)
+cooked_translucent_program_takes_light_from_mirai :: proc(t:^testing.T) {
+    description:=`{"Material":"MI_Smoke","CodeHash":"00112233aabbccdd","VertexFactory":"LocalVF",
+"Pixel":{"Shader":"003_Pixel","Function":"dx_pixel","Source":"pixel.slang",
+ "Inputs":[{"Id":0,"Semantic":"SV_Position","Index":0,"Rows":1,"Integer":false,"Used":true}],
+ "Outputs":[{"Id":0,"Semantic":"SV_Target","Index":0,"Rows":1,"Integer":false,"Used":true}],
+ "UniformBuffers":[{"Name":"View","Layout":"cfe9c681"}],
+ "Bindings":[{"Kind":"Raw_Buffer","Slot":3,"Buffer":"View","Resource":48}]},
+"Parameters":{"Name":"MI_Smoke","BlendMode":"BLEND_Translucent","Evaluated":{"UniformBuffer":[],"TextureBindings":[]}}}`
+    lit_pixel:=`void dx_pixel(inout Dx_Env e) {
+float4 v1=float4(0.0);
+v1=dx_raw(e,3,(0),0);
+dx_output(e,0,0,0,d_c(0.5*v1[3]+0.1));
+dx_output(e,0,0,3,d_c(0.5));
+}
+`
+    p,err:=cooked_shader_program(description,lit_pixel,"",context.temp_allocator)
+    e0,bad:=err.?
+    if !testing.expectf(t,!bad,"a program that reads the sky builds: %v",e0) {return}
+    for want in ([]string{"v1=dx_sky(e,(0));","e.sky = 0.0;","s.unlit = false;","s.base_color = max(scene - unlit, float3(0.0));","s.emission = max(unlit, float3(0.0));"}) {
+        testing.expectf(t,strings.contains(p.source,want),"the program has %q",want)
+    }
+    unlit_pixel,_:=strings.replace_all(lit_pixel,"v1=dx_raw(e,3,(0),0);","",context.temp_allocator)
+    u,uerr:=cooked_shader_program(description,unlit_pixel,"",context.temp_allocator)
+    _,ubad:=uerr.?
+    if !testing.expect(t,!ubad,"a program that reads no sky builds") {return}
+    testing.expect(t,strings.contains(u.source,"s.unlit = true;")&&!strings.contains(u.source,"e.sky = 0.0;"),"it shows its colour as it is")
+}

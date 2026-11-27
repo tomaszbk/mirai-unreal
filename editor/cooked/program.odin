@@ -66,9 +66,10 @@ KNOWN_LAYOUTS :: [6][2]string{{"View","cfe9c681"},{"Scene","f7e1b302"},{"LocalVF
 @(private="file") CUSTOM_DEPTH_FAR :: "float4(1e9)"
 @(private="file") TRANSLUCENT_EYE_ADAPTATION :: 95
 // What lights a surface that blends and takes light. A program is not told the lights of the
-// scene, so of those one is left: the sky, even and white. The volume of the lights near the
-// view (two cascades, 68 to 71), that of the bounced light (90) and the noise that dithers
-// them (98, 99) are empty, as is the shadow a surface casts on itself.
+// scene: the sky its shaders read is even and white, and what it adds is the colour Mirai
+// lights. The volume of the lights near the view (two cascades, 68 to 71), that of the
+// bounced light (90) and the noise that dithers them (98, 99) are empty, as is the shadow a
+// surface casts on itself.
 @(private="file") TRANSLUCENT_LIGHT_VOLUME :: [4]int{68,69,70,71}
 @(private="file") TRANSLUCENT_BOUNCED_LIGHT :: 90
 @(private="file") TRANSLUCENT_NOISE :: [2]int{98,99}
@@ -77,7 +78,7 @@ KNOWN_LAYOUTS :: [6][2]string{{"View","cfe9c681"},{"Scene","f7e1b302"},{"LocalVF
 // harmonics, of which the fourth value of the first three is the even part of each channel.
 @(private="file") VIEW_SKY_COLOR :: 216
 @(private="file") VIEW_SKY_IRRADIANCE :: 48
-@(private="file") LIMIT_EVEN_SKY :: "the lights of the scene on a surface that blends: an even white sky instead"
+@(private="file") LIMIT_EVEN_SKY :: "the light of a surface that blends comes from all around it, as Mirai lights it at the point: not by the direction of each light"
 
 // The uniform buffer of the pass that draws what is opaque: of its resources a program reads
 // how much the eye has adapted.
@@ -439,7 +440,7 @@ stage_rewrite :: proc(w:^strings.Builder,source:string,s:^Stage,feeds:^Stage,is_
             case b.buffer=="Scene"&&b.resource==SCENE_INSTANCE_DATA:
                 strings.write_string(w,integer ? "int4(0)" : "float4(0.0)")
             case b.buffer=="View"&&b.resource==VIEW_SKY_IRRADIANCE:
-                fmt.sbprintf(w,integer ? "asint(dx_sky(%s))" : "dx_sky(%s)",args[2])
+                fmt.sbprintf(w,integer ? "asint(dx_sky(e,%s))" : "dx_sky(e,%s)",args[2])
             case b.buffer==TRANSLUCENT_PASS&&b.resource==TRANSLUCENT_EYE_ADAPTATION,b.buffer==OPAQUE_PASS&&b.resource==OPAQUE_EYE_ADAPTATION:
                 // How much the eye has adapted: the exposure is Mirai's, so one.
                 strings.write_string(w,integer ? "asint(float4(1.0))" : "float4(1.0)")
@@ -591,6 +592,7 @@ struct Dx_Env {
     uint particle_given;
     float particle_random;
     float particle_radius;
+    float sky;             // the even light of the sky, a share of white: 1, or 0 to see what the surface shows unlit
     bool discarded;
     D vin[DX_VERTEX_INPUTS];
     D pin[DX_PIXEL_INPUTS];
@@ -644,6 +646,7 @@ void dx_env_fill(inout Dx_Env e, Mirai_Surface_Context ctx) {
     e.particle_given = ctx.particle_given;
     e.particle_random = ctx.particle_random;
     e.particle_radius = ctx.particle_radius * 100.0;
+    e.sky = 1.0;
     e.discarded = false;
     for (int i = 0; i < DX_VERTEX_INPUTS; i++) e.vin[i] = d_c(0.0);
     for (int i = 0; i < DX_PIXEL_INPUTS; i++) e.pin[i] = d_c(0.0);
@@ -692,8 +695,8 @@ float4 dx_view(inout Dx_Env e, int reg) {
     }
 }
 
-// The light of the sky as spherical harmonics, by row: even and white.
-float4 dx_sky(int row) { return row >= 0 && row < 3 ? float4(0.0, 0.0, 0.0, 1.0) : float4(0.0); }
+// The light of the sky as spherical harmonics, by row: even, white times e.sky.
+float4 dx_sky(inout Dx_Env e, int row) { return row >= 0 && row < 3 ? float4(0.0, 0.0, 0.0, e.sky) : float4(0.0); }
 
 // The rows of the primitive the point is of, as the scene's primitive buffer has them.
 float4 dx_primitive(inout Dx_Env e, int row) {
@@ -1029,8 +1032,16 @@ cooked_shader_program :: proc(description,pixel,vertex:string,allocator:=context
         fmt.sbprintfln(&w,"    if ((int(e.pout[%d].v * 255.0 + 0.5) & 15) == 0) {{ s.unlit = true; s.base_color = float3(0.0); }}",target[2]+3)
     } else if target[0]>=0 {
         // One target: the colour it shows, and how much of it. What adds its light writes it
-        // already scaled and no coverage.
-        strings.write_string(&w,"    s.unlit = true;\n    s.base_color = float3(0.0);\n    s.emission = max(scene, float3(0.0));\n")
+        // already scaled and no coverage. A surface that takes light shows it lit by the
+        // even white sky its shaders read; its light adds to what it shows unlit, so the two
+        // give the colour it reflects, which Mirai lights with the lights at the point.
+        if strings.contains(strings.to_string(w),"dx_sky(e,") {
+            fmt.sbprintfln(&w,"    for (int i = 0; i < DX_PIXEL_OUTPUTS; i++) e.pout[i] = d_c(0.0);\n    e.discarded = false;\n    e.sky = 0.0;\n    dx_pixel(e);\n    s.alpha = e.discarded ? 0.0 : 1.0;")
+            fmt.sbprintfln(&w,"    float3 unlit = float3(e.pout[%d].v, e.pout[%d].v, e.pout[%d].v);",target[0],target[0]+1,target[0]+2)
+            strings.write_string(&w,"    s.unlit = false;\n    s.base_color = max(scene - unlit, float3(0.0));\n    s.emission = max(unlit, float3(0.0));\n")
+        } else {
+            strings.write_string(&w,"    s.unlit = true;\n    s.base_color = float3(0.0);\n    s.emission = max(scene, float3(0.0));\n")
+        }
         switch {
         case strings.has_suffix(blend,"BLEND_Additive"):
         case strings.has_suffix(blend,"BLEND_Translucent")||strings.has_suffix(blend,"BLEND_Masked")||strings.has_suffix(blend,"BLEND_Opaque")||blend=="":
