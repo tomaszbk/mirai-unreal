@@ -1288,17 +1288,18 @@ cooked_vfx_program :: proc(name:string,system,emitter,renderer:json.Object,alloc
     strings.write_string(&w,"}\n")
 
     strings.write_string(&w,"void initialize(Mirai_Vfx_Context ctx, Parameters p, inout Mirai_Vfx_Particle particle, inout Attributes a) {\n")
+    strings.write_string(&w,"    float3 nv_birth_pos = particle.position; bool nv_channel_birth = (ctx.birth == 0xFFFFFFFFu);\n")
     if p.births {
         strings.write_string(&w,"    float nv_dt = fv(mirai_vfx_state_load(ctx, 4u)); if (nv_dt <= 0.0) nv_dt = 1.0 / 60.0;\n")
         strings.write_string(&w,"    Nv e = nv_frame(ctx, nv_dt, particle.seed);\n")
-        strings.write_string(&w,"    if (mirai_vfx_state_load(ctx, 0u) != 0u) { e.prev_owner = float3(fv(mirai_vfx_state_load(ctx, 1u)), fv(mirai_vfx_state_load(ctx, 2u)), fv(mirai_vfx_state_load(ctx, 3u))); e.velocity = (e.owner - e.prev_owner) / nv_dt; }\n")
+        strings.write_string(&w,"    if (!nv_channel_birth && mirai_vfx_state_load(ctx, 0u) != 0u) { e.prev_owner = float3(fv(mirai_vfx_state_load(ctx, 1u)), fv(mirai_vfx_state_load(ctx, 2u)), fv(mirai_vfx_state_load(ctx, 3u))); e.velocity = (e.owner - e.prev_owner) / nv_dt; }\n")
     } else {
         strings.write_string(&w,"    Nv e = nv_frame(ctx, 1.0 / 60.0, particle.seed);\n")
     }
-    strings.write_string(&w,"    e.exec = ctx.birth - ctx.born;\n")
+    strings.write_string(&w,"    if (nv_channel_birth) { e.owner = nv_unreal(nv_birth_pos) * 100.0; e.prev_owner = e.owner; e.velocity = float3(0.0); e.l2w[12] = e.owner.x; e.l2w[13] = e.owner.y; e.l2w[14] = e.owner.z; e.w2l[12] = -dot(e.owner, float3(e.l2w[0], e.l2w[1], e.l2w[2])); e.w2l[13] = -dot(e.owner, float3(e.l2w[4], e.l2w[5], e.l2w[6])); e.w2l[14] = -dot(e.owner, float3(e.l2w[8], e.l2w[9], e.l2w[10])); e.exec = 0u; e.count = 1u; } else { e.exec = ctx.birth - ctx.born; }\n")
     if !gpu&&len(spawns)>0 {
         // Pick the SpawnInfo entry covering this birth so SpawnGroup, SpawnInterval, InterpSpawnStartDt and ExecIndex match UE.
-        strings.write_string(&w,"    { uint nv_idx = ctx.birth - ctx.born; uint nv_off = 0u; bool nv_picked = false;\n")
+        strings.write_string(&w,"    if (!nv_channel_birth) { uint nv_idx = ctx.birth - ctx.born; uint nv_off = 0u; bool nv_picked = false;\n")
         for s in spawns {
             gword:=s.group>=0 ? fmt.tprintf("mirai_vfx_state_load(ctx, %du)",s.group) : "0u"
             iword:=s.interval>=0 ? fmt.tprintf("fv(mirai_vfx_state_load(ctx, %du))",s.interval) : "0.0"
@@ -1324,7 +1325,7 @@ cooked_vfx_program :: proc(name:string,system,emitter,renderer:json.Object,alloc
         }
     }
     // A particle its spawn script does not keep dies at its first step.
-    strings.write_string(&w,"    nv_leave(ctx, particle, a);\n    if (!keep) { particle.age = 1.0; particle.lifetime = 1.0; }\n}\n")
+    strings.write_string(&w,"    nv_leave(ctx, particle, a);\n    if (NV_LOCAL && nv_channel_birth) particle.position += nv_birth_pos - ctx.origin;\n    if (!keep) { particle.age = 1.0; particle.lifetime = 1.0; }\n}\n")
 
     strings.write_string(&w,"void update(Mirai_Vfx_Context ctx, Parameters p, inout Mirai_Vfx_Particle particle, inout Attributes a) {\n")
     strings.write_string(&w,"    Nv e = nv_frame(ctx, ctx.delta_time, particle.seed ^ (uint(ctx.time * 1000.0) * 2654435761u));\n    e.exec = ctx.particle;\n    nv_enter(ctx, particle, a);\n")

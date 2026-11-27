@@ -647,7 +647,7 @@ struct Dx_Env {{
     strings.write_string(&w,"    return x;\n}\n")
     strings.write_string(&w,source)
     host=strings.to_string(w)
-    initialize="    Dx_Env x = nv_dx(ctx, p, e, a);\n    x.thread = int(ctx.birth - ctx.born); x.start = 0; x.spawned = int(ctx.spawned);\n    nv_spawn_infos(x);\n    dx_compute(x);\n    a = x.a;\n    bool keep = x.wrote;\n"
+    initialize="    Dx_Env x = nv_dx(ctx, p, e, a);\n    x.thread = nv_channel_birth ? 0 : int(ctx.birth - ctx.born); x.start = 0; x.spawned = nv_channel_birth ? 1 : int(ctx.spawned);\n    if (!nv_channel_birth) nv_spawn_infos(x);\n    dx_compute(x);\n    a = x.a;\n    bool keep = x.wrote;\n"
     update="    Dx_Env x = nv_dx(ctx, p, e, a);\n    x.thread = int(ctx.particle); x.start = x.thread + 1; x.spawned = 0;\n    dx_compute(x);\n    a = x.a;\n    bool keep = x.wrote;\n"
     ok=true
     return

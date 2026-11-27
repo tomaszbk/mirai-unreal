@@ -438,3 +438,52 @@ cooked_mesh_emitter_applies_pivot_offset :: proc(t:^testing.T) {
         }
     }
 }
+
+@(test)
+cooked_channel_birth_uses_birth_position :: proc(t:^testing.T) {
+    // A Niagara emitter driven by a Mirai channel birth (ctx.birth == 0xFFFFFFFFu) must place its
+    // origin at particle.position for both world-space and local-space emitters and compile cleanly.
+    arena:mem.Dynamic_Arena
+    mem.dynamic_arena_init(&arena)
+    defer mem.dynamic_arena_destroy(&arena)
+    alloc:=mem.dynamic_arena_allocator(&arena)
+    for local in ([2]bool{false,true}) {
+        template:=`{
+  "Schema": "ue5parse.niagara/2", "Name": "NS_ChannelTest",
+  "Emitters": [{
+    "Name": "Burst", "Settings": {"bLocalSpace": LOCAL},
+    "Scripts": [
+      {"Usage": "ParticleSpawnScript", "Target": "CPU", "Modules": [],
+       "Outputs": [
+         {"Attribute": "Lifetime", "Value": {"Literal": 0.5, "Type": "float"}},
+         {"Attribute": "Position", "Components": {
+           "x": {"Parameter": "Engine.Owner.Position.x", "Source": "Engine"},
+           "y": {"Parameter": "Engine.Owner.Position.y", "Source": "Engine"},
+           "z": {"Parameter": "Engine.Owner.Position.z", "Source": "Engine"}
+         }}
+       ]}
+    ],
+    "Renderers": [{"Kind": "sprite", "Class": "NiagaraSpriteRendererProperties"}]
+  }]
+}`
+        doc,_:=strings.replace_all(template,"LOCAL",local ? "true" : "false",context.temp_allocator)
+        sys,err:=cooked_niagara_build(doc,alloc)
+        if e,bad:=err.?; !testing.expectf(t,!bad,"local=%v: build failed: %v",local,e) {continue}
+        if !testing.expect(t,len(sys.emitters)==1&&len(sys.emitters[0].layers)==1) {continue}
+        src:=sys.emitters[0].layers[0].program_source
+        testing.expectf(t,strings.contains(src,"ctx.birth == 0xFFFFFFFFu"),"local=%v: missing channel birth check",local)
+        testing.expectf(t,strings.contains(src,"NV_LOCAL && nv_channel_birth"),"local=%v: missing local channel birth offset",local)
+        folder:=".mirai/tmp/cooked-vfx-channel"
+        _=os.make_directory_all(folder)
+        shader_path,_:=filepath.join({folder,local ? "Cooked_Channel_Local.slang" : "Cooked_Channel_World.slang"},context.temp_allocator)
+        _=os.write_entire_file(shader_path,transmute([]u8)src)
+        root,cwd_err:=os.get_working_directory(context.temp_allocator)
+        if testing.expectf(t,cwd_err==nil,"cwd failed: %v",cwd_err) {
+            vfx_dir,_:=filepath.join({root,"plugins","vfx","shaders"},context.temp_allocator)
+            sources:=os.exists(vfx_dir) ? []shaders.Source{{name="vfx",folder=vfx_dir}} : nil
+            res:=shaders.program_check({root=root,project=folder,sources=sources,path=shader_path},context.temp_allocator)
+            testing.expectf(t,res.error=="" && res.errors==0,"local=%v shader failed: %s %v",local,res.error,res.diagnostics)
+            if os.exists(vfx_dir) {testing.expectf(t,res.compiled,"local=%v stages failed: %v",local,res.diagnostics)}
+        }
+    }
+}

@@ -108,7 +108,7 @@ cooked_gpu_emitter_runs_its_simulation_shader :: proc(t:^testing.T) {
         "if (i >= 0 && i < 3) return NV_DATA",
         "nv_field_unit(x.p.field0, float3(16.0, 16.0, 16.0), float3(1.0, 0.0, 0.0)",
         "nv_float_set(x.a, i / NV_STRIDE, asuint(v.v)); x.wrote = true;",
-        "x.thread = int(ctx.birth - ctx.born); x.start = 0; x.spawned = int(ctx.spawned);",
+        "x.thread = nv_channel_birth ? 0 : int(ctx.birth - ctx.born); x.start = 0; x.spawned = nv_channel_birth ? 1 : int(ctx.spawned);",
         "x.thread = int(ctx.particle); x.start = x.thread + 1; x.spawned = 0;",
         "bool keep = x.wrote;",
         "void dx_compute(inout Dx_Env e) {",
