@@ -30,6 +30,7 @@ Cooked_Vfx_Layer :: struct {
     textures:[]string,     // what the parameters field0, field1... of its program take: vector fields of the game, by path
     follows:string,        // the socket or bone of a skeletal mesh its emitter goes on; "" for none
     follows_socket:bool,
+    resources:[]Cooked_Vfx_Resource, // Mirai resources (`//! resource <name> <kind>`) its program binds
 }
 
 Cooked_Vfx_Emitter :: struct {
@@ -68,6 +69,8 @@ cooked_vfx_system_destroy :: proc(sys:^Cooked_Vfx_System,allocator:=context.allo
             for n in layer.textures {delete(n,allocator)}
             delete(layer.textures,allocator)
             delete(layer.follows,allocator)
+            for r in layer.resources {delete(r.name,allocator);delete(r.kind,allocator)}
+            delete(layer.resources,allocator)
         }
         delete(em.layers,allocator)
         for w in em.warnings {delete(w,allocator)}
@@ -180,7 +183,7 @@ niagara_particle_light :: proc(p:Niagara_Light_Params) -> effect.Particle_Light 
 // name of the parameter ("User.ColorVariant").
 Cooked_User_Value :: struct {name:string,value:f64}
 
-cooked_niagara_build :: proc(json_text:string,allocator:=context.allocator,user:[]Cooked_User_Value=nil,fields:[]Cooked_Field=nil) -> (sys:Cooked_Vfx_System,err:Maybe(cooked.Error)) {
+cooked_niagara_build :: proc(json_text:string,allocator:=context.allocator,user:[]Cooked_User_Value=nil,fields:[]Cooked_Field=nil,skeleton:Cooked_Skeleton={}) -> (sys:Cooked_Vfx_System,err:Maybe(cooked.Error)) {
     if len(json_text)==0 {return {},cooked.Error{"niagara","empty JSON"}}
     root,jerr:=json.parse_string(json_text,allocator=context.temp_allocator)
     if jerr!=.None {return {},cooked.Error{"niagara","malformed JSON"}}
@@ -228,7 +231,7 @@ cooked_niagara_build :: proc(json_text:string,allocator:=context.allocator,user:
         for item in emitters {
             eobj,eok:=item.(json.Object)
             if !eok {continue}
-            append(&em_list,build_cooked_emitter(sys.name,obj,eobj,mat_by_path,fields,allocator))
+            append(&em_list,build_cooked_emitter(sys.name,obj,eobj,mat_by_path,fields,skeleton,allocator))
         }
     }
     sys.emitters=em_list[:]
@@ -253,6 +256,7 @@ build_cooked_emitter :: proc(
     eobj:json.Object,
     mat_by_path:map[string]^cooked.Cooked_Material,
     fields:[]Cooked_Field,
+    skeleton:Cooked_Skeleton,
     allocator:mem.Allocator,
 ) -> (out:Cooked_Vfx_Emitter) {
     out.name=strings.clone(jstr(eobj["Name"],"Emitter"),allocator)
@@ -346,9 +350,7 @@ build_cooked_emitter :: proc(
                 if ms,has_scale:=jvec3(mobj["Scale"]);has_scale&&ms.x>0&&ms.y>0&&ms.z>0 {
                     layer.info.scale=cooked.unreal_scale_to_mirai(ms)
                 }
-                if pivot,has_pivot:=jvec3(mobj["PivotOffset"]);has_pivot && pivot!={} {
-                    append(&limits,strings.clone("the pivot the renderer gives its mesh",allocator))
-                }
+                // PivotOffset is applied by the generated Vfx program (cooked_program.odin).
             }
             layer.mesh_paths=meshes[:]
         case "light":
@@ -401,10 +403,11 @@ build_cooked_emitter :: proc(
         // The program that runs its scripts, where everything they read is answered.
         if has_scripts {
             prog_name:=cooked_program_name(system_name,index==0 ? out.name : fmt.tprintf("%s_%d",out.name,index),allocator)
-            program:=cooked_vfx_program(prog_name,system,eobj,robj,allocator,fields)
+            program:=cooked_vfx_program(prog_name,system,eobj,robj,allocator,fields,skeleton)
             layer.notes=program.notes
             layer.textures=program.textures
             layer.follows,layer.follows_socket=program.follows,program.follows_socket
+            layer.resources=program.resources
             for limit in program.limits {append(&limits,limit)}
             delete(program.limits,allocator)
             if len(program.notes)==0 {

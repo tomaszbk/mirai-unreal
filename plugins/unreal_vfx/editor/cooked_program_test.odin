@@ -294,3 +294,147 @@ cooked_emitter_follows_a_socket_of_a_skeletal_mesh :: proc(t:^testing.T) {
         }
     }
 }
+
+// With a target skeleton, CPU emitters sample live bones and sockets through Mirai's `bones`
+// resource across dynamic SpawnGroup indices and split RibbonID streams per ribbon.
+@(test)
+cooked_emitter_samples_bones_resource_with_multi_spawn_ribbons :: proc(t:^testing.T) {
+    tracking:mem.Tracking_Allocator
+    mem.tracking_allocator_init(&tracking,context.allocator)
+    defer mem.tracking_allocator_destroy(&tracking)
+    alloc:=mem.tracking_allocator(&tracking)
+    doc:=`{
+  "Schema": "ue5parse.niagara/2", "Name": "NS_SkelRibbon",
+  "Emitters": [{
+    "Name": "Trail",
+    "EmitterScripts": [{"Usage": "EmitterUpdateScript", "Modules": [], "Outputs": [
+      {"Attribute": "Trail.S0.Count", "Value": {"Literal": 2, "Type": "int"}},
+      {"Attribute": "Trail.S0.InterpStartDt", "Value": {"Literal": 0.0, "Type": "float"}},
+      {"Attribute": "Trail.S0.IntervalDt", "Value": {"Literal": 0.008, "Type": "float"}},
+      {"Attribute": "Trail.S0.SpawnGroup", "Value": {"Literal": 0, "Type": "int"}},
+      {"Attribute": "Trail.S1.Count", "Value": {"Literal": 2, "Type": "int"}},
+      {"Attribute": "Trail.S1.InterpStartDt", "Value": {"Literal": 0.0, "Type": "float"}},
+      {"Attribute": "Trail.S1.IntervalDt", "Value": {"Literal": 0.008, "Type": "float"}},
+      {"Attribute": "Trail.S1.SpawnGroup", "Value": {"Literal": 1, "Type": "int"}}
+    ]}],
+    "Scripts": [
+      {"Usage": "ParticleSpawnScriptInterpolated", "Target": "CPU",
+       "Modules": [{"Name": "Main", "Calls": [
+         {"Name": "t0", "DataInterface": "Trail.Mesh", "Function": "GetFilteredSocket", "Outputs": 1,
+          "Args": [{"Literal": 1, "Type": "int"}, {"Parameter": "Trail.SpawnGroup", "Source": "ParameterStore", "Type": "int", "Value": 0}]},
+         {"Name": "t1", "DataInterface": "Trail.Mesh", "Function": "GetSkinnedBoneDataWSInterpolated", "Outputs": 13,
+          "Args": [{"Literal": 1, "Type": "int"}, {"Call": "t0", "Output": 0},
+                   {"Op": "mul", "Args": [{"Op": "mad", "Args": [{"Parameter": "Trail.SpawnInterval", "Type": "float"}, {"Op": "i2f", "Args": [{"ExecIndex": true}]}, {"Parameter": "Trail.InterpSpawnStartDt", "Type": "float"}]}, {"Parameter": "Engine.InverseDeltaTime", "Source": "Engine"}]}]}
+       ]}],
+       "Outputs": [
+         {"Attribute": "Lifetime", "Value": {"Literal": 0.4, "Type": "float"}},
+         {"Attribute": "RibbonWidth", "Value": {"Literal": 10.0, "Type": "float"}},
+         {"Attribute": "RibbonID", "Components": {"Index": {"Call": "t0", "Output": 0}, "AcquireTag": {"Literal": 0, "Type": "int"}}},
+         {"Attribute": "Position", "Components": {"x": {"Call": "t1", "Output": 0}, "y": {"Call": "t1", "Output": 1}, "z": {"Call": "t1", "Output": 2}}}
+       ]}
+    ],
+    "DataInterfaces": [{"Name": "Trail.Mesh", "Class": "NiagaraDataInterfaceSkeletalMesh",
+      "Properties": {"FilteredSockets": ["Hilt", "Tip"], "FilteredBones": ["spine_01"]}}],
+    "Renderers": [{"Kind": "ribbon", "Class": "NiagaraRibbonRendererProperties"}]
+  }]
+}`
+    skel:=Cooked_Skeleton{
+        bones=[]Cooked_Bone{{"root",0},{"spine_01",1},{"hand_r",2}},
+        sockets=[]Cooked_Socket{
+            {"Hilt",2,{0,0,0},{0,0,0,1},{1,1,1}},
+            {"Tip",2,{0,0.9,0},{0,0,0,1},{1,1,1}},
+        },
+        bone_turn={0,0,0,1},
+    }
+    sys,err:=cooked_niagara_build(doc,alloc,nil,nil,skel)
+    defer cooked_vfx_system_destroy(&sys,alloc)
+    e,bad:=err.?
+    if !testing.expectf(t,!bad,"build failed: %v",e)||!testing.expect(t,len(sys.emitters)==1&&len(sys.emitters[0].layers)==1) {return}
+    layer:=sys.emitters[0].layers[0]
+    testing.expectf(t,len(layer.notes)==0,"notes: %v",layer.notes)
+    testing.expect_value(t,layer.follows,"")
+    testing.expect_value(t,len(layer.resources),1)
+    if len(layer.resources)==1 {
+        testing.expect_value(t,layer.resources[0].name,"skeleton")
+        testing.expect_value(t,layer.resources[0].kind,"bones")
+    }
+    src:=layer.program_source
+    for want in ([]string{
+        "//! resource skeleton bones",
+        "mirai_vfx_bone(ctx, skeleton,",
+        "nv_skel_sample_0(ctx, e,",
+        "e.spawn_group =",
+        "particle.ribbon =",
+        "mirai_vfx_state_store(ctx, 4u, nf(ctx.delta_time))",
+    }) {
+        testing.expectf(t,strings.contains(src,want),"program missing %q",want)
+    }
+    folder:=".mirai/tmp/cooked-vfx-skel-ribbon"
+    _=os.make_directory_all(folder)
+    shader_path,_:=filepath.join({folder,"Cooked_NS_SkelRibbon_Trail.slang"},context.temp_allocator)
+    _=os.write_entire_file(shader_path,transmute([]u8)src)
+    root,cwd_err:=os.get_working_directory(context.temp_allocator)
+    if testing.expectf(t,cwd_err==nil,"cwd failed: %v",cwd_err) {
+        vfx_dir,_:=filepath.join({root,"plugins","vfx","shaders"},context.temp_allocator)
+        sources:=os.exists(vfx_dir) ? []shaders.Source{{name="vfx",folder=vfx_dir}} : nil
+        res:=shaders.program_check({root=root,project=folder,sources=sources,path=shader_path},context.temp_allocator)
+        testing.expectf(t,res.error=="" && res.errors==0,"shader did not compile: %s %v",res.error,res.diagnostics)
+        if os.exists(vfx_dir) {testing.expectf(t,res.compiled,"stages did not compile: %v",res.diagnostics)}
+    }
+    cooked_vfx_system_destroy(&sys,alloc)
+    testing.expect_value(t,len(tracking.allocation_map),0)
+}
+
+// Mesh renderer PivotOffset is applied in simulation/world space without reporting a limit.
+@(test)
+cooked_mesh_emitter_applies_pivot_offset :: proc(t:^testing.T) {
+    arena:mem.Dynamic_Arena
+    mem.dynamic_arena_init(&arena)
+    defer mem.dynamic_arena_destroy(&arena)
+    alloc:=mem.dynamic_arena_allocator(&arena)
+    for space in ([]string{"ENiagaraMeshPivotOffsetSpace::Mesh","ENiagaraMeshPivotOffsetSpace::World","ENiagaraMeshPivotOffsetSpace::Local","ENiagaraMeshPivotOffsetSpace::Simulation"}) {
+        template:=`{
+  "Schema": "ue5parse.niagara/2", "Name": "NS_Pivot",
+  "Emitters": [{
+    "Name": "Cone",
+    "Scripts": [
+      {"Usage": "ParticleSpawnScript", "Target": "CPU", "Modules": [],
+       "Outputs": [
+         {"Attribute": "Lifetime", "Value": {"Literal": 0.5, "Type": "float"}},
+         {"Attribute": "Position", "Components": {"x": {"Literal": 0.0, "Type": "float"}, "y": {"Literal": 0.0, "Type": "float"}, "z": {"Literal": 0.0, "Type": "float"}}},
+         {"Attribute": "Scale", "Components": {"x": {"Literal": 1.0, "Type": "float"}, "y": {"Literal": 1.0, "Type": "float"}, "z": {"Literal": 1.0, "Type": "float"}}}
+       ]}
+    ],
+    "Renderers": [{"Kind": "mesh", "Class": "NiagaraMeshRendererProperties",
+      "Meshes": [{"Mesh": "/Game/SM_Cone.SM_Cone", "Scale": {"X": 1.0, "Y": 1.0, "Z": 1.0}, "Rotation": {"Pitch": 0.0, "Yaw": 30.0, "Roll": 0.0}, "PivotOffset": {"X": 10.0, "Y": 0.0, "Z": -2.0}, "PivotOffsetSpace": "SPACE"}]}]
+  }]
+}`
+        doc,_:=strings.replace_all(template,"SPACE",space,context.temp_allocator)
+        sys,err:=cooked_niagara_build(doc,alloc)
+        _,bad:=err.?
+        if !testing.expectf(t,!bad,"%s: build failed",space)||!testing.expect(t,len(sys.emitters)==1&&len(sys.emitters[0].layers)==1) {continue}
+        layer:=sys.emitters[0].layers[0]
+        testing.expectf(t,len(layer.notes)==0,"%s: notes %v",space,layer.notes)
+        for lim in layer.limits {
+            testing.expectf(t,!strings.contains(lim,"pivot"),"%s: unexpected pivot limit %q",space,lim)
+        }
+        src:=layer.program_source
+        testing.expectf(t,strings.contains(src,"float3 nv_mesh_pivot("),"%s: missing nv_mesh_pivot",space)
+        testing.expectf(t,strings.contains(src,"+ nv_mesh_pivot(ctx, a)"),"%s: missing leave pivot",space)
+        testing.expectf(t,strings.contains(src,"- nv_mesh_pivot(ctx, a)"),"%s: missing enter pivot",space)
+        if space=="ENiagaraMeshPivotOffsetSpace::Mesh" {
+            folder:=".mirai/tmp/cooked-vfx-pivot"
+            _=os.make_directory_all(folder)
+            shader_path,_:=filepath.join({folder,"Cooked_NS_Pivot_Cone.slang"},context.temp_allocator)
+            _=os.write_entire_file(shader_path,transmute([]u8)src)
+            root,cwd_err:=os.get_working_directory(context.temp_allocator)
+            if testing.expectf(t,cwd_err==nil,"cwd failed: %v",cwd_err) {
+                vfx_dir,_:=filepath.join({root,"plugins","vfx","shaders"},context.temp_allocator)
+                sources:=os.exists(vfx_dir) ? []shaders.Source{{name="vfx",folder=vfx_dir}} : nil
+                res:=shaders.program_check({root=root,project=folder,sources=sources,path=shader_path},context.temp_allocator)
+                testing.expectf(t,res.error=="" && res.errors==0,"pivot shader failed: %s %v",res.error,res.diagnostics)
+                if os.exists(vfx_dir) {testing.expectf(t,res.compiled,"pivot stages failed: %v",res.diagnostics)}
+            }
+        }
+    }
+}

@@ -180,7 +180,27 @@ gpu_interface_word :: proc(g:^Gpu,d:^Gpu_Data,member:string,k:int) -> (string,bo
         case "MaxBounds":return float_bits(f64(field.high[k])),true
         }
     case strings.contains(di.class,"SkeletalMesh"):
-        // Where the bones are is not known to a program: each is where the emitter is.
+        if len(t.skeleton.bones)>0 {
+            need_ub:=member=="NumUnfilteredBones"
+            need_fs:=member=="FilteredSocketBoneOffset"
+            sd:=skel_di_prepare(t,di,true,need_ub,need_fs)
+            max_rand:=max(sd.num_bones-(sd.exclude_bone>=0 ? 2 : 1),0)
+            switch member {
+            case "NumBones":return fmt.tprintf("%du",sd.num_bones),true
+            case "NumFilteredBones":return fmt.tprintf("%du",len(sd.filtered_bones)),true
+            case "NumUnfilteredBones":return fmt.tprintf("%du",len(sd.unfiltered_bones)),true
+            case "FilteredSocketBoneOffset":return fmt.tprintf("%du",sd.num_bones),true
+            case "NumFilteredSockets":return fmt.tprintf("%du",len(sd.filtered_sockets)),true
+            case "RandomMaxBone":return fmt.tprintf("%du",max_rand),true
+            case "ExcludeBoneIndex":return sd.exclude_bone>=0 ? fmt.tprintf("%du",sd.exclude_bone) : "0xffffffffu",true
+            case "InstanceTransform":return fmt.tprintf("asuint(x.skel_curr[%d][%d])",k/4,k%4),true
+            case "InstancePrevTransform":return fmt.tprintf("asuint(x.skel_prev[%d][%d])",k/4,k%4),true
+            case "InstanceRotation":return fmt.tprintf("asuint(x.skel_rot[%d])",min(k,3)),true
+            case "InstancePrevRotation":return fmt.tprintf("asuint(x.skel_prev_rot[%d])",min(k,3)),true
+            case "InstanceInvDeltaTime":return "nf(e.dt > 0.0 ? 1.0 / e.dt : 0.0)",true
+            }
+        }
+        // Without a target skeleton: each bone falls back to the emitter.
         note(&t.limits,"where the bones of a skeletal mesh are: each is where the emitter is")
         bones,_:=props["FilteredBones"].(json.Array)
         sockets,_:=props["FilteredSockets"].(json.Array)
@@ -219,7 +239,7 @@ gpu_word :: proc(g:^Gpu,name:string,k:int) -> (string,bool) {
     }
     switch plain {
     case "ComponentBufferSizeRead","ComponentBufferSizeWrite":return fmt.tprintf("%du",GPU_STRIDE),true
-    case "SimStart":return "(ctx.emitter_age <= ctx.delta_time + 1e-5 ? 1u : 0u)",true
+    case "SimStart":return "(ctx.emitter_age <= e.dt + 1e-5 ? 1u : 0u)",true
     case "ReadInstanceCountOffset","IndirectDispatchArgsOffset":return "0u",true
     case "WriteInstanceCountOffset":return "1u",true
     case "EmitterTickCounter":return "e.tick",true
@@ -453,6 +473,12 @@ struct Dx_Env {{
     int spawned;
     int offsets[%d];
     float4 infos[%d];
+    float4 skel_curr[4];
+    float4 skel_prev[4];
+    float4 skel_rot;
+    float4 skel_prev_rot;
+    float3 skel_ipos; float4 skel_inv_q; float3 skel_inv_s;
+    float3 skel_ppos; float4 skel_pinv_q; float3 skel_pinv_s;
 }};
 `,GPU_SPAWN_INFOS,GPU_SPAWN_INFOS)
     gpu_register_functions(&w,"float",g.floats[:])
@@ -493,10 +519,24 @@ struct Dx_Env {{
             case member=="CurveLUT":
                 if at,has:=gpu_static(&g,di);has {value=fmt.tprintf("float4(nv_static(%d + i), 0.0, 0.0, 0.0)",at)}
             case member=="FilteredAndUnfilteredBones":
-                value="asfloat(int4(i, 0, 0, 0))"
+                if len(t.skeleton.bones)>0 {
+                    sd:=skel_di_prepare(t,di,true)
+                    value=fmt.tprintf("asfloat(int4(nv_skel_filtered_index_%d(i), 0, 0, 0))",sd.id)
+                } else {
+                    value="asfloat(int4(i, 0, 0, 0))"
+                }
             case member=="MeshCurrSamplingBonesBuffer"||member=="MeshPrevSamplingBonesBuffer":
-                // Each bone at the place of the skeletal mesh, unturned and of scale one.
-                value="(i % 3 == 1 ? float4(0.0, 0.0, 0.0, 1.0) : i % 3 == 2 ? float4(1.0, 1.0, 1.0, asfloat(-1)) : float4(0.0))"
+                if len(t.skeleton.bones)>0 {
+                    sd:=skel_di_prepare(t,di,true)
+                    if member=="MeshPrevSamplingBonesBuffer" {
+                        value=fmt.tprintf("nv_skel_gpu_bone_%d(x.ctx, x.n, i, true, x.skel_ppos, x.skel_pinv_q, x.skel_pinv_s)",sd.id)
+                    } else {
+                        value=fmt.tprintf("nv_skel_gpu_bone_%d(x.ctx, x.n, i, false, x.skel_ipos, x.skel_inv_q, x.skel_inv_s)",sd.id)
+                    }
+                } else {
+                    // Each bone at the place of the skeletal mesh, unturned and of scale one.
+                    value="(i % 3 == 1 ? float4(0.0, 0.0, 0.0, 1.0) : i % 3 == 2 ? float4(1.0, 1.0, 1.0, asfloat(-1)) : float4(0.0))"
+                }
             }
         }
         if value=="" {
@@ -581,9 +621,30 @@ struct Dx_Env {{
     x.ctx = ctx; x.p = p; x.n = n; x.i = a; x.a = a; x.wrote = false;
     x.thread = 0; x.start = 0; x.spawned = 0;
     for (int k = 0; k < 8; k++) { x.offsets[k] = 0x7fffffff; x.infos[k] = float4(0.0); }
-    return x;
-}
+    for (int k = 0; k < 4; k++) { x.skel_curr[k] = float4(0.0); x.skel_prev[k] = float4(0.0); }
+    x.skel_rot = float4(0.0, 0.0, 0.0, 1.0); x.skel_prev_rot = float4(0.0, 0.0, 0.0, 1.0);
+    x.skel_ipos = float3(0.0); x.skel_inv_q = float4(0.0, 0.0, 0.0, 1.0); x.skel_inv_s = float3(1.0);
+    x.skel_ppos = float3(0.0); x.skel_pinv_q = float4(0.0, 0.0, 0.0, 1.0); x.skel_pinv_s = float3(1.0);
 `)
+    if len(t.skel_dis)>0 {
+        strings.write_string(&w,`    {
+        Mirai_Vfx_Transform tr = mirai_vfx_transform(ctx, skeleton_transform);
+        float3 cpos = tr.valid ? tr.position : ctx.origin;
+        float4 crot = tr.valid ? tr.rotation : nv_emitter_turn(ctx);
+        float3 cscl = tr.valid ? tr.scale : float3(n.scale.y, n.scale.z, n.scale.x);
+        float3 ppos = tr.valid ? tr.previous_position : nv_mirai(n.prev_owner) * 0.01;
+        float4 prot = tr.valid ? tr.previous_rotation : crot;
+        float3 pscl = tr.valid ? tr.previous_scale : cscl;
+        x.skel_rot = nv_turn_back(crot);
+        x.skel_prev_rot = nv_turn_back(prot);
+        nv_trs_rows(nv_unreal(cpos) * 100.0, x.skel_rot, nv_scale_unreal(cscl), x.skel_curr[0], x.skel_curr[1], x.skel_curr[2], x.skel_curr[3]);
+        nv_trs_rows(nv_unreal(ppos) * 100.0, x.skel_prev_rot, nv_scale_unreal(pscl), x.skel_prev[0], x.skel_prev[1], x.skel_prev[2], x.skel_prev[3]);
+        x.skel_ipos = cpos; x.skel_inv_q = nv_qconj(crot); x.skel_inv_s = float3(1.0) / max(abs(cscl), float3(1e-6));
+        x.skel_ppos = ppos; x.skel_pinv_q = nv_qconj(prot); x.skel_pinv_s = float3(1.0) / max(abs(pscl), float3(1e-6));
+    }
+`)
+    }
+    strings.write_string(&w,"    return x;\n}\n")
     strings.write_string(&w,source)
     host=strings.to_string(w)
     initialize="    Dx_Env x = nv_dx(ctx, p, e, a);\n    x.thread = int(ctx.birth - ctx.born); x.start = 0; x.spawned = int(ctx.spawned);\n    nv_spawn_infos(x);\n    dx_compute(x);\n    a = x.a;\n    bool keep = x.wrote;\n"

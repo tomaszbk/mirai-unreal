@@ -28,6 +28,7 @@ Cooked_Vfx_Program :: struct {
     // the program takes it to be where its emitter is, so the emitter goes on it.
     follows:string,
     follows_socket:bool, // a socket of the skeleton; otherwise a bone
+    resources:[]Cooked_Vfx_Resource, // Mirai resources (`//! resource <name> <kind>`) its program declares
 }
 
 // A static vector field of the game as `ue5parse texture` wrote it: an image of its slices
@@ -66,6 +67,9 @@ Translation :: struct {
     textures:[dynamic]string,            // the paths of those the scripts sample, in the order of their parameters
     follows:string,                      // the socket or bone of a skeletal mesh the scripts read
     follows_socket:bool,
+    skeleton:Cooked_Skeleton,            // target skeleton metadata when provided by the caller
+    skel_dis:[dynamic]Skel_Di,           // skeletal mesh DIs resolved against `skeleton`
+    resources:[dynamic]Cooked_Vfx_Resource,
 }
 
 @(private)
@@ -81,8 +85,8 @@ Scope :: struct {
 @(private="file") MAX_DEPTH :: 200
 @(private="file") STATE_WORDS :: 128
 @(private="file") ATTRIBUTE_BYTES :: 1024
-// The first words of the state: whether the emitter has run a frame, and where it was then.
-@(private="file") RESERVED_WORDS :: 4
+// The first words of the state: whether the emitter has run a frame, where it was then, and the last frame dt.
+@(private="file") RESERVED_WORDS :: 5
 
 @(private)
 note :: proc(list:^[dynamic]string,text:string) {
@@ -284,9 +288,10 @@ call_write :: proc(sc:^Scope,name:string,def:json.Object,depth:int) {
     for a,i in args {exprs[i]=expr(sc,a,depth+1)}
     for k in 0..<outputs {fmt.sbprintf(&sc.out,"    uint %s_%d = 0u;\n",name,k)}
     answered:=false
-    if di!=nil&&len(exprs)>0 {
+    if di!=nil {
         switch function {
         case "SampleCurve","SampleVector2DCurve","SampleVectorCurve","SampleColorCurve":
+            if len(exprs)==0 {break}
             if strings.contains(di.class,"Curve")&&interface_data(t,di)&&di.width>=outputs {
                 // The table of the curve between its first and last times, as the game samples it.
                 props,_:=di.object["Properties"].(json.Object)
@@ -303,40 +308,142 @@ call_write :: proc(sc:^Scope,name:string,def:json.Object,depth:int) {
                 answered=true
             }
         case "Get":
+            if len(exprs)==0 {break}
             if strings.contains(di.class,"Array")&&interface_data(t,di)&&di.width>=outputs {
                 fmt.sbprintf(&sc.out,"    {{ int nv_i = clamp(int(%s), 0, %d);",exprs[len(exprs)-1],di.count-1)
                 for k in 0..<outputs {fmt.sbprintf(&sc.out," %s_%d = nf(NV_DATA%d[nv_i * %d + %d]);",name,k,di.index,di.width,k)}
                 strings.write_string(&sc.out," }\n")
                 answered=true
             }
-        case "GetFilteredSocket","GetFilteredBone":
-            // Which of the sockets or bones the interface lists: the scripts go on to read where
-            // it is, and a program reads that as where its emitter is.
-            if strings.contains(di.class,"SkeletalMesh")&&outputs==1 {
-                last,_:=args[len(args)-1].(json.Object)
-                index,known:=whole(last["Literal"])
-                if !known {index,known=whole(last["Value"])}
-                props,_:=di.object["Properties"].(json.Object)
-                names,_:=props[function=="GetFilteredSocket" ? "FilteredSockets" : "FilteredBones"].(json.Array)
-                if !known||index<0||int(index)>=len(names) {
-                    note(&t.notes,fmt.tprintf("%s of a skeletal mesh by a number the scripts compute",function))
-                } else {
-                    target:=jstr(names[index])
-                    socket:=function=="GetFilteredSocket"
-                    if t.follows!=""&&(t.follows!=target||t.follows_socket!=socket) {
-                        note(&t.notes,fmt.tprintf("%s and %s of a skeletal mesh: an emitter is on one",t.follows,target))
+        case "GetFilteredSocket","GetFilteredBone","GetFilteredSocketOrBone","GetUnfilteredBone":
+            if strings.contains(di.class,"SkeletalMesh")&&outputs==1&&len(exprs)>0 {
+                if len(t.skeleton.bones)>0 {
+                    need_ub:=function=="GetUnfilteredBone"
+                    need_fs:=function=="GetFilteredSocket"||function=="GetFilteredSocketOrBone"
+                    sd:=skel_di_prepare(t,di,false,need_ub,need_fs)
+                    idx_expr:=exprs[len(exprs)-1]
+                    switch function {
+                    case "GetFilteredBone":
+                        if len(sd.filtered_bones)>0 {
+                            fmt.sbprintf(&sc.out,"    %s_0 = uint(NV_SKEL_FB_%d[clamp(int(%s), 0, %d)]);\n",name,sd.id,idx_expr,len(sd.filtered_bones)-1)
+                        } else {
+                            fmt.sbprintf(&sc.out,"    %s_0 = 0xffffffffu;\n",name)
+                        }
+                    case "GetFilteredSocket":
+                        if len(sd.filtered_sockets)>0 {
+                            fmt.sbprintf(&sc.out,"    %s_0 = uint(%d + clamp(int(%s), 0, %d));\n",name,sd.num_bones,idx_expr,len(sd.filtered_sockets)-1)
+                        } else {
+                            fmt.sbprintf(&sc.out,"    %s_0 = 0xffffffffu;\n",name)
+                        }
+                    case "GetFilteredSocketOrBone":
+                        nfb,nfs:=len(sd.filtered_bones),len(sd.filtered_sockets)
+                        if nfb+nfs>0 {
+                            fmt.sbprintf(&sc.out,"    {{ int nv_k = clamp(int(%s), 0, %d); %s_0 = nv_k < %d ? uint(NV_SKEL_FB_%d[min(nv_k, %d)]) : uint(%d + clamp(nv_k - %d, 0, %d)); }}\n",
+                                idx_expr,nfb+nfs-1,name,nfb,sd.id,max(nfb-1,0),sd.num_bones,nfb,max(nfs-1,0))
+                        } else {
+                            fmt.sbprintf(&sc.out,"    %s_0 = 0xffffffffu;\n",name)
+                        }
+                    case "GetUnfilteredBone":
+                        if len(sd.unfiltered_bones)>0 {
+                            fmt.sbprintf(&sc.out,"    %s_0 = uint(NV_SKEL_UB_%d[clamp(int(%s), 0, %d)]);\n",name,sd.id,idx_expr,len(sd.unfiltered_bones)-1)
+                        } else {
+                            fmt.sbprintf(&sc.out,"    %s_0 = 0u;\n",name)
+                        }
                     }
-                    t.follows,t.follows_socket=target,socket
-                    fmt.sbprintf(&sc.out,"    %s_0 = %du;\n",name,u32(index))
+                    answered=true
+                } else if function=="GetFilteredSocket"||function=="GetFilteredBone" {
+                    // Without a skeleton: single constant socket or bone follows its emitter.
+                    last,_:=args[len(args)-1].(json.Object)
+                    index,known:=whole(last["Literal"])
+                    if !known {index,known=whole(last["Value"])}
+                    props,_:=di.object["Properties"].(json.Object)
+                    names,_:=props[function=="GetFilteredSocket" ? "FilteredSockets" : "FilteredBones"].(json.Array)
+                    if !known||index<0||int(index)>=len(names) {
+                        note(&t.notes,fmt.tprintf("%s of a skeletal mesh by a number the scripts compute",function))
+                    } else {
+                        target:=jstr(names[index])
+                        socket:=function=="GetFilteredSocket"
+                        if t.follows!=""&&(t.follows!=target||t.follows_socket!=socket) {
+                            note(&t.notes,fmt.tprintf("%s and %s of a skeletal mesh: an emitter is on one",t.follows,target))
+                        }
+                        t.follows,t.follows_socket=target,socket
+                        fmt.sbprintf(&sc.out,"    %s_0 = %du;\n",name,u32(index))
+                    }
+                    answered=true
+                }
+            }
+        case "GetFilteredBoneCount","GetFilteredSocketCount","GetFilteredSocketOrBoneCount","GetUnfilteredBoneCount","GetBoneCount":
+            if strings.contains(di.class,"SkeletalMesh")&&outputs==1&&len(t.skeleton.bones)>0 {
+                sd:=skel_di_prepare(t,di,false)
+                cnt:=0
+                switch function {
+                case "GetFilteredBoneCount":cnt=len(sd.filtered_bones)
+                case "GetFilteredSocketCount":cnt=len(sd.filtered_sockets)
+                case "GetFilteredSocketOrBoneCount":cnt=len(sd.filtered_bones)+len(sd.filtered_sockets)
+                case "GetUnfilteredBoneCount":cnt=len(sd.unfiltered_bones)
+                case "GetBoneCount":cnt=sd.num_bones
+                }
+                fmt.sbprintf(&sc.out,"    %s_0 = %du;\n",name,u32(cnt))
+                answered=true
+            }
+        case "RandomFilteredBone","RandomFilteredSocket","RandomFilteredSocketOrBone","RandomUnfilteredBone","RandomBone":
+            if strings.contains(di.class,"SkeletalMesh")&&outputs==1&&len(t.skeleton.bones)>0 {
+                need_ub:=function=="RandomUnfilteredBone"
+                need_fs:=function=="RandomFilteredSocket"||function=="RandomFilteredSocketOrBone"
+                sd:=skel_di_prepare(t,di,false,need_ub,need_fs)
+                switch function {
+                case "RandomFilteredBone":
+                    if len(sd.filtered_bones)>0 {
+                        fmt.sbprintf(&sc.out,"    %s_0 = uint(NV_SKEL_FB_%d[min(int(mirai_vfx_random(e.rng) * %d.0), %d)]);\n",name,sd.id,len(sd.filtered_bones),len(sd.filtered_bones)-1)
+                    } else {
+                        fmt.sbprintf(&sc.out,"    %s_0 = 0xffffffffu;\n",name)
+                    }
+                case "RandomFilteredSocket":
+                    if len(sd.filtered_sockets)>0 {
+                        fmt.sbprintf(&sc.out,"    %s_0 = uint(%d + min(int(mirai_vfx_random(e.rng) * %d.0), %d));\n",name,sd.num_bones,len(sd.filtered_sockets),len(sd.filtered_sockets)-1)
+                    } else {
+                        fmt.sbprintf(&sc.out,"    %s_0 = 0xffffffffu;\n",name)
+                    }
+                case "RandomFilteredSocketOrBone":
+                    nfb,nfs:=len(sd.filtered_bones),len(sd.filtered_sockets)
+                    if nfb+nfs>0 {
+                        fmt.sbprintf(&sc.out,"    {{ int nv_k = min(int(mirai_vfx_random(e.rng) * %d.0), %d); %s_0 = nv_k < %d ? uint(NV_SKEL_FB_%d[min(nv_k, %d)]) : uint(%d + clamp(nv_k - %d, 0, %d)); }}\n",
+                            nfb+nfs,nfb+nfs-1,name,nfb,sd.id,max(nfb-1,0),sd.num_bones,nfb,max(nfs-1,0))
+                    } else {
+                        fmt.sbprintf(&sc.out,"    %s_0 = 0xffffffffu;\n",name)
+                    }
+                case "RandomUnfilteredBone":
+                    if len(sd.unfiltered_bones)>0 {
+                        fmt.sbprintf(&sc.out,"    %s_0 = uint(NV_SKEL_UB_%d[min(int(mirai_vfx_random(e.rng) * %d.0), %d)]);\n",name,sd.id,len(sd.unfiltered_bones),len(sd.unfiltered_bones)-1)
+                    } else {
+                        fmt.sbprintf(&sc.out,"    %s_0 = 0u;\n",name)
+                    }
+                case "RandomBone":
+                    fmt.sbprintf(&sc.out,"    %s_0 = uint(min(int(mirai_vfx_random(e.rng) * %d.0), %d));\n",name,sd.num_bones,max(sd.num_bones-1,0))
                 }
                 answered=true
             }
-        case "GetSkinnedBoneDataWS","GetSkinnedBoneDataWSInterpolated":
-            // Its place, turn, scale and velocity in the world: those of the emitter.
-            if strings.contains(di.class,"SkeletalMesh")&&outputs==13&&t.follows!="" {
-                fmt.sbprintf(&sc.out,"    {{ float4 nv_q = nv_turn_back(nv_emitter_turn(ctx)); %s_0 = nf(e.owner.x); %s_1 = nf(e.owner.y); %s_2 = nf(e.owner.z); %s_3 = nf(nv_q.x); %s_4 = nf(nv_q.y); %s_5 = nf(nv_q.z); %s_6 = nf(nv_q.w);",name,name,name,name,name,name,name)
-                fmt.sbprintf(&sc.out," %s_7 = nf(1.0); %s_8 = nf(1.0); %s_9 = nf(1.0); %s_10 = nf(e.velocity.x); %s_11 = nf(e.velocity.y); %s_12 = nf(e.velocity.z); }}\n",name,name,name,name,name,name)
-                answered=true
+        case "GetSkinnedBoneDataWS","GetSkinnedBoneDataWSInterpolated","GetSkinnedBoneData","GetSkinnedBoneDataInterpolated":
+            if strings.contains(di.class,"SkeletalMesh")&&outputs==13 {
+                ws:=strings.contains(function,"WS")
+                interp_fn:=strings.contains(function,"Interpolated")
+                if len(t.skeleton.bones)>0&&len(exprs)>=(interp_fn ? 2 : 1) {
+                    sd:=skel_di_prepare(t,di,!ws)
+                    bone_expr:=interp_fn ? exprs[len(exprs)-2] : exprs[len(exprs)-1]
+                    interp_expr:=interp_fn ? fmt.tprintf("fv(%s)",exprs[len(exprs)-1]) : "1.0"
+                    fmt.sbprintf(&sc.out,"    {{ float3 nv_p, nv_s, nv_v; float4 nv_q; nv_skel_sample_%d(ctx, e, int(%s), %s, %s, nv_p, nv_q, nv_s, nv_v);",
+                        sd.id,bone_expr,interp_expr,ws ? "true" : "false")
+                    fmt.sbprintf(&sc.out," %s_0 = nf(nv_p.x); %s_1 = nf(nv_p.y); %s_2 = nf(nv_p.z); %s_3 = nf(nv_q.x); %s_4 = nf(nv_q.y); %s_5 = nf(nv_q.z); %s_6 = nf(nv_q.w);",
+                        name,name,name,name,name,name,name)
+                    fmt.sbprintf(&sc.out," %s_7 = nf(nv_s.x); %s_8 = nf(nv_s.y); %s_9 = nf(nv_s.z); %s_10 = nf(nv_v.x); %s_11 = nf(nv_v.y); %s_12 = nf(nv_v.z); }}\n",
+                        name,name,name,name,name,name)
+                    answered=true
+                } else if ws&&t.follows!="" {
+                    // Fallback without skeleton: its place, turn, scale and velocity are those of the emitter.
+                    fmt.sbprintf(&sc.out,"    {{ float4 nv_q = nv_turn_back(nv_emitter_turn(ctx)); %s_0 = nf(e.owner.x); %s_1 = nf(e.owner.y); %s_2 = nf(e.owner.z); %s_3 = nf(nv_q.x); %s_4 = nf(nv_q.y); %s_5 = nf(nv_q.z); %s_6 = nf(nv_q.w);",name,name,name,name,name,name,name)
+                    fmt.sbprintf(&sc.out," %s_7 = nf(1.0); %s_8 = nf(1.0); %s_9 = nf(1.0); %s_10 = nf(e.velocity.x); %s_11 = nf(e.velocity.y); %s_12 = nf(e.velocity.z); }}\n",name,name,name,name,name,name)
+                    answered=true
+                }
             }
         case "SampleField":
             if strings.contains(di.class,"VectorField")&&len(exprs)>=3&&outputs==3 {
@@ -410,7 +517,15 @@ parameter :: proc(sc:^Scope,obj:json.Object) -> string {
     t:=sc.t
     name:=jstr(obj["Parameter"])
     source:=jstr(obj["Source"])
+    switch name {
+    case "PREV_Engine.Owner.Position.x":return "nf(e.prev_owner.x)"
+    case "PREV_Engine.Owner.Position.y":return "nf(e.prev_owner.y)"
+    case "PREV_Engine.Owner.Position.z":return "nf(e.prev_owner.z)"
+    }
     plain:=strings.trim_prefix(name,"PREV_")
+    if plain=="Emitter.SpawnGroup"||plain==fmt.tprintf("%s.SpawnGroup",t.emitter) {return "e.spawn_group"}
+    if plain=="Emitter.SpawnInterval"||plain==fmt.tprintf("%s.SpawnInterval",t.emitter) {return "nf(e.spawn_interval)"}
+    if plain=="Emitter.InterpSpawnStartDt"||plain==fmt.tprintf("%s.InterpSpawnStartDt",t.emitter) {return "nf(e.interp_start_dt)"}
     switch plain {
     case "Engine.DeltaTime","Engine.WorldDeltaTime":return "nf(e.dt)"
     case "Engine.InverseDeltaTime":return "nf(e.dt > 0.0 ? 1.0 / e.dt : 0.0)"
@@ -724,10 +839,14 @@ struct Nv {
     uint count;      // instances of this execution
     uint instance;   // a seed of the emitter
     uint tick;
-    float3 owner;    // where the emitter is
-    float3 velocity; // how fast it moves
+    float3 owner;      // where the emitter is
+    float3 prev_owner; // where the emitter was the frame before
+    float3 velocity;   // how fast it moves
     float3 scale;
-    float l2w[16];   // its transform without scale, a row an axis
+    uint spawn_group;
+    float spawn_interval;
+    float interp_start_dt;
+    float l2w[16];     // its transform without scale, a row an axis
     float w2l[16];
     uint rng;
 };
@@ -737,7 +856,9 @@ Nv nv_frame(Mirai_Vfx_Context ctx, float dt, uint seed) {
     e.instance = ctx.emitter * 747796405u + 2891336453u;
     e.tick = uint(ctx.time * 60.0);
     e.owner = nv_unreal(ctx.origin) * 100.0;
+    e.prev_owner = e.owner;
     e.velocity = float3(0.0);
+    e.spawn_group = 0u; e.spawn_interval = 0.0; e.interp_start_dt = 0.0;
     // Unreal's x is Mirai's -z, its y Mirai's x, its z Mirai's y.
     float3 x = -nv_unreal(float3(ctx.world[0].z, ctx.world[1].z, ctx.world[2].z));
     float3 y = nv_unreal(float3(ctx.world[0].x, ctx.world[1].x, ctx.world[2].x));
@@ -812,6 +933,22 @@ float4 nv_turn_back(float4 m) { return float4(m.z, -m.x, -m.y, m.w); }
 float4 nv_qmul(float4 a, float4 b) {
     return float4(a.w * b.xyz + b.w * a.xyz + cross(a.xyz, b.xyz), a.w * b.w - dot(a.xyz, b.xyz));
 }
+float4 nv_qconj(float4 q) { return float4(-q.xyz, q.w); }
+float3 nv_qrot(float4 q, float3 v) {
+    float3 t = 2.0 * cross(q.xyz, v);
+    return v + q.w * t + cross(q.xyz, t);
+}
+float3 nv_scale_unreal(float3 s) { return float3(s.z, s.x, s.y); }
+// Row-major 4x4 Unreal TRS matrix (row vector * M = nv_qrot(rot, p * scl) + pos).
+float nv_trs_matrix_at(float3 pos, float4 rot, float3 scl, int k) {
+    int r = clamp(k, 0, 15) / 4;
+    int c = clamp(k, 0, 15) % 4;
+    if (r == 3) return c == 0 ? pos.x : c == 1 ? pos.y : c == 2 ? pos.z : 1.0;
+    if (c == 3) return 0.0;
+    float3 axis = r == 0 ? float3(scl.x, 0.0, 0.0) : r == 1 ? float3(0.0, scl.y, 0.0) : float3(0.0, 0.0, scl.z);
+    float3 v = nv_qrot(rot, axis);
+    return c == 0 ? v.x : c == 1 ? v.y : v.z;
+}
 // The turn of three unit axes square to each other, the columns of a rotation.
 float4 nv_axes_turn(float3 x, float3 y, float3 z) {
     float trace = x.x + y.y + z.z;
@@ -860,7 +997,7 @@ slang_f32 :: proc(v:f32) -> string {
 // draws it: renderer is that renderer of the description, whose Bindings name the attribute
 // each thing a particle shows comes from (its place, colour, size, rotation, frame and what it
 // gives its material).
-cooked_vfx_program :: proc(name:string,system,emitter,renderer:json.Object,allocator:=context.allocator,fields:[]Cooked_Field=nil) -> (p:Cooked_Vfx_Program) {
+cooked_vfx_program :: proc(name:string,system,emitter,renderer:json.Object,allocator:=context.allocator,fields:[]Cooked_Field=nil,skeleton:Cooked_Skeleton={}) -> (p:Cooked_Vfx_Program) {
     bindings,_:=renderer["Bindings"].(json.Object)
     kind:=jstr(renderer["Kind"])
     bound :: proc(bindings:json.Object,key,fallback:string) -> string {
@@ -878,6 +1015,8 @@ cooked_vfx_program :: proc(name:string,system,emitter,renderer:json.Object,alloc
     frame_attribute:=bound(bindings,"SubImageIndexBinding","SubImageIndex")
     random_attribute:=bound(bindings,"MaterialRandomBinding","MaterialRandom")
     orientation_attribute:=bound(bindings,"MeshOrientationBinding","MeshOrientation")
+    ribbon_id_attribute:=bound(bindings,"RibbonIdBinding","RibbonID")
+    pivot_attribute:=bound(bindings,"PivotOffsetBinding","PivotOffset")
     t:=Translation{
         emitter=jstr(emitter["Name"]),
         interfaces=make([dynamic]Interface,context.temp_allocator),
@@ -888,6 +1027,9 @@ cooked_vfx_program :: proc(name:string,system,emitter,renderer:json.Object,alloc
         state_outputs=make(map[string]json.Value,allocator=context.temp_allocator),
         notes=make([dynamic]string,context.temp_allocator),
         limits=make([dynamic]string,context.temp_allocator),
+        skeleton=skeleton,
+        skel_dis=make([dynamic]Skel_Di,context.temp_allocator),
+        resources=make([dynamic]Cooked_Vfx_Resource,context.temp_allocator),
     }
     t.data=strings.builder_make(context.temp_allocator)
     t.user,_=system["UserParameters"].(json.Array)
@@ -903,7 +1045,7 @@ cooked_vfx_program :: proc(name:string,system,emitter,renderer:json.Object,alloc
             append(&t.interfaces,Interface{name=jstr(obj["Name"]),class=jstr(obj["Class"]),object=obj,index=-1})
         }
     }
-    for w in ([RESERVED_WORDS]string{"nv.started","nv.origin.x","nv.origin.y","nv.origin.z"}) {word_of(&t,w)}
+    for w in ([RESERVED_WORDS]string{"nv.started","nv.origin.x","nv.origin.y","nv.origin.z","nv.dt"}) {word_of(&t,w)}
 
     spawn,update,compute:json.Object
     has_spawn,has_update,gpu,has_compute:=false,false,false,false
@@ -1019,6 +1161,7 @@ cooked_vfx_program :: proc(name:string,system,emitter,renderer:json.Object,alloc
     w:=strings.builder_make(allocator)
     fmt.sbprintf(&w,"//! mirai vfx %s\n//! moves\n",name)
     if p.births {strings.write_string(&w,"//! prepare\n//! births\n")}
+    for res in t.resources {fmt.sbprintf(&w,"//! resource %s %s\n",res.name,res.kind)}
     strings.write_string(&w,"//! parameter scale {\"default\":1,\"min\":0,\"max\":100}\n")
     for _,i in t.textures {fmt.sbprintf(&w,"//! parameter field%d {{\"kind\":\"texture\"}}\n",i)}
     strings.write_string(&w,"// The scripts of a Niagara emitter as one Vfx program: generated, not written.\n")
@@ -1031,6 +1174,7 @@ cooked_vfx_program :: proc(name:string,system,emitter,renderer:json.Object,alloc
     strings.write_string(&w,PROGRAM_PRELUDE)
     strings.write_string(&w,strings.to_string(t.data))
     fmt.sbprintf(&w,"static const bool NV_LOCAL = %s;\n",t.local ? "true" : "false")
+    skel_emit_code(&t,&w)
     strings.write_string(&w,gpu_host)
 
     vector :: proc(t:^Translation,name:string) -> (string,bool) {
@@ -1047,11 +1191,76 @@ cooked_vfx_program :: proc(name:string,system,emitter,renderer:json.Object,alloc
     shown,has_shown:=vector(&t,position_attribute)
     drawn_apart:=position_attribute!="Position"&&has_shown
 
+    // Mesh renderer PivotOffset (UE5 NiagaraMeshParticleUtils.ush + NiagaraRendererMeshes.cpp).
+    mesh_pivot:[3]f32
+    mesh_pivot_space:="ENiagaraMeshPivotOffsetSpace::Mesh"
+    mesh_rot_ue:[4]f32={0,0,0,1}
+    has_mesh_pivot:=false
+    if kind=="mesh" {
+        meshes,_:=renderer["Meshes"].(json.Array)
+        if len(meshes)>0 {
+            first,_:=meshes[0].(json.Object)
+            if po,ok:=first["PivotOffset"].(json.Object);ok {
+                px,_:=jf32(po["X"],0); py,_:=jf32(po["Y"],0); pz,_:=jf32(po["Z"],0)
+                if abs(px)>1e-5||abs(py)>1e-5||abs(pz)>1e-5 {
+                    mesh_pivot={px,py,pz}
+                    has_mesh_pivot=true
+                }
+            }
+            if sp:=jstr(first["PivotOffsetSpace"]);sp!="" {mesh_pivot_space=sp}
+            if rot,has_rot:=first["Rotation"].(json.Object);has_rot {
+                pitch,_:=jf32(rot["Pitch"],0); yaw,_:=jf32(rot["Yaw"],0); roll,_:=jf32(rot["Roll"],0)
+                if abs(pitch)>1e-3||abs(yaw)>1e-3||abs(roll)>1e-3 {
+                    mq:=cooked.unreal_rotator_to_mirai(pitch,yaw,roll)
+                    // nv_turn_back: (m.z, -m.x, -m.y, m.w)
+                    mesh_rot_ue={mq.z,-mq.x,-mq.y,mq.w}
+                }
+            }
+        }
+        if has_field(&t,fmt.tprintf("%s.x",pivot_attribute)) {has_mesh_pivot=true}
+    }
+    if has_mesh_pivot {
+        strings.write_string(&w,"float3 nv_mesh_pivot(Mirai_Vfx_Context ctx, Attributes a) {\n")
+        if pv,has_pv:=vector(&t,pivot_attribute);has_pv {
+            fmt.sbprintf(&w,"    float3 po = %s;\n",pv)
+        } else {
+            fmt.sbprintf(&w,"    float3 po = float3(%s, %s, %s);\n",slang_f32(mesh_pivot.x),slang_f32(mesh_pivot.y),slang_f32(mesh_pivot.z))
+        }
+        switch {
+        case strings.contains(mesh_pivot_space,"World"):
+            strings.write_string(&w,"    return nv_mirai(po) * 0.01;\n}\n")
+        case strings.contains(mesh_pivot_space,"Local"):
+            strings.write_string(&w,"    return nv_way(ctx, po, true);\n}\n")
+        case strings.contains(mesh_pivot_space,"Simulation"):
+            strings.write_string(&w,"    return nv_way(ctx, po, NV_LOCAL);\n}\n")
+        case:
+            // ENiagaraMeshPivotOffsetSpace::Mesh: mesh-local cm offset scaled by particle scale and rotated by ParticleRotation * MeshRotation.
+            if ps,has_ps:=vector(&t,size_attribute);has_ps {
+                fmt.sbprintf(&w,"    float3 ps = %s;\n",ps)
+            } else {
+                strings.write_string(&w,"    float3 ps = float3(1.0);\n")
+            }
+            if has_field(&t,fmt.tprintf("%s.w",orientation_attribute)) {
+                q:[4]string
+                for c,i in ([4]string{"x","y","z","w"}) {
+                    fn:=fmt.tprintf("%s.%s",orientation_attribute,c)
+                    q[i]=has_field(&t,fn) ? fmt.tprintf("fv(a.%s)",ident("f_",fn)) : "0.0"
+                }
+                fmt.sbprintf(&w,"    float4 pq = float4(%s, %s, %s, %s);\n    float pql = length(pq); pq = pql > 1e-20 ? pq / pql : float4(0.0, 0.0, 0.0, 1.0);\n",q[0],q[1],q[2],q[3])
+            } else {
+                strings.write_string(&w,"    float4 pq = float4(0.0, 0.0, 0.0, 1.0);\n")
+            }
+            fmt.sbprintf(&w,"    float4 mq = float4(%s, %s, %s, %s);\n",slang_f32(mesh_rot_ue.x),slang_f32(mesh_rot_ue.y),slang_f32(mesh_rot_ue.z),slang_f32(mesh_rot_ue.w))
+            strings.write_string(&w,"    float3 off_sim = nv_qrot(nv_qmul(pq, mq), po * ps);\n    return nv_way(ctx, off_sim, NV_LOCAL);\n}\n")
+        }
+    }
+
     // What the particle of Mirai takes of its attributes after a script.
     strings.write_string(&w,"void nv_leave(Mirai_Vfx_Context ctx, inout Mirai_Vfx_Particle particle, Attributes a) {\n")
+    pivot_add:=has_mesh_pivot ? " + nv_mesh_pivot(ctx, a)" : ""
     switch {
-    case drawn_apart:fmt.sbprintf(&w,"    particle.position = nv_place(ctx, %s, NV_LOCAL);\n",shown)
-    case has_position:fmt.sbprintf(&w,"    particle.position = nv_place(ctx, %s, NV_LOCAL);\n",position)
+    case drawn_apart:fmt.sbprintf(&w,"    particle.position = nv_place(ctx, %s, NV_LOCAL)%s;\n",shown,pivot_add)
+    case has_position:fmt.sbprintf(&w,"    particle.position = nv_place(ctx, %s, NV_LOCAL)%s;\n",position,pivot_add)
     }
     if has_velocity {fmt.sbprintf(&w,"    particle.velocity = nv_way(ctx, %s, NV_LOCAL);\n",velocity)}
     if has_field(&t,"Lifetime") {strings.write_string(&w,"    particle.lifetime = max(fv(a.f_Lifetime), 1e-4);\n")}
@@ -1061,7 +1270,11 @@ cooked_vfx_program :: proc(name:string,system,emitter,renderer:json.Object,alloc
     // And what its attributes take of it before one: where the pool has it.
     strings.write_string(&w,"void nv_enter(Mirai_Vfx_Context ctx, Mirai_Vfx_Particle particle, inout Attributes a) {\n")
     if has_position&&!drawn_apart {
-        strings.write_string(&w,"    float3 at = nv_place_back(ctx, particle.position, NV_LOCAL);\n")
+        if has_mesh_pivot {
+            strings.write_string(&w,"    float3 at = nv_place_back(ctx, particle.position - nv_mesh_pivot(ctx, a), NV_LOCAL);\n")
+        } else {
+            strings.write_string(&w,"    float3 at = nv_place_back(ctx, particle.position, NV_LOCAL);\n")
+        }
         for c in ([3]string{"x","y","z"}) {
             if has_field(&t,fmt.tprintf("Position.%s",c)) {fmt.sbprintf(&w,"    a.f_Position_%s = nf(at.%s);\n",c,c)}
         }
@@ -1075,11 +1288,40 @@ cooked_vfx_program :: proc(name:string,system,emitter,renderer:json.Object,alloc
     strings.write_string(&w,"}\n")
 
     strings.write_string(&w,"void initialize(Mirai_Vfx_Context ctx, Parameters p, inout Mirai_Vfx_Particle particle, inout Attributes a) {\n")
-    strings.write_string(&w,"    Nv e = nv_frame(ctx, 0.0, particle.seed);\n    e.exec = ctx.birth - ctx.born;\n    nv_enter(ctx, particle, a);\n")
+    if p.births {
+        strings.write_string(&w,"    float nv_dt = fv(mirai_vfx_state_load(ctx, 4u)); if (nv_dt <= 0.0) nv_dt = 1.0 / 60.0;\n")
+        strings.write_string(&w,"    Nv e = nv_frame(ctx, nv_dt, particle.seed);\n")
+        strings.write_string(&w,"    if (mirai_vfx_state_load(ctx, 0u) != 0u) { e.prev_owner = float3(fv(mirai_vfx_state_load(ctx, 1u)), fv(mirai_vfx_state_load(ctx, 2u)), fv(mirai_vfx_state_load(ctx, 3u))); e.velocity = (e.owner - e.prev_owner) / nv_dt; }\n")
+    } else {
+        strings.write_string(&w,"    Nv e = nv_frame(ctx, 1.0 / 60.0, particle.seed);\n")
+    }
+    strings.write_string(&w,"    e.exec = ctx.birth - ctx.born;\n")
+    if !gpu&&len(spawns)>0 {
+        // Pick the SpawnInfo entry covering this birth so SpawnGroup, SpawnInterval, InterpSpawnStartDt and ExecIndex match UE.
+        strings.write_string(&w,"    { uint nv_idx = ctx.birth - ctx.born; uint nv_off = 0u; bool nv_picked = false;\n")
+        for s in spawns {
+            gword:=s.group>=0 ? fmt.tprintf("mirai_vfx_state_load(ctx, %du)",s.group) : "0u"
+            iword:=s.interval>=0 ? fmt.tprintf("fv(mirai_vfx_state_load(ctx, %du))",s.interval) : "0.0"
+            sword:=s.start>=0 ? fmt.tprintf("fv(mirai_vfx_state_load(ctx, %du))",s.start) : "0.0"
+            fmt.sbprintf(&w,"      if (!nv_picked) {{ uint nv_c = uint(max(int(mirai_vfx_state_load(ctx, %du)), 0)); if (nv_idx < nv_off + nv_c) {{ e.exec = nv_idx - nv_off; e.count = nv_c; e.spawn_group = %s; e.spawn_interval = %s; e.interp_start_dt = %s; nv_picked = true; }} nv_off += nv_c; }}\n",
+                s.count,gword,iword,sword)
+        }
+        strings.write_string(&w,"    }\n")
+    }
+    strings.write_string(&w,"    nv_enter(ctx, particle, a);\n")
     if has_spawn {
         strings.write_string(&w,spawn_body)
     } else {
         strings.write_string(&w,"    bool keep = true;\n")
+    }
+    if kind=="ribbon" {
+        if has_field(&t,fmt.tprintf("%s.Index",ribbon_id_attribute)) {
+            idx_f:=ident("f_",fmt.tprintf("%s.Index",ribbon_id_attribute))
+            tag_expr:=has_field(&t,fmt.tprintf("%s.AcquireTag",ribbon_id_attribute)) ? fmt.tprintf("a.%s",ident("f_",fmt.tprintf("%s.AcquireTag",ribbon_id_attribute))) : "0u"
+            fmt.sbprintf(&w,"    {{ uint nv_rid = ((a.%s + 1u) ^ (%s * 2654435761u)) & 0x00FFFFFFu; particle.ribbon = nv_rid != 0u ? nv_rid : 1u; }}\n",idx_f,tag_expr)
+        } else if has_field(&t,ribbon_id_attribute) {
+            fmt.sbprintf(&w,"    {{ uint nv_rid = (a.%s + 1u) & 0x00FFFFFFu; particle.ribbon = nv_rid != 0u ? nv_rid : 1u; }}\n",ident("f_",ribbon_id_attribute))
+        }
     }
     // A particle its spawn script does not keep dies at its first step.
     strings.write_string(&w,"    nv_leave(ctx, particle, a);\n    if (!keep) { particle.age = 1.0; particle.lifetime = 1.0; }\n}\n")
@@ -1129,39 +1371,41 @@ cooked_vfx_program :: proc(name:string,system,emitter,renderer:json.Object,alloc
     if kind=="mesh" {
         settings,_:=renderer["Settings"].(json.Object)
         facing:=jstr(settings["FacingMode"])
-        if !strings.contains(facing,"Velocity") {
-            strings.write_string(&w,"    float4 turn = float4(0.0, 0.0, 0.0, 1.0);\n")
-            if has_field(&t,fmt.tprintf("%s.w",orientation_attribute)) {
-                q:[4]string
-                for c,i in ([4]string{"x","y","z","w"}) {
-                    name:=fmt.tprintf("%s.%s",orientation_attribute,c)
-                    q[i]=has_field(&t,name) ? fmt.tprintf("fv(a.%s)",ident("f_",name)) : "0.0"
-                }
-                fmt.sbprintf(&w,"    turn = nv_turn(float4(%s, %s, %s, %s));\n",q[0],q[1],q[2],q[3])
+        strings.write_string(&w,"    float4 turn = float4(0.0, 0.0, 0.0, 1.0);\n")
+        if has_field(&t,fmt.tprintf("%s.w",orientation_attribute)) {
+            q:[4]string
+            for c,i in ([4]string{"x","y","z","w"}) {
+                name:=fmt.tprintf("%s.%s",orientation_attribute,c)
+                q[i]=has_field(&t,name) ? fmt.tprintf("fv(a.%s)",ident("f_",name)) : "0.0"
             }
-            switch {
-            case strings.contains(facing,"CameraPosition"):
-                strings.write_string(&w,"    turn = nv_qmul(nv_look(mirai_vfx_view().position - particle.position), turn);\n")
-            case strings.contains(facing,"CameraPlane"):
-                strings.write_string(&w,"    turn = nv_qmul(nv_look(-mirai_vfx_view().forward), turn);\n")
-            case:
-                strings.write_string(&w,"    if (NV_LOCAL) turn = nv_qmul(nv_emitter_turn(ctx), turn);\n")
-            }
-            meshes,_:=renderer["Meshes"].(json.Array)
-            if len(meshes)>0 {
-                first,_:=meshes[0].(json.Object)
-                if rot,has_rot:=first["Rotation"].(json.Object);has_rot {
-                    pitch,_:=jf32(rot["Pitch"],0)
-                    yaw,_:=jf32(rot["Yaw"],0)
-                    roll,_:=jf32(rot["Roll"],0)
-                    if abs(pitch)>1e-3||abs(yaw)>1e-3||abs(roll)>1e-3 {
-                        m:=cooked.unreal_rotator_to_mirai(pitch,yaw,roll)
-                        fmt.sbprintf(&w,"    turn = nv_qmul(turn, float4(%s, %s, %s, %s));\n",slang_f32(m.x),slang_f32(m.y),slang_f32(m.z),slang_f32(m.w))
-                    }
-                }
-            }
-            strings.write_string(&w,"    visual.orientation = turn / max(length(turn), 1e-20);\n")
+            fmt.sbprintf(&w,"    turn = nv_turn(float4(%s, %s, %s, %s));\n",q[0],q[1],q[2],q[3])
         }
+        switch {
+        case strings.contains(facing,"Velocity"):
+            strings.write_string(&w,"    float3 nv_vel = particle.velocity;\n")
+            strings.write_string(&w,"    float4 nv_face = length(nv_vel) > 1e-4 ? nv_look(nv_vel) : nv_look(float3(0.0, 1.0, 0.0));\n")
+            strings.write_string(&w,"    turn = nv_qmul(nv_face, turn);\n")
+        case strings.contains(facing,"CameraPosition"):
+            strings.write_string(&w,"    turn = nv_qmul(nv_look(mirai_vfx_view().position - particle.position), turn);\n")
+        case strings.contains(facing,"CameraPlane"):
+            strings.write_string(&w,"    turn = nv_qmul(nv_look(-mirai_vfx_view().forward), turn);\n")
+        case:
+            strings.write_string(&w,"    if (NV_LOCAL) turn = nv_qmul(nv_emitter_turn(ctx), turn);\n")
+        }
+        meshes,_:=renderer["Meshes"].(json.Array)
+        if len(meshes)>0 {
+            first,_:=meshes[0].(json.Object)
+            if rot,has_rot:=first["Rotation"].(json.Object);has_rot {
+                pitch,_:=jf32(rot["Pitch"],0)
+                yaw,_:=jf32(rot["Yaw"],0)
+                roll,_:=jf32(rot["Roll"],0)
+                if abs(pitch)>1e-3||abs(yaw)>1e-3||abs(roll)>1e-3 {
+                    m:=cooked.unreal_rotator_to_mirai(pitch,yaw,roll)
+                    fmt.sbprintf(&w,"    turn = nv_qmul(turn, float4(%s, %s, %s, %s));\n",slang_f32(m.x),slang_f32(m.y),slang_f32(m.z),slang_f32(m.w))
+                }
+            }
+        }
+        strings.write_string(&w,"    visual.orientation = turn / max(length(turn), 1e-20);\n")
     }
     if has_field(&t,frame_attribute) {fmt.sbprintf(&w,"    visual.frame = fv(a.%s);\n",ident("f_",frame_attribute))}
     if has_field(&t,random_attribute) {fmt.sbprintf(&w,"    visual.random = fv(a.%s);\n",ident("f_",random_attribute))}
@@ -1176,6 +1420,7 @@ cooked_vfx_program :: proc(name:string,system,emitter,renderer:json.Object,alloc
     }
     strings.write_string(&w,"}\n")
     for unseen in ([]string{"CameraOffset","SpriteFacing","SpriteAlignment","PivotOffset"}) {
+        if unseen=="PivotOffset"&&kind=="mesh" {continue}
         if has_field(&t,unseen)||has_field(&t,fmt.tprintf("%s.x",unseen)) {note(&t.limits,fmt.tprintf("%s of each particle",unseen))}
     }
 
@@ -1188,9 +1433,9 @@ cooked_vfx_program :: proc(name:string,system,emitter,renderer:json.Object,alloc
         strings.write_string(&w," }\n")
         strings.write_string(&w,"    Nv e = nv_frame(ctx, ctx.delta_time, ctx.emitter * 2246822519u + uint(ctx.time * 1000.0));\n")
         // How fast the emitter moves: from where it was the frame before.
-        strings.write_string(&w,"    if (s0 != 0u && ctx.delta_time > 0.0) e.velocity = (e.owner - float3(fv(s1), fv(s2), fv(s3))) / ctx.delta_time;\n")
+        strings.write_string(&w,"    if (s0 != 0u) { e.prev_owner = float3(fv(s1), fv(s2), fv(s3)); if (ctx.delta_time > 0.0) e.velocity = (e.owner - e.prev_owner) / ctx.delta_time; }\n")
         strings.write_string(&w,strings.to_string(system_scope.out))
-        strings.write_string(&w,"    mirai_vfx_state_store(ctx, 0u, 1u);\n    mirai_vfx_state_store(ctx, 1u, nf(e.owner.x));\n    mirai_vfx_state_store(ctx, 2u, nf(e.owner.y));\n    mirai_vfx_state_store(ctx, 3u, nf(e.owner.z));\n")
+        strings.write_string(&w,"    mirai_vfx_state_store(ctx, 0u, 1u);\n    mirai_vfx_state_store(ctx, 1u, nf(e.owner.x));\n    mirai_vfx_state_store(ctx, 2u, nf(e.owner.y));\n    mirai_vfx_state_store(ctx, 3u, nf(e.owner.z));\n    mirai_vfx_state_store(ctx, 4u, nf(ctx.delta_time));\n")
         for output,i in computed {fmt.sbprintf(&w,"    mirai_vfx_state_store(ctx, %du, n%d);\n",word_of(&t,output),i)}
         strings.write_string(&w,"}\n")
         strings.write_string(&w,"uint births(Mirai_Vfx_Context ctx, Parameters p) {\n    uint n = 0u;\n")
@@ -1212,6 +1457,8 @@ cooked_vfx_program :: proc(name:string,system,emitter,renderer:json.Object,alloc
     p.follows_socket=t.follows_socket
     p.textures=make([]string,len(t.textures),allocator)
     for n,i in t.textures {p.textures[i]=strings.clone(n,allocator)}
+    p.resources=make([]Cooked_Vfx_Resource,len(t.resources),allocator)
+    for r,i in t.resources {p.resources[i]={strings.clone(r.name,allocator),strings.clone(r.kind,allocator)}}
     return
 }
 
@@ -1224,5 +1471,7 @@ cooked_vfx_program_destroy :: proc(p:^Cooked_Vfx_Program,allocator:=context.allo
     for n in p.textures {delete(n,allocator)}
     delete(p.textures,allocator)
     delete(p.follows,allocator)
+    for r in p.resources {delete(r.name,allocator);delete(r.kind,allocator)}
+    delete(p.resources,allocator)
     p^={}
 }

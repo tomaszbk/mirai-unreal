@@ -165,3 +165,105 @@ cooked_gpu_emitter_survives_what_is_no_shader :: proc(t:^testing.T) {
     }
     testing.expect_value(t,len(tracking.allocation_map),0)
 }
+
+// A GPU emitter reading NiagaraDataInterfaceSkeletalMesh with a target skeleton binds Mirai's
+// `bones` and `transform` resources and resolves bones and sockets without placeholder limits.
+@(test)
+cooked_gpu_emitter_samples_skeletal_mesh_resources :: proc(t:^testing.T) {
+    tracking:mem.Tracking_Allocator
+    mem.tracking_allocator_init(&tracking,context.allocator)
+    defer mem.tracking_allocator_destroy(&tracking)
+    alloc:=mem.tracking_allocator(&tracking)
+    doc:=`{
+  "Schema": "ue5parse.niagara/2", "Name": "NS_GpuSkel",
+  "Emitters": [{
+    "Name": "Streaks", "Target": "GPU",
+    "Settings": {"bLocalSpace": false, "RandomSeed": 1},
+    "Attributes": [
+      {"Name": "Age", "Type": "NiagaraFloat", "Float": [0, 1]},
+      {"Name": "Position", "Type": "NiagaraPosition", "Float": [1, 3]},
+      {"Name": "UniqueID", "Type": "NiagaraInt32", "Int32": [0, 1]}
+    ],
+    "EmitterScripts": [{"Usage": "EmitterUpdateScript", "Modules": [], "Outputs": [
+      {"Attribute": "Streaks.Burst.Count", "Value": {"Literal": 4, "Type": "int"}},
+      {"Attribute": "Streaks.Burst.InterpStartDt", "Value": {"Literal": 0.0, "Type": "float"}},
+      {"Attribute": "Streaks.Burst.IntervalDt", "Value": {"Literal": 0.0, "Type": "float"}},
+      {"Attribute": "Streaks.Burst.SpawnGroup", "Value": {"Literal": 0, "Type": "int"}}
+    ]}],
+    "Scripts": [
+      {"Usage": "ParticleGPUComputeScript", "Target": "GPU",
+       "ShaderDataInterfaces": [
+         {"Symbol": "System_SkeletalMesh", "Class": "NiagaraDataInterfaceSkeletalMesh", "DataInterface": "System.Skeletal Mesh"}
+       ],
+       "Shader": {
+         "Platform": "PCD3D_SM6", "CodeHash": "00000000000000cd", "Threads": [64, 1, 1], "Function": "dx_compute",
+         "Source": "void dx_compute(inout Dx_Env e) {\nint v1=dx_thread(e,0);\nint4 v2=dx_uav_i(e,1,0);\nint4 v3=dx_cb_i(e,0,11);\nint4 v4=dx_buffer_i(e,5,0);\nD4 v5=dx_buffer(e,3,v4.x*3);\nD4 v6=dx_buffer(e,4,v4.x*3);\nfloat4 v7=dx_cb(e,0,52);\nif (v1>=v2.x && v1<v2.x+v3.x) {\ndx_uav_store(e,0,v1,d_c(0.0));\ndx_uav_store(e,0,65536+v1,d_add(v5.x,d_sub(v6.x,d_c(v7.x))));\n}\n}\n",
+         "Constants": [
+           {"Name": "NumSpawnedInstances", "Buffer": 0, "Offset": 176, "Size": 4},
+           {"Name": "System_SkeletalMesh_NumBones", "Buffer": 0, "Offset": 800, "Size": 4},
+           {"Name": "System_SkeletalMesh_NumFilteredBones", "Buffer": 0, "Offset": 804, "Size": 4},
+           {"Name": "System_SkeletalMesh_FilteredSocketBoneOffset", "Buffer": 0, "Offset": 808, "Size": 4},
+           {"Name": "System_SkeletalMesh_InstanceTransform", "Buffer": 0, "Offset": 832, "Size": 64},
+           {"Name": "System_SkeletalMesh_InstancePrevTransform", "Buffer": 0, "Offset": 896, "Size": 64},
+           {"Name": "System_SkeletalMesh_InstanceRotation", "Buffer": 0, "Offset": 960, "Size": 16},
+           {"Name": "System_SkeletalMesh_InstancePrevRotation", "Buffer": 0, "Offset": 976, "Size": 16},
+           {"Name": "System_SkeletalMesh_InstanceInvDeltaTime", "Buffer": 0, "Offset": 992, "Size": 4}
+         ],
+         "Resources": [
+           {"Name": "InputFloat", "Class": "SRV", "Slot": 0},
+           {"Name": "RWOutputFloat", "Class": "UAV", "Slot": 0},
+           {"Name": "RWInstanceCounts", "Class": "UAV", "Slot": 1},
+           {"Name": "System_SkeletalMesh_MeshCurrSamplingBonesBuffer", "Class": "SRV", "Slot": 3},
+           {"Name": "System_SkeletalMesh_MeshPrevSamplingBonesBuffer", "Class": "SRV", "Slot": 4},
+           {"Name": "System_SkeletalMesh_FilteredAndUnfilteredBones", "Class": "SRV", "Slot": 5}
+         ],
+         "Buffers": [{"Slot": 0, "Type": "hostlayout.$Globals"}]
+       }}
+    ],
+    "DataInterfaces": [{"Name": "System.Skeletal Mesh", "Class": "NiagaraDataInterfaceSkeletalMesh",
+      "Properties": {"FilteredBones": ["head", "hand_r"], "FilteredSockets": ["Tip"]}}],
+    "Renderers": [{"Kind": "sprite", "Class": "NiagaraSpriteRendererProperties"}]
+  }]
+}`
+    skel:=Cooked_Skeleton{
+        bones=[]Cooked_Bone{{"root",0},{"head",1},{"hand_r",2}},
+        sockets=[]Cooked_Socket{{"Tip",2,{0,0.8,0},{0,0,0,1},{1,1,1}}},
+        bone_turn={0,0,0,1},
+    }
+    sys,err:=cooked_niagara_build(doc,alloc,nil,nil,skel)
+    defer cooked_vfx_system_destroy(&sys,alloc)
+    e,bad:=err.?
+    if !testing.expectf(t,!bad,"build failed: %v",e)||!testing.expect(t,len(sys.emitters)==1&&len(sys.emitters[0].layers)==1) {return}
+    layer:=sys.emitters[0].layers[0]
+    testing.expectf(t,len(layer.notes)==0,"notes: %v",layer.notes)
+    testing.expectf(t,len(layer.limits)==0,"limits: %v",layer.limits)
+    testing.expect_value(t,len(layer.resources),2)
+    src:=layer.program_source
+    for want in ([]string{
+        "//! resource skeleton bones",
+        "//! resource skeleton_transform transform",
+        "mirai_vfx_bone(ctx, skeleton,",
+        "mirai_vfx_transform(ctx, skeleton_transform)",
+        "nv_skel_filtered_index_0(i)",
+        "nv_skel_gpu_bone_0(x.ctx, x.n, i, false, x.skel_ipos, x.skel_inv_q, x.skel_inv_s)",
+        "nv_skel_gpu_bone_0(x.ctx, x.n, i, true, x.skel_ppos, x.skel_pinv_q, x.skel_pinv_s)",
+        "asuint(x.skel_curr[",
+        "asuint(x.skel_prev[",
+    }) {
+        testing.expectf(t,strings.contains(src,want),"GPU skeletal program missing %q",want)
+    }
+    folder:=".mirai/tmp/cooked-vfx-gpu-skel"
+    _=os.make_directory_all(folder)
+    shader_path,_:=filepath.join({folder,"Cooked_NS_GpuSkel_Streaks.slang"},context.temp_allocator)
+    _=os.write_entire_file(shader_path,transmute([]u8)src)
+    root,cwd_err:=os.get_working_directory(context.temp_allocator)
+    if testing.expectf(t,cwd_err==nil,"cwd failed: %v",cwd_err) {
+        vfx_dir,_:=filepath.join({root,"plugins","vfx","shaders"},context.temp_allocator)
+        sources:=os.exists(vfx_dir) ? []shaders.Source{{name="vfx",folder=vfx_dir}} : nil
+        res:=shaders.program_check({root=root,project=folder,sources=sources,path=shader_path},context.temp_allocator)
+        testing.expectf(t,res.error=="" && res.errors==0,"GPU skeletal shader failed: %s %v",res.error,res.diagnostics)
+        if os.exists(vfx_dir) {testing.expectf(t,res.compiled,"GPU skeletal stages failed: %v",res.diagnostics)}
+    }
+    cooked_vfx_system_destroy(&sys,alloc)
+    testing.expect_value(t,len(tracking.allocation_map),0)
+}
