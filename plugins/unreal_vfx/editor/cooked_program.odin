@@ -1460,8 +1460,10 @@ cooked_vfx_program :: proc(name:string,system,emitter,renderer:json.Object,alloc
     }
     strings.write_string(&w,"    nv_leave(ctx, particle, a);\n    if (!keep) particle.age = particle.lifetime;\n}\n")
     strings.write_string(&w,"void render(Mirai_Vfx_Context ctx, Parameters p, Mirai_Vfx_Particle particle, Attributes a, inout Mirai_Vfx_Visual visual) {\n")
+    // The colour of a particle as its renderer binds it, its alpha too above 1: a material may
+    // scale what it covers or shows by it, and coverage is clamped only once it is drawn.
     if color,has_color:=vector(&t,color_attribute);has_color {
-        alpha:=has_field(&t,fmt.tprintf("%s.w",color_attribute)) ? fmt.tprintf("saturate(fv(a.%s))",ident("f_",fmt.tprintf("%s.w",color_attribute))) : "1.0"
+        alpha:=has_field(&t,fmt.tprintf("%s.w",color_attribute)) ? fmt.tprintf("max(fv(a.%s), 0.0)",ident("f_",fmt.tprintf("%s.w",color_attribute))) : "1.0"
         fmt.sbprintf(&w,"    visual.color = float4(max(%s, float3(0.0)), %s);\n",color,alpha)
     }
     // The size of a particle is its largest side, and its scale what each side is of it: a
@@ -1487,7 +1489,7 @@ cooked_vfx_program :: proc(name:string,system,emitter,renderer:json.Object,alloc
         if color,has_color:=vector(&t,color_attribute);has_color {
             brightness:="1.0"
             if jbool(settings["bAlphaScalesBrightness"],false) && has_field(&t,fmt.tprintf("%s.w",color_attribute)) {
-                brightness=fmt.tprintf("saturate(fv(a.%s))",ident("f_",fmt.tprintf("%s.w",color_attribute)))
+                brightness=fmt.tprintf("max(fv(a.%s), 0.0)",ident("f_",fmt.tprintf("%s.w",color_attribute)))
             }
             fmt.sbprintf(&w,"    float3 nv_lc = max(max(%s, float3(0.0)) * %s + float3(%s, %s, %s), float3(0.0));\n",color,brightness,
                 fmt.tprintf("fv(%s)",float_bits(f64(max(color_add.x,0)))),fmt.tprintf("fv(%s)",float_bits(f64(max(color_add.y,0)))),fmt.tprintf("fv(%s)",float_bits(f64(max(color_add.z,0)))))

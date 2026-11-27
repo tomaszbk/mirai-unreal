@@ -126,6 +126,8 @@ cooked_niagara_bridge_gives_a_layer_for_each_renderer :: proc(t:^testing.T) {
     testing.expect(t,strings.contains(glow.program_source,"a.f_Glow_x") && strings.contains(glow.program_source,"a.f_GlowSize_x"))
     testing.expect(t,strings.contains(glow.program_source,"a.f_Shown_x"))
     testing.expect(t,!strings.contains(sprite.program_source,"visual.color = float4(max(float3(fv(a.f_Glow_x)"))
+    // Its alpha goes to its material as the particle has it, above 1 too.
+    testing.expect(t,strings.contains(glow.program_source,"max(fv(a.f_Glow_w), 0.0));"))
 
     mesh:=em.layers[2]
     testing.expect_value(t,mesh.factory,"NiagaraMeshVF")

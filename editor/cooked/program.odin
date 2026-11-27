@@ -56,7 +56,8 @@ cooked_shader_program_destroy :: proc(p:^Cooked_Shader_Program,allocator:=contex
 KNOWN_LAYOUTS :: [6][2]string{{"View","cfe9c681"},{"Scene","f7e1b302"},{"LocalVF","3aef5598"},{SKIN_PASS_THROUGH,"fc97ef48"},{TRANSLUCENT_PASS,"642995f2"},{OPAQUE_PASS,"1a15d850"}}
 
 // The uniform buffer of the pass that draws what blends. Its constants are those of the fog of
-// the scene, off here (Mirai fogs what it draws itself); of its resources a program reads the
+// the scene, off here (Mirai fogs what it draws itself), and whether the sky lights a surface;
+// of its resources a program reads the
 // depth of the scene behind the surface, the custom depth and how much the eye has adapted.
 @(private="file") TRANSLUCENT_PASS :: "TranslucentBasePass"
 @(private="file") TRANSLUCENT_SCENE_DEPTH :: 35
@@ -70,6 +71,9 @@ KNOWN_LAYOUTS :: [6][2]string{{"View","cfe9c681"},{"Scene","f7e1b302"},{"LocalVF
 // lights. The volume of the lights near the view (two cascades, 68 to 71), that of the
 // bounced light (90) and the noise that dithers them (98, 99) are empty, as is the shadow a
 // surface casts on itself.
+// Whether the sky lights the surface in its own pass (the first value of the register, an
+// integer): it does, since that even white sky is how a program learns the colour it reflects.
+@(private="file") TRANSLUCENT_USE_SKY :: 117
 @(private="file") TRANSLUCENT_LIGHT_VOLUME :: [4]int{68,69,70,71}
 @(private="file") TRANSLUCENT_BOUNCED_LIGHT :: 90
 @(private="file") TRANSLUCENT_NOISE :: [2]int{98,99}
@@ -357,8 +361,13 @@ stage_rewrite :: proc(w:^strings.Builder,source:string,s:^Stage,feeds:^Stage,is_
                 // Of the scene only how instances index their data is read: one primitive, at zero.
                 strings.write_string(w,integer ? "int4(0)" : "float4(0.0)")
             case TRANSLUCENT_PASS:
-                // The fog of the scene: none.
-                strings.write_string(w,integer ? "int4(0)" : "float4(0.0)")
+                // The fog of the scene: none. The sky lights the surface.
+                reg,is_literal:=literal(args[2])
+                if is_literal&&reg==TRANSLUCENT_USE_SKY {
+                    strings.write_string(w,integer ? "int4(1, 0, 0, 0)" : "asfloat(int4(1, 0, 0, 0))")
+                } else {
+                    strings.write_string(w,integer ? "int4(0)" : "float4(0.0)")
+                }
             case TRANSLUCENT_SELF_SHADOW:
                 strings.write_string(w,integer ? "int4(0)" : "float4(0.0)")
             case "Primitive":

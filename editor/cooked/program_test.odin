@@ -197,4 +197,31 @@ dx_output(e,0,0,3,d_c(0.5));
     _,ubad:=uerr.?
     if !testing.expect(t,!ubad,"a program that reads no sky builds") {return}
     testing.expect(t,strings.contains(u.source,"s.unlit = true;")&&!strings.contains(u.source,"e.sky = 0.0;"),"it shows its colour as it is")
+
+    // One whose pass says whether the sky lights it (register 117 of its uniform buffer) is
+    // told that it does: otherwise the sky adds nothing and the surface reflects no colour.
+    gated:=`{"Material":"MI_Spike","CodeHash":"00112233aabbccdd","VertexFactory":"LocalVF",
+"Pixel":{"Shader":"003_Pixel","Function":"dx_pixel","Source":"pixel.slang",
+ "Inputs":[{"Id":0,"Semantic":"SV_Position","Index":0,"Rows":1,"Integer":false,"Used":true}],
+ "Outputs":[{"Id":0,"Semantic":"SV_Target","Index":0,"Rows":1,"Integer":false,"Used":true}],
+ "UniformBuffers":[{"Name":"View","Layout":"cfe9c681"},{"Name":"TranslucentBasePass","Layout":"642995f2"}],
+ "Bindings":[{"Kind":"Raw_Buffer","Slot":3,"Buffer":"View","Resource":48},
+             {"Kind":"Constant_Buffer","Slot":1,"Buffer":"TranslucentBasePass","Size":4096,"Registers":[117,199]}]},
+"Parameters":{"Name":"MI_Spike","BlendMode":"BLEND_Translucent","Evaluated":{"UniformBuffer":[],"TextureBindings":[]}}}`
+    gated_pixel:=`void dx_pixel(inout Dx_Env e) {
+float4 v1=float4(0.0);
+int4 v2=int4(0);
+int4 v3=int4(0);
+v2=dx_cb_i(e,1,117);
+v3=dx_cb_i(e,1,199);
+if (v2[0]!=0&&v3[2]==0) v1=dx_raw(e,3,(0),0);
+dx_output(e,0,0,0,d_c(0.5*v1[3]));
+dx_output(e,0,0,3,d_c(0.5));
+}
+`
+    g,gerr:=cooked_shader_program(gated,gated_pixel,"",context.temp_allocator)
+    g0,gbad:=gerr.?
+    if !testing.expectf(t,!gbad,"a program whose pass gates the sky builds: %v",g0) {return}
+    testing.expect(t,strings.contains(g.source,"v2=int4(1, 0, 0, 0);"),"the sky lights it")
+    testing.expect(t,strings.contains(g.source,"v3=int4(0);"),"the rest of the pass's constants stay off")
 }
