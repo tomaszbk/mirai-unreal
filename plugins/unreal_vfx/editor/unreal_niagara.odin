@@ -660,14 +660,14 @@ niagara_renderer :: proc(c:^unreal_scene.Context,info:^effect.Particle_Info,rend
         }
     case "NiagaraLightRendererProperties":
         // UNiagaraLightRendererProperties stores bUseInverseSquaredFalloff, DefaultExponent,
-        // bAlphaScalesBrightness, RadiusScale, DiffuseScale, ColorAdd, and bMegaLightsCastShadows.
+        // bAlphaScalesBrightness, RadiusScale, DiffuseScale and ColorAdd: a light at each particle
+        // of the layer, which casts no shadows.
         radius_scale:=max(real(d,renderer,"RadiusScale",1),0)
         diffuse_scale:=max(real(d,renderer,"DiffuseScale",1),0)
         inverse_squared,_:=level.bool_of(d,renderer,"bUseInverseSquaredFalloff",true)
         default_exponent:=max(real(d,renderer,"DefaultExponent",1),0)
         alpha_scales,_:=level.bool_of(d,renderer,"bAlphaScalesBrightness",false)
         color_add,has_color_add:=vector_of(d,renderer,"ColorAdd")
-        shadows,_:=level.bool_of(d,renderer,"bMegaLightsCastShadows",false)
         info.light=niagara_particle_light({
             radius_scale=radius_scale,
             diffuse_scale=diffuse_scale,
@@ -679,7 +679,6 @@ niagara_renderer :: proc(c:^unreal_scene.Context,info:^effect.Particle_Info,rend
             particle_scattering=-1,
             renderer_scattering=1,
             indirect=1,
-            shadows=shadows,
             fallback_sprite_size_m=info.size[0],
             fallback_color=info.colors[0],
             fallback_color_intensity=info.intensity,

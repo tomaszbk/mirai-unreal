@@ -199,6 +199,7 @@ niagara_stateless_module :: proc(c:^unreal_scene.Context,e:^Unreal_Emitter,modul
             } else {
                 info.size={max(size.min.x,0),max(size.max.x,0)}*CENTIMETRE
             }
+        case .Light: // draws nothing: it has no size
         }
         rotation:=module_dist(u,d,module,"SpriteRotationDistribution",{},1)
         info.rotation={rotation.min.x,rotation.max.x}*math.RAD_PER_DEG

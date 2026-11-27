@@ -1472,8 +1472,41 @@ cooked_vfx_program :: proc(name:string,system,emitter,renderer:json.Object,alloc
     }
     switch {
     case kind=="light":
-        // A light renderer draws no particle.
+        // A light renderer draws no particle: each gives the light of its bindings
+        // (UNiagaraLightRendererProperties), as niagara_particle_light calibrates it: the colour
+        // by its peak, and the intensity of Unreal's simple light at that peak.
+        settings,_:=renderer["Settings"].(json.Object)
+        radius_scale,_:=jf32(settings["RadiusScale"],1)
+        diffuse_scale,_:=jf32(settings["DiffuseScale"],1)
+        default_exponent,_:=jf32(settings["DefaultExponent"],1)
+        color_add,_:=jvec3(settings["ColorAdd"])
+        radius_attribute:=bound(bindings,"RadiusBinding","LightRadius")
+        exponent_attribute:=bound(bindings,"LightExponentBinding","LightExponent")
+        enabled_attribute:=bound(bindings,"LightRenderingEnabledBinding","LightEnabled")
         strings.write_string(&w,"    visual.color = float4(0.0);\n    visual.size = 0.0;\n")
+        if color,has_color:=vector(&t,color_attribute);has_color {
+            brightness:="1.0"
+            if jbool(settings["bAlphaScalesBrightness"],false) && has_field(&t,fmt.tprintf("%s.w",color_attribute)) {
+                brightness=fmt.tprintf("saturate(fv(a.%s))",ident("f_",fmt.tprintf("%s.w",color_attribute)))
+            }
+            fmt.sbprintf(&w,"    float3 nv_lc = max(max(%s, float3(0.0)) * %s + float3(%s, %s, %s), float3(0.0));\n",color,brightness,
+                fmt.tprintf("fv(%s)",float_bits(f64(max(color_add.x,0)))),fmt.tprintf("fv(%s)",float_bits(f64(max(color_add.y,0)))),fmt.tprintf("fv(%s)",float_bits(f64(max(color_add.z,0)))))
+            strings.write_string(&w,"    float nv_peak = max(nv_lc.x, max(nv_lc.y, nv_lc.z));\n")
+            strings.write_string(&w,"    visual.light_color = nv_peak > 0.0 ? nv_lc / nv_peak : float3(0.0);\n")
+            if has_field(&t,radius_attribute) {
+                fmt.sbprintf(&w,"    visual.light_range = max(fv(a.%s), 0.0) * %s;\n",ident("f_",radius_attribute),fmt.tprintf("fv(%s)",float_bits(f64(0.01*max(radius_scale,0.01)))))
+            }
+            fmt.sbprintf(&w,"    nv_peak *= %s;\n",fmt.tprintf("fv(%s)",float_bits(f64(max(diffuse_scale,0)))))
+            if jbool(settings["bUseInverseSquaredFalloff"],true) {
+                // Unreal divides by the square of centimetres, Mirai by that of metres.
+                strings.write_string(&w,"    visual.light_intensity = nv_peak / 10000.0;\n")
+            } else {
+                exponent:=has_field(&t,exponent_attribute) ? fmt.tprintf("max(fv(a.%s), 0.0)",ident("f_",exponent_attribute)) : fmt.tprintf("fv(%s)",float_bits(f64(max(default_exponent,0))))
+                // Its windowed falloff matched at half its radius.
+                fmt.sbprintf(&w,"    {{ float nv_half = visual.light_range * 0.5; visual.light_intensity = nv_peak * pow(0.75, %s) * nv_half * nv_half; }}\n",exponent)
+            }
+        }
+        if has_field(&t,enabled_attribute) {fmt.sbprintf(&w,"    if (a.%s == 0u) visual.light_intensity = 0.0;\n",ident("f_",enabled_attribute))}
     case has_field(&t,fmt.tprintf("%s.x",size_attribute)):
         x,y,z:=side(&t,size_attribute,"x"),side(&t,size_attribute,"y"),side(&t,size_attribute,"z")
         if y=="" {y=x}

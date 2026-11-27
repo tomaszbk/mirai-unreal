@@ -83,7 +83,8 @@ cooked_vfx_system_destroy :: proc(sys:^Cooked_Vfx_System,allocator:=context.allo
 }
 
 // Shared inputs from UNiagaraLightRendererProperties and particle attributes,
-// converted into a native Mirai .particle v10 effect.Particle_Light in one place.
+// converted into a native Mirai .particle v12 effect.Particle_Light in one place: what a
+// light layer gives before its program gives each particle its own (cooked_program.odin).
 @(private)
 Niagara_Light_Params :: struct {
     radius_scale:f32,          // UNiagaraLightRendererProperties::RadiusScale (default 1.0)
@@ -103,7 +104,6 @@ Niagara_Light_Params :: struct {
     particle_scattering:f32,   // >=0 when explicitly specified
     renderer_scattering:f32,   // default 1.0
     indirect:f32,              // default 1.0
-    shadows:bool,
     fallback_sprite_size_m:f32,
     fallback_color:[4]f32,
     fallback_color_intensity:f32, // Particle_Info.intensity multiplying fallback_color.rgb
@@ -171,7 +171,6 @@ niagara_particle_light :: proc(p:Niagara_Light_Params) -> effect.Particle_Light 
         intensity=max(lintensity,0),
         range=max(lrange,0),
         radius=clamp(lradius,0,max(lrange,0)),
-        shadows=p.shadows,
         indirect=max(p.indirect,0),
         scattering=max(lscatter,0),
     }
@@ -355,7 +354,7 @@ build_cooked_emitter :: proc(
             }
             layer.mesh_paths=meshes[:]
         case "light":
-            layer.info.render=.Billboard
+            layer.info.render=.Light
             radius_scale,_:=jf32(settings["RadiusScale"],1)
             diffuse_scale,_:=jf32(settings["DiffuseScale"],1)
             exponent,_:=jf32(settings["DefaultExponent"],1)
@@ -371,11 +370,10 @@ build_cooked_emitter :: proc(
                 particle_scattering=-1,
                 renderer_scattering=1,
                 indirect=1,
-                shadows=jbool(settings["bMegaLightsCastShadows"],false),
                 fallback_color={1,1,1,1},
                 fallback_color_intensity=1,
             })
-            append(&limits,strings.clone("the radius and the colour of the light of each particle: one light at the emitter, of the renderer's own values",allocator))
+            append(&limits,strings.clone("its lights cast no shadows and keep no SpecularScale",allocator))
         case:
             append(&warns,fmt.aprintf("renderer %d of kind %q is not drawn",index,jstr(robj["Kind"]),allocator=allocator))
             delete(limits)
@@ -487,7 +485,7 @@ jf32 :: proc(v:json.Value,fallback:f32=0) -> (f32,bool) {
     return fallback,false
 }
 
-@(private="file")
+@(private)
 jvec3 :: proc(v:json.Value) -> ([3]f32,bool) {
     if arr,ok:=v.(json.Array);ok && len(arr)>=3 {
         x,_:=jf32(arr[0],0);y,_:=jf32(arr[1],0);z,_:=jf32(arr[2],0)

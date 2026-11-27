@@ -145,6 +145,7 @@ cooked_niagara_bridge_gives_a_layer_for_each_renderer :: proc(t:^testing.T) {
 
     light:=em.layers[4]
     testing.expect_value(t,light.factory,"")
+    testing.expect_value(t,light.info.render,effect.Particle_Render.Light)
     testing.expect(t,light.info.light.intensity>0 && abs(light.info.light.range-2)<1e-4)
     testing.expect(t,strings.contains(light.program_source,"visual.size = 0.0"))
 
