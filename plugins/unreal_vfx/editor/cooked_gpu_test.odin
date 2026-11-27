@@ -249,6 +249,8 @@ cooked_gpu_emitter_samples_skeletal_mesh_resources :: proc(t:^testing.T) {
         "nv_skel_gpu_bone_0(x.ctx, x.n, i, true, x.skel_ppos, x.skel_pinv_q, x.skel_pinv_s)",
         "asuint(x.skel_curr[",
         "asuint(x.skel_prev[",
+        // A socket away from its bone moves as the bone turns too.
+        "vel_m = b.velocity + cross(b.angular_velocity, offset);",
     }) {
         testing.expectf(t,strings.contains(src,want),"GPU skeletal program missing %q",want)
     }

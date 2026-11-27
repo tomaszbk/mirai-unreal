@@ -364,7 +364,8 @@ cooked_emitter_samples_bones_resource_with_multi_spawn_ribbons :: proc(t:^testin
         "mirai_vfx_bone(ctx, skeleton,",
         "nv_skel_sample_0(ctx, e,",
         "e.spawn_group =",
-        "particle.ribbon =",
+        // particle.ribbon keeps 21 bits: a wider mask would let a hash become no ribbon.
+        "& 0x001FFFFFu; particle.ribbon = nv_rid != 0u ? nv_rid : 1u;",
         "mirai_vfx_state_store(ctx, 4u, nf(ctx.delta_time))",
     }) {
         testing.expectf(t,strings.contains(src,want),"program missing %q",want)
@@ -385,69 +386,102 @@ cooked_emitter_samples_bones_resource_with_multi_spawn_ribbons :: proc(t:^testin
     testing.expect_value(t,len(tracking.allocation_map),0)
 }
 
-// Mesh renderer PivotOffset is applied in simulation/world space without reporting a limit.
+@(private="file")
+program_compiles :: proc(t:^testing.T,src,file,label:string) {
+    folder:=".mirai/tmp/cooked-vfx-programs"
+    _=os.make_directory_all(folder)
+    shader_path,_:=filepath.join({folder,file},context.temp_allocator)
+    _=os.write_entire_file(shader_path,transmute([]u8)src)
+    root,cwd_err:=os.get_working_directory(context.temp_allocator)
+    if !testing.expectf(t,cwd_err==nil,"cwd failed: %v",cwd_err) {return}
+    vfx_dir,_:=filepath.join({root,"plugins","vfx","shaders"},context.temp_allocator)
+    sources:=os.exists(vfx_dir) ? []shaders.Source{{name="vfx",folder=vfx_dir}} : nil
+    res:=shaders.program_check({root=root,project=folder,sources=sources,path=shader_path},context.temp_allocator)
+    testing.expectf(t,res.error=="" && res.errors==0,"%s: shader failed: %s %v",label,res.error,res.diagnostics)
+    if os.exists(vfx_dir) {testing.expectf(t,res.compiled,"%s: stages failed: %v",label,res.diagnostics)}
+}
+
+// The renderer's PivotOffset (NiagaraMeshParticleUtils.ush): an offset of the mesh turns with
+// the whole turn of the particle, facing included, and scales with the particle; the offset
+// one step adds is kept in the particle so the next takes off exactly that, and a new particle
+// starts with none whatever its slot kept.
 @(test)
 cooked_mesh_emitter_applies_pivot_offset :: proc(t:^testing.T) {
     arena:mem.Dynamic_Arena
     mem.dynamic_arena_init(&arena)
     defer mem.dynamic_arena_destroy(&arena)
     alloc:=mem.dynamic_arena_allocator(&arena)
-    for space in ([]string{"ENiagaraMeshPivotOffsetSpace::Mesh","ENiagaraMeshPivotOffsetSpace::World","ENiagaraMeshPivotOffsetSpace::Local","ENiagaraMeshPivotOffsetSpace::Simulation"}) {
+    Case :: struct {space,facing:string,local:bool}
+    cases:=[]Case{
+        {"ENiagaraMeshPivotOffsetSpace::Mesh","ENiagaraMeshFacingMode::Default",false},
+        {"ENiagaraMeshPivotOffsetSpace::Mesh","ENiagaraMeshFacingMode::Velocity",true},
+        {"ENiagaraMeshPivotOffsetSpace::Mesh","ENiagaraMeshFacingMode::CameraPosition",false},
+        {"ENiagaraMeshPivotOffsetSpace::Mesh","ENiagaraMeshFacingMode::CameraPlane",true},
+        {"ENiagaraMeshPivotOffsetSpace::World","ENiagaraMeshFacingMode::Default",true},
+        {"ENiagaraMeshPivotOffsetSpace::Local","ENiagaraMeshFacingMode::Default",false},
+        {"ENiagaraMeshPivotOffsetSpace::Simulation","ENiagaraMeshFacingMode::Default",true},
+    }
+    for c,i in cases {
         template:=`{
   "Schema": "ue5parse.niagara/2", "Name": "NS_Pivot",
   "Emitters": [{
-    "Name": "Cone",
+    "Name": "Cone", "Settings": {"bLocalSpace": LOCAL},
     "Scripts": [
       {"Usage": "ParticleSpawnScript", "Target": "CPU", "Modules": [],
        "Outputs": [
          {"Attribute": "Lifetime", "Value": {"Literal": 0.5, "Type": "float"}},
          {"Attribute": "Position", "Components": {"x": {"Literal": 0.0, "Type": "float"}, "y": {"Literal": 0.0, "Type": "float"}, "z": {"Literal": 0.0, "Type": "float"}}},
+         {"Attribute": "Velocity", "Components": {"x": {"Literal": 100.0, "Type": "float"}, "y": {"Literal": 0.0, "Type": "float"}, "z": {"Literal": 0.0, "Type": "float"}}},
          {"Attribute": "Scale", "Components": {"x": {"Literal": 1.0, "Type": "float"}, "y": {"Literal": 1.0, "Type": "float"}, "z": {"Literal": 1.0, "Type": "float"}}}
        ]}
     ],
-    "Renderers": [{"Kind": "mesh", "Class": "NiagaraMeshRendererProperties",
+    "Renderers": [{"Kind": "mesh", "Class": "NiagaraMeshRendererProperties", "Settings": {"FacingMode": "FACING"},
       "Meshes": [{"Mesh": "/Game/SM_Cone.SM_Cone", "Scale": {"X": 1.0, "Y": 1.0, "Z": 1.0}, "Rotation": {"Pitch": 0.0, "Yaw": 30.0, "Roll": 0.0}, "PivotOffset": {"X": 10.0, "Y": 0.0, "Z": -2.0}, "PivotOffsetSpace": "SPACE"}]}]
   }]
 }`
-        doc,_:=strings.replace_all(template,"SPACE",space,context.temp_allocator)
+        doc,_:=strings.replace_all(template,"SPACE",c.space,context.temp_allocator)
+        doc,_=strings.replace_all(doc,"FACING",c.facing,context.temp_allocator)
+        doc,_=strings.replace_all(doc,"LOCAL",c.local ? "true" : "false",context.temp_allocator)
+        label:=fmt.tprintf("%s %s local=%v",c.space,c.facing,c.local)
         sys,err:=cooked_niagara_build(doc,alloc)
         _,bad:=err.?
-        if !testing.expectf(t,!bad,"%s: build failed",space)||!testing.expect(t,len(sys.emitters)==1&&len(sys.emitters[0].layers)==1) {continue}
+        if !testing.expectf(t,!bad,"%s: build failed",label)||!testing.expect(t,len(sys.emitters)==1&&len(sys.emitters[0].layers)==1) {continue}
         layer:=sys.emitters[0].layers[0]
-        testing.expectf(t,len(layer.notes)==0,"%s: notes %v",space,layer.notes)
-        for lim in layer.limits {
-            testing.expectf(t,!strings.contains(lim,"pivot"),"%s: unexpected pivot limit %q",space,lim)
-        }
+        testing.expectf(t,len(layer.notes)==0,"%s: notes %v",label,layer.notes)
+        for lim in layer.limits {testing.expectf(t,!strings.contains(lim,"pivot"),"%s: unexpected pivot limit %q",label,lim)}
         src:=layer.program_source
-        testing.expectf(t,strings.contains(src,"float3 nv_mesh_pivot("),"%s: missing nv_mesh_pivot",space)
-        testing.expectf(t,strings.contains(src,"+ nv_mesh_pivot(ctx, a)"),"%s: missing leave pivot",space)
-        testing.expectf(t,strings.contains(src,"- nv_mesh_pivot(ctx, a)"),"%s: missing enter pivot",space)
-        if space=="ENiagaraMeshPivotOffsetSpace::Mesh" {
-            folder:=".mirai/tmp/cooked-vfx-pivot"
-            _=os.make_directory_all(folder)
-            shader_path,_:=filepath.join({folder,"Cooked_NS_Pivot_Cone.slang"},context.temp_allocator)
-            _=os.write_entire_file(shader_path,transmute([]u8)src)
-            root,cwd_err:=os.get_working_directory(context.temp_allocator)
-            if testing.expectf(t,cwd_err==nil,"cwd failed: %v",cwd_err) {
-                vfx_dir,_:=filepath.join({root,"plugins","vfx","shaders"},context.temp_allocator)
-                sources:=os.exists(vfx_dir) ? []shaders.Source{{name="vfx",folder=vfx_dir}} : nil
-                res:=shaders.program_check({root=root,project=folder,sources=sources,path=shader_path},context.temp_allocator)
-                testing.expectf(t,res.error=="" && res.errors==0,"pivot shader failed: %s %v",res.error,res.diagnostics)
-                if os.exists(vfx_dir) {testing.expectf(t,res.compiled,"pivot stages failed: %v",res.diagnostics)}
-            }
+        testing.expectf(t,strings.contains(src,"float3 pv = nv_mesh_pivot(ctx, particle, a); a.f_nv_pivot_x = nf(pv.x);"),"%s: the step does not keep the offset it adds",label)
+        testing.expectf(t,strings.contains(src,"particle.position = nv_place(ctx, float3(fv(a.f_Position_x), fv(a.f_Position_y), fv(a.f_Position_z)) + nv_off, NV_LOCAL);"),"%s: no offset placed",label)
+        testing.expectf(t,strings.contains(src,"nv_place_back(ctx, particle.position, NV_LOCAL) - nv_kept_offset(a);"),"%s: the next step does not take it off",label)
+        init:=src[strings.index(src,"void initialize("):]
+        reset,enter:=strings.index(init,"a.f_nv_pivot_x = 0u;"),strings.index(init,"nv_enter(ctx, particle, a);")
+        testing.expectf(t,reset>=0&&reset<enter,"%s: a new particle takes off what its slot kept",label)
+        // The turn of the renderer's mesh in Unreal's axes: yaw 30 about z.
+        testing.expectf(t,strings.contains(src,"0.258819044, 0.965925872));"),"%s: no mesh turn",label)
+        facing:=!strings.contains(c.facing,"Default")
+        testing.expectf(t,strings.contains(src,"q = nv_qmul(nv_axes_turn(fx, fy, fz), q);")==facing,"%s: facing after the mesh turn",label)
+        if c.space=="ENiagaraMeshPivotOffsetSpace::Mesh" {
+            testing.expectf(t,strings.contains(src,"return nv_qrot(nv_mesh_rotation(ctx, particle, a), po * ps);"),"%s: mesh offset not turned as the mesh",label)
         }
+        if strings.contains(c.facing,"Velocity") {
+            testing.expectf(t,strings.contains(src,"float3 v = float3(fv(a.f_Velocity_x), fv(a.f_Velocity_y), fv(a.f_Velocity_z));"),"%s: facing not from the velocity of the simulation",label)
+        }
+        // The turn drawn is the one of the simulation, into the world after for a local emitter.
+        testing.expectf(t,strings.contains(src,"float4 turn = nv_mesh_rotation(ctx, particle, a);\n    if (NV_LOCAL) turn = nv_qmul(nv_turn_back(nv_emitter_turn(ctx)), turn);"),"%s: drawn turn",label)
+        program_compiles(t,src,fmt.tprintf("Cooked_NS_Pivot_%d.slang",i),label)
     }
 }
 
+// A particle a channel starts has its emitter where it was born, at its birth and at every
+// step after: a local emitter keeps its place from there, and what reads the emitter reads it.
 @(test)
 cooked_channel_birth_uses_birth_position :: proc(t:^testing.T) {
-    // A Niagara emitter driven by a Mirai channel birth (ctx.birth == 0xFFFFFFFFu) must place its
-    // origin at particle.position for both world-space and local-space emitters and compile cleanly.
     arena:mem.Dynamic_Arena
     mem.dynamic_arena_init(&arena)
     defer mem.dynamic_arena_destroy(&arena)
     alloc:=mem.dynamic_arena_allocator(&arena)
-    for local in ([2]bool{false,true}) {
+    Case :: struct {local,reads_owner:bool}
+    for c in ([]Case{{false,false},{false,true},{true,false}}) {
         template:=`{
   "Schema": "ue5parse.niagara/2", "Name": "NS_ChannelTest",
   "Emitters": [{
@@ -461,29 +495,81 @@ cooked_channel_birth_uses_birth_position :: proc(t:^testing.T) {
            "y": {"Parameter": "Engine.Owner.Position.y", "Source": "Engine"},
            "z": {"Parameter": "Engine.Owner.Position.z", "Source": "Engine"}
          }}
-       ]}
+       ]}UPDATE
     ],
     "Renderers": [{"Kind": "sprite", "Class": "NiagaraSpriteRendererProperties"}]
   }]
 }`
-        doc,_:=strings.replace_all(template,"LOCAL",local ? "true" : "false",context.temp_allocator)
+        update:=`,
+      {"Usage": "ParticleUpdateScript", "Target": "CPU", "Modules": [],
+       "Outputs": [{"Attribute": "Color", "Components": {
+           "x": {"Parameter": "Engine.Owner.Position.x", "Source": "Engine"},
+           "y": {"Literal": 1.0, "Type": "float"}, "z": {"Literal": 1.0, "Type": "float"}}}]}`
+        doc,_:=strings.replace_all(template,"LOCAL",c.local ? "true" : "false",context.temp_allocator)
+        doc,_=strings.replace_all(doc,"UPDATE",c.reads_owner ? update : "",context.temp_allocator)
+        label:=fmt.tprintf("local=%v reads_owner=%v",c.local,c.reads_owner)
         sys,err:=cooked_niagara_build(doc,alloc)
-        if e,bad:=err.?; !testing.expectf(t,!bad,"local=%v: build failed: %v",local,e) {continue}
+        if e,bad:=err.?; !testing.expectf(t,!bad,"%s: build failed: %v",label,e) {continue}
         if !testing.expect(t,len(sys.emitters)==1&&len(sys.emitters[0].layers)==1) {continue}
         src:=sys.emitters[0].layers[0].program_source
-        testing.expectf(t,strings.contains(src,"ctx.birth == 0xFFFFFFFFu"),"local=%v: missing channel birth check",local)
-        testing.expectf(t,strings.contains(src,"NV_LOCAL && nv_channel_birth"),"local=%v: missing local channel birth offset",local)
-        folder:=".mirai/tmp/cooked-vfx-channel"
-        _=os.make_directory_all(folder)
-        shader_path,_:=filepath.join({folder,local ? "Cooked_Channel_Local.slang" : "Cooked_Channel_World.slang"},context.temp_allocator)
-        _=os.write_entire_file(shader_path,transmute([]u8)src)
-        root,cwd_err:=os.get_working_directory(context.temp_allocator)
-        if testing.expectf(t,cwd_err==nil,"cwd failed: %v",cwd_err) {
-            vfx_dir,_:=filepath.join({root,"plugins","vfx","shaders"},context.temp_allocator)
-            sources:=os.exists(vfx_dir) ? []shaders.Source{{name="vfx",folder=vfx_dir}} : nil
-            res:=shaders.program_check({root=root,project=folder,sources=sources,path=shader_path},context.temp_allocator)
-            testing.expectf(t,res.error=="" && res.errors==0,"local=%v shader failed: %s %v",local,res.error,res.diagnostics)
-            if os.exists(vfx_dir) {testing.expectf(t,res.compiled,"local=%v stages failed: %v",local,res.diagnostics)}
+        testing.expectf(t,strings.contains(src,"if (nv_channel_birth) { nv_owner_at(e, nv_unreal(nv_birth_pos) * 100.0); e.exec = 0u; e.count = 1u; }"),"%s: birth not at the place of the channel",label)
+        testing.expectf(t,!strings.contains(src,"particle.position += nv_birth_pos"),"%s: a place moved once, not kept",label)
+        anchored:=c.local||c.reads_owner
+        testing.expectf(t,strings.contains(src,"a.f_nv_anchor_on = 1u;")==anchored,"%s: anchor kept",label)
+        if anchored {
+            init:=src[strings.index(src,"void initialize("):]
+            set,enter:=strings.index(init,"a.f_nv_anchor_on = 1u;"),strings.index(init,"nv_enter(ctx, particle, a);")
+            testing.expectf(t,set>=0&&set<enter,"%s: the anchor comes after the place is read",label)
+            update_at:=src[strings.index(src,"void update("):]
+            frame,enter_update:=strings.index(update_at,"nv_anchor_frame(ctx, e, a);"),strings.index(update_at,"nv_enter(ctx, particle, a);")
+            testing.expectf(t,frame>=0&&frame<enter_update,"%s: a later step reads the emitter of the particle's birth",label)
         }
+        // A local emitter keeps the place of the particle from where it was born.
+        testing.expectf(t,strings.contains(src,"if (a.f_nv_anchor_on != 0u) nv_off += nv_anchor(a);")==c.local,"%s: local place from its birth",label)
+        testing.expectf(t,strings.contains(src,"if (a.f_nv_anchor_on != 0u) o += nv_anchor(a);")==c.local,"%s: local place taken back from its birth",label)
+        program_compiles(t,src,fmt.tprintf("Cooked_Channel_%v_%v.slang",c.local,c.reads_owner),label)
     }
+}
+
+// A filtered bone or socket the target skeleton lacks keeps its place in the list the scripts
+// index, at the root, and the translation says so instead of drawing it there unannounced.
+@(test)
+cooked_skeletal_mesh_reports_bones_it_cannot_find :: proc(t:^testing.T) {
+    arena:mem.Dynamic_Arena
+    mem.dynamic_arena_init(&arena)
+    defer mem.dynamic_arena_destroy(&arena)
+    alloc:=mem.dynamic_arena_allocator(&arena)
+    doc:=`{
+  "Schema": "ue5parse.niagara/2", "Name": "NS_SkelMissing",
+  "Emitters": [{
+    "Name": "Spark",
+    "Scripts": [
+      {"Usage": "ParticleSpawnScript", "Target": "CPU",
+       "Modules": [{"Name": "Main", "Calls": [
+         {"Name": "t1", "DataInterface": "Spark.Mesh", "Function": "GetSkinnedBoneDataWSInterpolated", "Outputs": 13,
+          "Args": [{"Literal": 1, "Type": "int"}, {"Literal": 3, "Type": "int"}, {"Literal": 1.0, "Type": "float"}]}
+       ]}],
+       "Outputs": [
+         {"Attribute": "Lifetime", "Value": {"Literal": 0.4, "Type": "float"}},
+         {"Attribute": "Position", "Components": {"x": {"Call": "t1", "Output": 0}, "y": {"Call": "t1", "Output": 1}, "z": {"Call": "t1", "Output": 2}}}
+       ]}
+    ],
+    "DataInterfaces": [{"Name": "Spark.Mesh", "Class": "NiagaraDataInterfaceSkeletalMesh",
+      "Properties": {"FilteredBones": ["spine_01", "tail_09"], "FilteredSockets": ["Tip", "Blade_Far"]}}],
+    "Renderers": [{"Kind": "sprite", "Class": "NiagaraSpriteRendererProperties"}]
+  }]
+}`
+    skel:=Cooked_Skeleton{
+        bones=[]Cooked_Bone{{"root",0},{"spine_01",1},{"hand_r",2}},
+        sockets=[]Cooked_Socket{{"Tip",2,{0,0.9,0},{0,0,0,1},{1,1,1}}},
+        bone_turn={0,0,0,1},
+    }
+    sys,err:=cooked_niagara_build(doc,alloc,nil,nil,skel)
+    if e,bad:=err.?; !testing.expectf(t,!bad,"build failed: %v",e)||!testing.expect(t,len(sys.emitters)==1&&len(sys.emitters[0].layers)==1) {return}
+    layer:=sys.emitters[0].layers[0]
+    testing.expectf(t,len(layer.notes)==0,"notes: %v",layer.notes)
+    joined:=strings.join(layer.limits,"\n",context.temp_allocator)
+    testing.expectf(t,strings.contains(joined,`Spark.Mesh: bone "tail_09" is not in the skeleton: its root stands in`),"limits: %v",layer.limits)
+    testing.expectf(t,strings.contains(joined,`Spark.Mesh: socket "Blade_Far" is not in the skeleton: its root stands in`),"limits: %v",layer.limits)
+    testing.expectf(t,!strings.contains(joined,`"spine_01"`)&&!strings.contains(joined,`"Tip"`),"found ones reported: %v",layer.limits)
 }

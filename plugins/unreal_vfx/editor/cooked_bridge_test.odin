@@ -132,7 +132,7 @@ cooked_niagara_bridge_gives_a_layer_for_each_renderer :: proc(t:^testing.T) {
     if testing.expect_value(t,len(mesh.mesh_paths),1) {testing.expect_value(t,mesh.mesh_paths[0],"/Game/FX/SM_Arc.SM_Arc")}
     testing.expect(t,mesh.info.scale!=[3]f32{1,1,1})
     // It faces the eye, turned as its renderer turns the mesh, each side its own share of its size.
-    testing.expect(t,strings.contains(mesh.program_source,"nv_look(mirai_vfx_view().position - particle.position)"))
+    testing.expect(t,strings.contains(mesh.program_source,"float3 dir = normalize(nv_place_back(ctx, mirai_vfx_view().position, NV_LOCAL) - at);"))
     testing.expect(t,strings.contains(mesh.program_source,"visual.orientation = ")&&strings.contains(mesh.program_source,"visual.scale = sides / largest;"))
     testing.expect(t,strings.contains(sprite.program_source,"visual.scale = float3(sides / largest, 1.0);"))
 

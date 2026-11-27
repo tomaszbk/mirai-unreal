@@ -877,6 +877,14 @@ Nv nv_frame(Mirai_Vfx_Context ctx, float dt, uint seed) {
     e.rng = seed;
     return e;
 }
+// The emitter as if it were at owner (Unreal's axes, centimetres), standing still.
+void nv_owner_at(inout Nv e, float3 owner) {
+    e.owner = owner; e.prev_owner = owner; e.velocity = float3(0.0);
+    e.l2w[12] = owner.x; e.l2w[13] = owner.y; e.l2w[14] = owner.z;
+    e.w2l[12] = -dot(owner, float3(e.l2w[0], e.l2w[1], e.l2w[2]));
+    e.w2l[13] = -dot(owner, float3(e.l2w[4], e.l2w[5], e.l2w[6]));
+    e.w2l[14] = -dot(owner, float3(e.l2w[8], e.l2w[9], e.l2w[10]));
+}
 // A place and a direction of the scripts as the particle keeps them, and back: those of an
 // emitter of local space are in the space of the emitter.
 float3 nv_place(Mirai_Vfx_Context ctx, float3 p, bool local) {
@@ -974,14 +982,6 @@ float4 nv_emitter_turn(Mirai_Vfx_Context ctx) {
     float3 y = float3(ctx.world[0].y, ctx.world[1].y, ctx.world[2].y);
     float3 z = normalize(cross(x, y));
     return nv_axes_turn(x, cross(z, x), z);
-}
-// The turn that takes the front of a mesh of the game (Unreal's x, Mirai's -z) along a way,
-// its up as near the up of the world as that leaves it.
-float4 nv_look(float3 way) {
-    float3 front = normalize(way);
-    float3 side = cross(float3(0.0, 1.0, 0.0), -front);
-    side = length(side) > 1e-4 ? normalize(side) : float3(1.0, 0.0, 0.0);
-    return nv_axes_turn(side, cross(-front, side), -front);
 }
 `
 
@@ -1154,29 +1154,6 @@ cooked_vfx_program :: proc(name:string,system,emitter,renderer:json.Object,alloc
         fmt.sbprintf(&system_scope.out,"    uint n%d = %s;\n",at,value)
         append(&computed,output)
     }
-    p.births=len(emitter_outputs)>0&&len(counts)>0
-    if len(t.words)>STATE_WORDS {note(&t.notes,fmt.tprintf("%d values of the emitter and the system, more than the state of a program holds",len(t.words)))}
-    if len(t.fields)*4>ATTRIBUTE_BYTES {note(&t.notes,fmt.tprintf("%d values of each particle, more than a program keeps",len(t.fields)))}
-
-    w:=strings.builder_make(allocator)
-    fmt.sbprintf(&w,"//! mirai vfx %s\n//! moves\n",name)
-    if p.births {strings.write_string(&w,"//! prepare\n//! births\n")}
-    for res in t.resources {fmt.sbprintf(&w,"//! resource %s %s\n",res.name,res.kind)}
-    strings.write_string(&w,"//! parameter scale {\"default\":1,\"min\":0,\"max\":100}\n")
-    for _,i in t.textures {fmt.sbprintf(&w,"//! parameter field%d {{\"kind\":\"texture\"}}\n",i)}
-    strings.write_string(&w,"// The scripts of a Niagara emitter as one Vfx program: generated, not written.\n")
-    fmt.sbprintf(&w,"namespace %s {{\nstruct Parameters {{ float scale;",name)
-    for _,i in t.textures {fmt.sbprintf(&w," uint field%d;",i)}
-    strings.write_string(&w," };\nstruct Attributes {\n")
-    for f in t.fields {fmt.sbprintf(&w,"    uint %s;\n",ident("f_",f))}
-    if len(t.fields)==0 {strings.write_string(&w,"    uint unused;\n")}
-    strings.write_string(&w,"};\n")
-    strings.write_string(&w,PROGRAM_PRELUDE)
-    strings.write_string(&w,strings.to_string(t.data))
-    fmt.sbprintf(&w,"static const bool NV_LOCAL = %s;\n",t.local ? "true" : "false")
-    skel_emit_code(&t,&w)
-    strings.write_string(&w,gpu_host)
-
     vector :: proc(t:^Translation,name:string) -> (string,bool) {
         if !has_field(t,fmt.tprintf("%s.x",name)) {return "",false}
         parts:[3]string
@@ -1219,50 +1196,147 @@ cooked_vfx_program :: proc(name:string,system,emitter,renderer:json.Object,alloc
         }
         if has_field(&t,fmt.tprintf("%s.x",pivot_attribute)) {has_mesh_pivot=true}
     }
-    if has_mesh_pivot {
-        strings.write_string(&w,"float3 nv_mesh_pivot(Mirai_Vfx_Context ctx, Attributes a) {\n")
+    // What the pool keeps of a particle and what its scripts see of it differ by the offset
+    // its renderer draws a mesh at (PivotOffset) and, for a particle a channel starts, by
+    // where it was born. Both are kept in the particle, in the space of the simulation, so a
+    // step takes off exactly what the step before added, whatever moved meanwhile.
+    pivot_kept:=kind=="mesh"&&has_mesh_pivot
+    if pivot_kept {for c in ([3]string{"x","y","z"}) {field_of(&t,fmt.tprintf("nv.pivot.%s",c))}}
+    // A particle a channel starts has its emitter where it was born: a local one keeps its
+    // place from there, and what reads the emitter reads that place, every step.
+    reads_emitter:=false
+    for marker in ([]string{"e.owner","e.l2w","e.w2l","e.velocity","nv_dx("}) {
+        reads_emitter||=strings.contains(update_body,marker)
+    }
+    anchored:=t.local||reads_emitter
+    if anchored {for c in ([4]string{"x","y","z","on"}) {field_of(&t,fmt.tprintf("nv.anchor.%s",c))}}
+    p.births=len(emitter_outputs)>0&&len(counts)>0
+    if len(t.words)>STATE_WORDS {note(&t.notes,fmt.tprintf("%d values of the emitter and the system, more than the state of a program holds",len(t.words)))}
+    if len(t.fields)*4>ATTRIBUTE_BYTES {note(&t.notes,fmt.tprintf("%d values of each particle, more than a program keeps",len(t.fields)))}
+
+    w:=strings.builder_make(allocator)
+    fmt.sbprintf(&w,"//! mirai vfx %s\n//! moves\n",name)
+    if p.births {strings.write_string(&w,"//! prepare\n//! births\n")}
+    for res in t.resources {fmt.sbprintf(&w,"//! resource %s %s\n",res.name,res.kind)}
+    strings.write_string(&w,"//! parameter scale {\"default\":1,\"min\":0,\"max\":100}\n")
+    for _,i in t.textures {fmt.sbprintf(&w,"//! parameter field%d {{\"kind\":\"texture\"}}\n",i)}
+    strings.write_string(&w,"// The scripts of a Niagara emitter as one Vfx program: generated, not written.\n")
+    fmt.sbprintf(&w,"namespace %s {{\nstruct Parameters {{ float scale;",name)
+    for _,i in t.textures {fmt.sbprintf(&w," uint field%d;",i)}
+    strings.write_string(&w," };\nstruct Attributes {\n")
+    for f in t.fields {fmt.sbprintf(&w,"    uint %s;\n",ident("f_",f))}
+    if len(t.fields)==0 {strings.write_string(&w,"    uint unused;\n")}
+    strings.write_string(&w,"};\n")
+    strings.write_string(&w,PROGRAM_PRELUDE)
+    strings.write_string(&w,strings.to_string(t.data))
+    fmt.sbprintf(&w,"static const bool NV_LOCAL = %s;\n",t.local ? "true" : "false")
+    skel_emit_code(&t,&w)
+    strings.write_string(&w,gpu_host)
+
+    if anchored {
+        strings.write_string(&w,"float3 nv_anchor(Attributes a) { return float3(fv(a.f_nv_anchor_x), fv(a.f_nv_anchor_y), fv(a.f_nv_anchor_z)); }\n")
+        strings.write_string(&w,"void nv_anchor_frame(Mirai_Vfx_Context ctx, inout Nv e, Attributes a) { if (a.f_nv_anchor_on != 0u) nv_owner_at(e, nv_unreal(nv_place(ctx, nv_anchor(a), NV_LOCAL)) * 100.0); }\n")
+    }
+    // The offset between the place the scripts see and the one the pool keeps, as the last
+    // step left it, in the space of the simulation.
+    strings.write_string(&w,"float3 nv_kept_offset(Attributes a) {\n    float3 o = float3(0.0);\n")
+    if pivot_kept {strings.write_string(&w,"    o += float3(fv(a.f_nv_pivot_x), fv(a.f_nv_pivot_y), fv(a.f_nv_pivot_z));\n")}
+    if anchored&&t.local {strings.write_string(&w,"    if (a.f_nv_anchor_on != 0u) o += nv_anchor(a);\n")}
+    strings.write_string(&w,"    return o;\n}\n")
+
+    if kind=="mesh" {
+        // The turn of a mesh particle in the space of its simulation and in Unreal's axes, as
+        // NiagaraCalculateMeshParticleSRT makes it: the turn of the particle, then the turn of
+        // the mesh, then where it faces. A local emitter turns it into the world after.
+        settings,_:=renderer["Settings"].(json.Object)
+        facing:=jstr(settings["FacingMode"])
+        strings.write_string(&w,"float4 nv_mesh_rotation(Mirai_Vfx_Context ctx, Mirai_Vfx_Particle particle, Attributes a) {\n")
+        if has_field(&t,fmt.tprintf("%s.w",orientation_attribute)) {
+            q:[4]string
+            for c,i in ([4]string{"x","y","z","w"}) {
+                fn:=fmt.tprintf("%s.%s",orientation_attribute,c)
+                q[i]=has_field(&t,fn) ? fmt.tprintf("fv(a.%s)",ident("f_",fn)) : "0.0"
+            }
+            fmt.sbprintf(&w,"    float4 q = float4(%s, %s, %s, %s);\n    float ql = length(q); q = ql > 1e-20 ? q / ql : float4(0.0, 0.0, 0.0, 1.0);\n",q[0],q[1],q[2],q[3])
+        } else {
+            strings.write_string(&w,"    float4 q = float4(0.0, 0.0, 0.0, 1.0);\n")
+        }
+        if mesh_rot_ue!={0,0,0,1} {
+            fmt.sbprintf(&w,"    q = nv_qmul(q, float4(%s, %s, %s, %s));\n",slang_f32(mesh_rot_ue.x),slang_f32(mesh_rot_ue.y),slang_f32(mesh_rot_ue.z),slang_f32(mesh_rot_ue.w))
+        }
+        if facing!=""&&!strings.contains(facing,"Default") {
+            // NiagaraGetMeshFacingMatrix: the way it faces, in the space of the simulation.
+            switch {
+            case strings.contains(facing,"Velocity"):
+                fmt.sbprintf(&w,"    float3 v = %s;\n",has_velocity ? velocity : "nv_way_back(ctx, particle.velocity, NV_LOCAL)")
+                strings.write_string(&w,"    float3 dir = length(v) > 0.0 ? v / length(v) : normalize(nv_way_back(ctx, float3(0.0, 1.0, 0.0), NV_LOCAL));\n")
+            case strings.contains(facing,"CameraPosition"):
+                fmt.sbprintf(&w,"    float3 at = %s;\n",has_position&&!drawn_apart ? position : "nv_place_back(ctx, particle.position, NV_LOCAL)")
+                strings.write_string(&w,"    float3 dir = normalize(nv_place_back(ctx, mirai_vfx_view().position, NV_LOCAL) - at);\n")
+            case:
+                strings.write_string(&w,"    float3 dir = normalize(nv_way_back(ctx, -mirai_vfx_view().forward, NV_LOCAL));\n")
+            }
+            if jbool(settings["bLockedAxisEnable"]) {
+                axis,_:=settings["LockedAxis"].(json.Object)
+                ax,_:=jf32(axis["X"],0); ay,_:=jf32(axis["Y"],0); az,_:=jf32(axis["Z"],1)
+                space:=jstr(settings["LockedAxisSpace"])
+                world_axis:=strings.contains(space,"World")||(strings.contains(space,"Simulation")&&!t.local)
+                lock:=fmt.tprintf("float3(%s, %s, %s)",slang_f32(ax),slang_f32(ay),slang_f32(az))
+                switch {
+                case world_axis&&t.local:lock=fmt.tprintf("nv_way_back(ctx, nv_mirai(%s), true)",lock)
+                case !world_axis&&!t.local:lock=fmt.tprintf("nv_unreal(nv_way(ctx, %s, true))",lock)
+                }
+                fmt.sbprintf(&w,"    float3 lock = normalize(%s);\n",lock)
+                strings.write_string(&w,"    if (abs(dot(dir, lock)) > 0.99) dir = abs(lock.z) > 0.99 ? float3(1.0, 0.0, 0.0) : float3(0.0, 0.0, 1.0);\n")
+                strings.write_string(&w,"    float3 fz = lock; float3 fy = normalize(cross(fz, dir)); float3 fx = cross(fy, fz);\n")
+            } else {
+                // The up of the world, or its x where the mesh faces up or down. A camera plane
+                // takes the up of the camera in Unreal, the same for a camera that does not roll.
+                strings.write_string(&w,"    float up = dot(normalize(nv_unreal(nv_way(ctx, dir, NV_LOCAL))), float3(0.0, 0.0, 1.0));\n")
+                strings.write_string(&w,"    float3 ref = normalize(nv_way_back(ctx, nv_mirai(abs(up) > 0.99 ? -sign(up) * float3(1.0, 0.0, 0.0) : float3(0.0, 0.0, 1.0)), NV_LOCAL));\n")
+                strings.write_string(&w,"    float3 fx = dir; float3 fy = normalize(cross(ref, dir)); float3 fz = cross(fx, fy);\n")
+            }
+            strings.write_string(&w,"    q = nv_qmul(nv_axes_turn(fx, fy, fz), q);\n")
+        }
+        strings.write_string(&w,"    return q;\n}\n")
+    }
+    if pivot_kept {
+        strings.write_string(&w,"float3 nv_mesh_pivot(Mirai_Vfx_Context ctx, Mirai_Vfx_Particle particle, Attributes a) {\n")
         if pv,has_pv:=vector(&t,pivot_attribute);has_pv {
             fmt.sbprintf(&w,"    float3 po = %s;\n",pv)
         } else {
             fmt.sbprintf(&w,"    float3 po = float3(%s, %s, %s);\n",slang_f32(mesh_pivot.x),slang_f32(mesh_pivot.y),slang_f32(mesh_pivot.z))
         }
+        // NiagaraRendererMeshes.cpp: an offset of the mesh turns and scales with the particle
+        // (not with the scale of the renderer); one of the world, of the component or of the
+        // simulation is a vector of that space.
         switch {
         case strings.contains(mesh_pivot_space,"World"):
-            strings.write_string(&w,"    return nv_mirai(po) * 0.01;\n}\n")
+            strings.write_string(&w,"    return NV_LOCAL ? nv_way_back(ctx, nv_mirai(po) * 0.01, true) : po;\n}\n")
         case strings.contains(mesh_pivot_space,"Local"):
-            strings.write_string(&w,"    return nv_way(ctx, po, true);\n}\n")
+            strings.write_string(&w,"    return NV_LOCAL ? po : nv_way_back(ctx, nv_way(ctx, po, true), false);\n}\n")
         case strings.contains(mesh_pivot_space,"Simulation"):
-            strings.write_string(&w,"    return nv_way(ctx, po, NV_LOCAL);\n}\n")
+            strings.write_string(&w,"    return po;\n}\n")
         case:
-            // ENiagaraMeshPivotOffsetSpace::Mesh: mesh-local cm offset scaled by particle scale and rotated by ParticleRotation * MeshRotation.
             if ps,has_ps:=vector(&t,size_attribute);has_ps {
                 fmt.sbprintf(&w,"    float3 ps = %s;\n",ps)
             } else {
                 strings.write_string(&w,"    float3 ps = float3(1.0);\n")
             }
-            if has_field(&t,fmt.tprintf("%s.w",orientation_attribute)) {
-                q:[4]string
-                for c,i in ([4]string{"x","y","z","w"}) {
-                    fn:=fmt.tprintf("%s.%s",orientation_attribute,c)
-                    q[i]=has_field(&t,fn) ? fmt.tprintf("fv(a.%s)",ident("f_",fn)) : "0.0"
-                }
-                fmt.sbprintf(&w,"    float4 pq = float4(%s, %s, %s, %s);\n    float pql = length(pq); pq = pql > 1e-20 ? pq / pql : float4(0.0, 0.0, 0.0, 1.0);\n",q[0],q[1],q[2],q[3])
-            } else {
-                strings.write_string(&w,"    float4 pq = float4(0.0, 0.0, 0.0, 1.0);\n")
-            }
-            fmt.sbprintf(&w,"    float4 mq = float4(%s, %s, %s, %s);\n",slang_f32(mesh_rot_ue.x),slang_f32(mesh_rot_ue.y),slang_f32(mesh_rot_ue.z),slang_f32(mesh_rot_ue.w))
-            strings.write_string(&w,"    float3 off_sim = nv_qrot(nv_qmul(pq, mq), po * ps);\n    return nv_way(ctx, off_sim, NV_LOCAL);\n}\n")
+            strings.write_string(&w,"    return nv_qrot(nv_mesh_rotation(ctx, particle, a), po * ps);\n}\n")
         }
     }
 
     // What the particle of Mirai takes of its attributes after a script.
-    strings.write_string(&w,"void nv_leave(Mirai_Vfx_Context ctx, inout Mirai_Vfx_Particle particle, Attributes a) {\n")
-    pivot_add:=has_mesh_pivot ? " + nv_mesh_pivot(ctx, a)" : ""
-    switch {
-    case drawn_apart:fmt.sbprintf(&w,"    particle.position = nv_place(ctx, %s, NV_LOCAL)%s;\n",shown,pivot_add)
-    case has_position:fmt.sbprintf(&w,"    particle.position = nv_place(ctx, %s, NV_LOCAL)%s;\n",position,pivot_add)
-    }
+    strings.write_string(&w,"void nv_leave(Mirai_Vfx_Context ctx, inout Mirai_Vfx_Particle particle, inout Attributes a) {\n")
     if has_velocity {fmt.sbprintf(&w,"    particle.velocity = nv_way(ctx, %s, NV_LOCAL);\n",velocity)}
+    placed:=drawn_apart ? shown : position
+    if drawn_apart||has_position {
+        strings.write_string(&w,"    float3 nv_off = float3(0.0);\n")
+        if pivot_kept {strings.write_string(&w,"    { float3 pv = nv_mesh_pivot(ctx, particle, a); a.f_nv_pivot_x = nf(pv.x); a.f_nv_pivot_y = nf(pv.y); a.f_nv_pivot_z = nf(pv.z); nv_off += pv; }\n")}
+        if anchored&&t.local {strings.write_string(&w,"    if (a.f_nv_anchor_on != 0u) nv_off += nv_anchor(a);\n")}
+        fmt.sbprintf(&w,"    particle.position = nv_place(ctx, %s + nv_off, NV_LOCAL);\n",placed)
+    }
     if has_field(&t,"Lifetime") {strings.write_string(&w,"    particle.lifetime = max(fv(a.f_Lifetime), 1e-4);\n")}
     if has_field(&t,"Age") {strings.write_string(&w,"    particle.age = max(fv(a.f_Age), 0.0);\n")}
     if kind=="sprite"&&has_field(&t,rotation_attribute) {fmt.sbprintf(&w,"    particle.rotation = radians(fv(a.%s));\n",ident("f_",rotation_attribute))}
@@ -1270,11 +1344,7 @@ cooked_vfx_program :: proc(name:string,system,emitter,renderer:json.Object,alloc
     // And what its attributes take of it before one: where the pool has it.
     strings.write_string(&w,"void nv_enter(Mirai_Vfx_Context ctx, Mirai_Vfx_Particle particle, inout Attributes a) {\n")
     if has_position&&!drawn_apart {
-        if has_mesh_pivot {
-            strings.write_string(&w,"    float3 at = nv_place_back(ctx, particle.position - nv_mesh_pivot(ctx, a), NV_LOCAL);\n")
-        } else {
-            strings.write_string(&w,"    float3 at = nv_place_back(ctx, particle.position, NV_LOCAL);\n")
-        }
+        strings.write_string(&w,"    float3 at = nv_place_back(ctx, particle.position, NV_LOCAL) - nv_kept_offset(a);\n")
         for c in ([3]string{"x","y","z"}) {
             if has_field(&t,fmt.tprintf("Position.%s",c)) {fmt.sbprintf(&w,"    a.f_Position_%s = nf(at.%s);\n",c,c)}
         }
@@ -1289,6 +1359,12 @@ cooked_vfx_program :: proc(name:string,system,emitter,renderer:json.Object,alloc
 
     strings.write_string(&w,"void initialize(Mirai_Vfx_Context ctx, Parameters p, inout Mirai_Vfx_Particle particle, inout Attributes a) {\n")
     strings.write_string(&w,"    float3 nv_birth_pos = particle.position; bool nv_channel_birth = (ctx.birth == 0xFFFFFFFFu);\n")
+    // The slot may keep what a particle before left: nothing of it is offset yet.
+    if pivot_kept {strings.write_string(&w,"    a.f_nv_pivot_x = 0u; a.f_nv_pivot_y = 0u; a.f_nv_pivot_z = 0u;\n")}
+    if anchored {
+        strings.write_string(&w,"    a.f_nv_anchor_on = 0u;\n")
+        strings.write_string(&w,"    if (nv_channel_birth) { float3 nv_at = nv_place_back(ctx, nv_birth_pos, NV_LOCAL); a.f_nv_anchor_x = nf(nv_at.x); a.f_nv_anchor_y = nf(nv_at.y); a.f_nv_anchor_z = nf(nv_at.z); a.f_nv_anchor_on = 1u; }\n")
+    }
     if p.births {
         strings.write_string(&w,"    float nv_dt = fv(mirai_vfx_state_load(ctx, 4u)); if (nv_dt <= 0.0) nv_dt = 1.0 / 60.0;\n")
         strings.write_string(&w,"    Nv e = nv_frame(ctx, nv_dt, particle.seed);\n")
@@ -1296,7 +1372,7 @@ cooked_vfx_program :: proc(name:string,system,emitter,renderer:json.Object,alloc
     } else {
         strings.write_string(&w,"    Nv e = nv_frame(ctx, 1.0 / 60.0, particle.seed);\n")
     }
-    strings.write_string(&w,"    if (nv_channel_birth) { e.owner = nv_unreal(nv_birth_pos) * 100.0; e.prev_owner = e.owner; e.velocity = float3(0.0); e.l2w[12] = e.owner.x; e.l2w[13] = e.owner.y; e.l2w[14] = e.owner.z; e.w2l[12] = -dot(e.owner, float3(e.l2w[0], e.l2w[1], e.l2w[2])); e.w2l[13] = -dot(e.owner, float3(e.l2w[4], e.l2w[5], e.l2w[6])); e.w2l[14] = -dot(e.owner, float3(e.l2w[8], e.l2w[9], e.l2w[10])); e.exec = 0u; e.count = 1u; } else { e.exec = ctx.birth - ctx.born; }\n")
+    strings.write_string(&w,"    if (nv_channel_birth) { nv_owner_at(e, nv_unreal(nv_birth_pos) * 100.0); e.exec = 0u; e.count = 1u; } else { e.exec = ctx.birth - ctx.born; }\n")
     if !gpu&&len(spawns)>0 {
         // Pick the SpawnInfo entry covering this birth so SpawnGroup, SpawnInterval, InterpSpawnStartDt and ExecIndex match UE.
         strings.write_string(&w,"    if (!nv_channel_birth) { uint nv_idx = ctx.birth - ctx.born; uint nv_off = 0u; bool nv_picked = false;\n")
@@ -1316,26 +1392,29 @@ cooked_vfx_program :: proc(name:string,system,emitter,renderer:json.Object,alloc
         strings.write_string(&w,"    bool keep = true;\n")
     }
     if kind=="ribbon" {
+        // particle.ribbon keeps 21 bits (PARTICLE_RIBBON_MASK of the vfx plugin): a hash cut
+        // to more would lose its high bits and could become 0, no ribbon.
         if has_field(&t,fmt.tprintf("%s.Index",ribbon_id_attribute)) {
             idx_f:=ident("f_",fmt.tprintf("%s.Index",ribbon_id_attribute))
             tag_expr:=has_field(&t,fmt.tprintf("%s.AcquireTag",ribbon_id_attribute)) ? fmt.tprintf("a.%s",ident("f_",fmt.tprintf("%s.AcquireTag",ribbon_id_attribute))) : "0u"
-            fmt.sbprintf(&w,"    {{ uint nv_rid = ((a.%s + 1u) ^ (%s * 2654435761u)) & 0x00FFFFFFu; particle.ribbon = nv_rid != 0u ? nv_rid : 1u; }}\n",idx_f,tag_expr)
+            fmt.sbprintf(&w,"    {{ uint nv_rid = ((a.%s + 1u) ^ (%s * 2654435761u)) & 0x001FFFFFu; particle.ribbon = nv_rid != 0u ? nv_rid : 1u; }}\n",idx_f,tag_expr)
         } else if has_field(&t,ribbon_id_attribute) {
-            fmt.sbprintf(&w,"    {{ uint nv_rid = (a.%s + 1u) & 0x00FFFFFFu; particle.ribbon = nv_rid != 0u ? nv_rid : 1u; }}\n",ident("f_",ribbon_id_attribute))
+            fmt.sbprintf(&w,"    {{ uint nv_rid = (a.%s + 1u) & 0x001FFFFFu; particle.ribbon = nv_rid != 0u ? nv_rid : 1u; }}\n",ident("f_",ribbon_id_attribute))
         }
     }
     // A particle its spawn script does not keep dies at its first step.
-    strings.write_string(&w,"    nv_leave(ctx, particle, a);\n    if (NV_LOCAL && nv_channel_birth) particle.position += nv_birth_pos - ctx.origin;\n    if (!keep) { particle.age = 1.0; particle.lifetime = 1.0; }\n}\n")
+    strings.write_string(&w,"    nv_leave(ctx, particle, a);\n    if (!keep) { particle.age = 1.0; particle.lifetime = 1.0; }\n}\n")
 
     strings.write_string(&w,"void update(Mirai_Vfx_Context ctx, Parameters p, inout Mirai_Vfx_Particle particle, inout Attributes a) {\n")
-    strings.write_string(&w,"    Nv e = nv_frame(ctx, ctx.delta_time, particle.seed ^ (uint(ctx.time * 1000.0) * 2654435761u));\n    e.exec = ctx.particle;\n    nv_enter(ctx, particle, a);\n")
+    strings.write_string(&w,"    Nv e = nv_frame(ctx, ctx.delta_time, particle.seed ^ (uint(ctx.time * 1000.0) * 2654435761u));\n    e.exec = ctx.particle;\n")
+    if anchored {strings.write_string(&w,"    nv_anchor_frame(ctx, e, a);\n")}
+    strings.write_string(&w,"    nv_enter(ctx, particle, a);\n")
     if has_update {
         strings.write_string(&w,update_body)
     } else {
         strings.write_string(&w,"    bool keep = true;\n")
     }
     strings.write_string(&w,"    nv_leave(ctx, particle, a);\n    if (!keep) particle.age = particle.lifetime;\n}\n")
-
     strings.write_string(&w,"void render(Mirai_Vfx_Context ctx, Parameters p, Mirai_Vfx_Particle particle, Attributes a, inout Mirai_Vfx_Visual visual) {\n")
     if color,has_color:=vector(&t,color_attribute);has_color {
         alpha:=has_field(&t,fmt.tprintf("%s.w",color_attribute)) ? fmt.tprintf("saturate(fv(a.%s))",ident("f_",fmt.tprintf("%s.w",color_attribute))) : "1.0"
@@ -1366,47 +1445,10 @@ cooked_vfx_program :: proc(name:string,system,emitter,renderer:json.Object,alloc
     case has_field(&t,size_attribute):
         fmt.sbprintf(&w,"    visual.size = abs(fv(a.%s)) * 0.01 * max(p.scale, 0.0);\n",ident("f_",size_attribute))
     }
-    // How a mesh is turned: by the turn of its particle, in the space of its emitter where the
-    // emitter is local, or toward the eye; then by the turn its renderer gives the mesh. A
-    // mesh that follows its velocity is turned by its effect.
+    // How a mesh is turned: as its simulation turns it (nv_mesh_rotation), then into the
+    // world where its emitter is local (PrimitiveLocalToWorld comes after the facing).
     if kind=="mesh" {
-        settings,_:=renderer["Settings"].(json.Object)
-        facing:=jstr(settings["FacingMode"])
-        strings.write_string(&w,"    float4 turn = float4(0.0, 0.0, 0.0, 1.0);\n")
-        if has_field(&t,fmt.tprintf("%s.w",orientation_attribute)) {
-            q:[4]string
-            for c,i in ([4]string{"x","y","z","w"}) {
-                name:=fmt.tprintf("%s.%s",orientation_attribute,c)
-                q[i]=has_field(&t,name) ? fmt.tprintf("fv(a.%s)",ident("f_",name)) : "0.0"
-            }
-            fmt.sbprintf(&w,"    turn = nv_turn(float4(%s, %s, %s, %s));\n",q[0],q[1],q[2],q[3])
-        }
-        switch {
-        case strings.contains(facing,"Velocity"):
-            strings.write_string(&w,"    float3 nv_vel = particle.velocity;\n")
-            strings.write_string(&w,"    float4 nv_face = length(nv_vel) > 1e-4 ? nv_look(nv_vel) : nv_look(float3(0.0, 1.0, 0.0));\n")
-            strings.write_string(&w,"    turn = nv_qmul(nv_face, turn);\n")
-        case strings.contains(facing,"CameraPosition"):
-            strings.write_string(&w,"    turn = nv_qmul(nv_look(mirai_vfx_view().position - particle.position), turn);\n")
-        case strings.contains(facing,"CameraPlane"):
-            strings.write_string(&w,"    turn = nv_qmul(nv_look(-mirai_vfx_view().forward), turn);\n")
-        case:
-            strings.write_string(&w,"    if (NV_LOCAL) turn = nv_qmul(nv_emitter_turn(ctx), turn);\n")
-        }
-        meshes,_:=renderer["Meshes"].(json.Array)
-        if len(meshes)>0 {
-            first,_:=meshes[0].(json.Object)
-            if rot,has_rot:=first["Rotation"].(json.Object);has_rot {
-                pitch,_:=jf32(rot["Pitch"],0)
-                yaw,_:=jf32(rot["Yaw"],0)
-                roll,_:=jf32(rot["Roll"],0)
-                if abs(pitch)>1e-3||abs(yaw)>1e-3||abs(roll)>1e-3 {
-                    m:=cooked.unreal_rotator_to_mirai(pitch,yaw,roll)
-                    fmt.sbprintf(&w,"    turn = nv_qmul(turn, float4(%s, %s, %s, %s));\n",slang_f32(m.x),slang_f32(m.y),slang_f32(m.z),slang_f32(m.w))
-                }
-            }
-        }
-        strings.write_string(&w,"    visual.orientation = turn / max(length(turn), 1e-20);\n")
+        strings.write_string(&w,"    float4 turn = nv_mesh_rotation(ctx, particle, a);\n    if (NV_LOCAL) turn = nv_qmul(nv_turn_back(nv_emitter_turn(ctx)), turn);\n    visual.orientation = nv_turn(turn);\n")
     }
     if has_field(&t,frame_attribute) {fmt.sbprintf(&w,"    visual.frame = fv(a.%s);\n",ident("f_",frame_attribute))}
     if has_field(&t,random_attribute) {fmt.sbprintf(&w,"    visual.random = fv(a.%s);\n",ident("f_",random_attribute))}

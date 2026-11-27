@@ -97,6 +97,12 @@ skel_find_socket :: proc(sk:Cooked_Skeleton,name:string) -> (Cooked_Socket,bool)
     return {},false
 }
 
+// What a translation reports of a filtered bone or socket the target skeleton lacks.
+@(private="file")
+skel_missing :: proc(di,kind,name:string) -> string {
+    return fmt.tprintf("%s: %s %q is not in the skeleton: its root stands in",di,kind,name)
+}
+
 // Ensures a NiagaraDataInterfaceSkeletalMesh has resolved bone/socket tables and registers the
 // Mirai `bones` (and optionally `transform`) resource declarations.
 @(private)
@@ -138,7 +144,9 @@ skel_di_prepare :: proc(t:^Translation,di:^Interface,need_transform:bool,need_un
                 append(&sd.filtered_bones,idx)
                 fb_set[idx]=true
             } else {
+                // The bone keeps its place in the list, which the scripts index, at the root.
                 append(&sd.filtered_bones,0)
+                note(&t.limits,skel_missing(di.name,"bone",bname))
             }
         }
     }
@@ -153,6 +161,7 @@ skel_di_prepare :: proc(t:^Translation,di:^Interface,need_transform:bool,need_un
                 append(&sd.filtered_sockets,sock)
             } else {
                 append(&sd.filtered_sockets,Cooked_Socket{name=sname,bone=0,rotation=skel_bone_turn(sk),scale={1,1,1}})
+                note(&t.limits,skel_missing(di.name,"socket",sname))
             }
         }
     }
@@ -272,10 +281,12 @@ skel_emit_code :: proc(t:^Translation,w:^strings.Builder) {
         int bi = NV_SKEL_FS_BONE_%d[si];
         Mirai_Vfx_Bone b = mirai_vfx_bone(ctx, skeleton, uint(max(bi, 0)));
         if (b.valid) {{
-            pos_m = b.position + nv_qrot(b.rotation, NV_SKEL_FS_POS_%d[si] * b.scale);
+            // A socket away from its bone also moves as the bone turns.
+            float3 offset = nv_qrot(b.rotation, NV_SKEL_FS_POS_%d[si] * b.scale);
+            pos_m = b.position + offset;
             rot_m = nv_qmul(b.rotation, NV_SKEL_FS_ROT_%d[si]);
             scl_m = b.scale * NV_SKEL_FS_SCL_%d[si];
-            vel_m = b.velocity;
+            vel_m = b.velocity + cross(b.angular_velocity, offset);
             parent = bi;
             return;
         }}
