@@ -318,7 +318,8 @@ build_cooked_emitter :: proc(
             if pivot,has_pivot:=settings["PivotInUVSpace"].(json.Object);has_pivot {
                 px,_:=jf32(pivot["X"],0.5)
                 py,_:=jf32(pivot["Y"],0.5)
-                if abs(px-0.5)>1e-3 || abs(py-0.5)>1e-3 {
+                // A velocity-aligned sprite is moved by its program (cooked_vfx_program).
+                if (abs(px-0.5)>1e-3 || abs(py-0.5)>1e-3) && !strings.contains(jstr(settings["Alignment"]),"VelocityAligned") {
                     append(&limits,fmt.aprintf("sprites held at (%.2f, %.2f) of their image: they are held at its centre",px,py,allocator=allocator))
                 }
             }

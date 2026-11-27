@@ -573,3 +573,51 @@ cooked_skeletal_mesh_reports_bones_it_cannot_find :: proc(t:^testing.T) {
     testing.expectf(t,strings.contains(joined,`Spark.Mesh: socket "Blade_Far" is not in the skeleton: its root stands in`),"limits: %v",layer.limits)
     testing.expectf(t,!strings.contains(joined,`"spine_01"`)&&!strings.contains(joined,`"Tip"`),"found ones reported: %v",layer.limits)
 }
+
+// CameraOffset draws a sprite or a mesh that many centimetres toward the eye, and a sprite
+// aligned to its velocity held at the foot of its image is drawn ahead of its particle by half
+// its length; both are kept in the particle, so the next step takes them off exactly.
+@(test)
+cooked_particles_move_toward_the_eye_and_about_their_pivot :: proc(t:^testing.T) {
+    arena:mem.Dynamic_Arena
+    mem.dynamic_arena_init(&arena)
+    defer mem.dynamic_arena_destroy(&arena)
+    alloc:=mem.dynamic_arena_allocator(&arena)
+    renderers:=[]string{
+        `{"Kind": "sprite", "Class": "NiagaraSpriteRendererProperties", "Settings": {"Alignment": "ENiagaraSpriteAlignment::VelocityAligned", "PivotInUVSpace": {"X": 0.5, "Y": 1.0}}}`,
+        `{"Kind": "mesh", "Class": "NiagaraMeshRendererProperties", "Meshes": [{"Mesh": "/Game/SM_Cone.SM_Cone"}]}`,
+    }
+    for renderer,i in renderers {
+        template:=`{
+  "Schema": "ue5parse.niagara/2", "Name": "NS_Eye",
+  "Emitters": [{
+    "Name": "Flare", "Settings": {"bLocalSpace": true},
+    "Scripts": [
+      {"Usage": "ParticleSpawnScript", "Target": "CPU", "Modules": [],
+       "Outputs": [
+         {"Attribute": "Lifetime", "Value": {"Literal": 0.5, "Type": "float"}},
+         {"Attribute": "CameraOffset", "Value": {"Literal": 30.0, "Type": "float"}},
+         {"Attribute": "SpriteSize", "Components": {"x": {"Literal": 10.0, "Type": "float"}, "y": {"Literal": 80.0, "Type": "float"}}},
+         {"Attribute": "Position", "Components": {"x": {"Literal": 0.0, "Type": "float"}, "y": {"Literal": 0.0, "Type": "float"}, "z": {"Literal": 0.0, "Type": "float"}}},
+         {"Attribute": "Velocity", "Components": {"x": {"Literal": 100.0, "Type": "float"}, "y": {"Literal": 0.0, "Type": "float"}, "z": {"Literal": 0.0, "Type": "float"}}}
+       ]}
+    ],
+    "Renderers": [RENDERER]
+  }]
+}`
+        doc,_:=strings.replace_all(template,"RENDERER",renderer,context.temp_allocator)
+        sys,err:=cooked_niagara_build(doc,alloc)
+        if e,bad:=err.?; !testing.expectf(t,!bad,"build failed: %v",e)||!testing.expect(t,len(sys.emitters)==1&&len(sys.emitters[0].layers)==1) {continue}
+        layer:=sys.emitters[0].layers[0]
+        for lim in layer.limits {
+            testing.expectf(t,!strings.contains(lim,"CameraOffset")&&!strings.contains(lim,"held at"),"%d: still a limit: %q",i,lim)
+        }
+        src:=layer.program_source
+        testing.expectf(t,strings.contains(src,"if (d > 0.0) co += nv_way_back(ctx, to_eye * (fv(a.f_CameraOffset) * 0.01 / d), NV_LOCAL);"),"%d: no offset toward the eye",i)
+        testing.expectf(t,strings.contains(src,"a.f_nv_view_x = nf(co.x);")&&strings.contains(src,"o += float3(fv(a.f_nv_view_x), fv(a.f_nv_view_y), fv(a.f_nv_view_z));"),"%d: offset not kept",i)
+        if i==0 {
+            testing.expectf(t,strings.contains(src,"co += right * (fv(a.f_SpriteSize_x) * 0.0) - dir * (fv(a.f_SpriteSize_y) * -0.5); }"),"sprite not drawn ahead of its particle")
+        }
+        program_compiles(t,src,fmt.tprintf("Cooked_NS_Eye_%d.slang",i),fmt.tprintf("renderer %d",i))
+    }
+}

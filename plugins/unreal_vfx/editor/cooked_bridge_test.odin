@@ -113,9 +113,11 @@ cooked_niagara_bridge_gives_a_layer_for_each_renderer :: proc(t:^testing.T) {
     testing.expect_value(t,len(sprite.notes),0)
     testing.expect_value(t,base.text_get(sprite.info.program[:]),"Cooked_NS_Slash_Arc")
     testing.expect(t,strings.contains(sprite.program_source,"visual.data[0]"))
+    // A pivot at the foot of a sprite aligned to its velocity: the program draws it ahead.
     held:=false
     for limit in sprite.limits {held|=strings.contains(limit,"held at")}
-    testing.expect(t,held) // a pivot at the end of the sprite is not shown
+    testing.expect(t,!held)
+    testing.expect(t,strings.contains(sprite.program_source,"- dir * (fv(a.f_SpriteSize_y) * -0.5); }"))
 
     // The second sprite renderer draws other attributes of the same particles.
     glow:=em.layers[1]

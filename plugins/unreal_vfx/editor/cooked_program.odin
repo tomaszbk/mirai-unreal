@@ -1017,6 +1017,7 @@ cooked_vfx_program :: proc(name:string,system,emitter,renderer:json.Object,alloc
     orientation_attribute:=bound(bindings,"MeshOrientationBinding","MeshOrientation")
     ribbon_id_attribute:=bound(bindings,"RibbonIdBinding","RibbonID")
     pivot_attribute:=bound(bindings,"PivotOffsetBinding","PivotOffset")
+    camera_attribute:=bound(bindings,"CameraOffsetBinding","CameraOffset")
     t:=Translation{
         emitter=jstr(emitter["Name"]),
         interfaces=make([dynamic]Interface,context.temp_allocator),
@@ -1202,6 +1203,28 @@ cooked_vfx_program :: proc(name:string,system,emitter,renderer:json.Object,alloc
     // step takes off exactly what the step before added, whatever moved meanwhile.
     pivot_kept:=kind=="mesh"&&has_mesh_pivot
     if pivot_kept {for c in ([3]string{"x","y","z"}) {field_of(&t,fmt.tprintf("nv.pivot.%s",c))}}
+    // CameraOffset (NiagaraSpriteVertexFactory.ush, NiagaraCalculateCameraOffset): the
+    // particle drawn that many centimetres toward the eye. Ribbons have none.
+    camera_kept:=(kind=="sprite"||kind=="mesh")&&has_field(&t,camera_attribute)
+    // A sprite aligned to its velocity held at another point of its image than its centre
+    // (PivotInUVSpace): Mirai draws it about its centre, so the particle moves by
+    // Size * (0.5 - pivot) along its tangents (GetTangents: up is minus the direction).
+    sprite_pivot:[2]f32={0.5,0.5}
+    sprite_size_x,has_sprite_size:=kind=="sprite" ? fmt.tprintf("%s.x",size_attribute) : "",false
+    if kind=="sprite" {
+        settings,_:=renderer["Settings"].(json.Object)
+        if pivot,ok:=settings["PivotInUVSpace"].(json.Object);ok&&strings.contains(jstr(settings["Alignment"]),"VelocityAligned") {
+            sprite_pivot.x,_=jf32(pivot["X"],0.5)
+            sprite_pivot.y,_=jf32(pivot["Y"],0.5)
+        }
+        has_sprite_size=has_field(&t,sprite_size_x)
+    }
+    sprite_held:=kind=="sprite"&&(abs(sprite_pivot.x-0.5)>1e-3||abs(sprite_pivot.y-0.5)>1e-3)
+    if sprite_held&&!has_sprite_size {
+        note(&t.limits,fmt.tprintf("sprites held at (%.2f, %.2f) of their image, of no size of their own: they are held at its centre",sprite_pivot.x,sprite_pivot.y))
+        sprite_held=false
+    }
+    if camera_kept||sprite_held {for c in ([3]string{"x","y","z"}) {field_of(&t,fmt.tprintf("nv.view.%s",c))}}
     // A particle a channel starts has its emitter where it was born: a local one keeps its
     // place from there, and what reads the emitter reads that place, every step.
     reads_emitter:=false
@@ -1241,6 +1264,7 @@ cooked_vfx_program :: proc(name:string,system,emitter,renderer:json.Object,alloc
     // step left it, in the space of the simulation.
     strings.write_string(&w,"float3 nv_kept_offset(Attributes a) {\n    float3 o = float3(0.0);\n")
     if pivot_kept {strings.write_string(&w,"    o += float3(fv(a.f_nv_pivot_x), fv(a.f_nv_pivot_y), fv(a.f_nv_pivot_z));\n")}
+    if camera_kept||sprite_held {strings.write_string(&w,"    o += float3(fv(a.f_nv_view_x), fv(a.f_nv_view_y), fv(a.f_nv_view_z));\n")}
     if anchored&&t.local {strings.write_string(&w,"    if (a.f_nv_anchor_on != 0u) o += nv_anchor(a);\n")}
     strings.write_string(&w,"    return o;\n}\n")
 
@@ -1333,8 +1357,22 @@ cooked_vfx_program :: proc(name:string,system,emitter,renderer:json.Object,alloc
     placed:=drawn_apart ? shown : position
     if drawn_apart||has_position {
         strings.write_string(&w,"    float3 nv_off = float3(0.0);\n")
-        if pivot_kept {strings.write_string(&w,"    { float3 pv = nv_mesh_pivot(ctx, particle, a); a.f_nv_pivot_x = nf(pv.x); a.f_nv_pivot_y = nf(pv.y); a.f_nv_pivot_z = nf(pv.z); nv_off += pv; }\n")}
         if anchored&&t.local {strings.write_string(&w,"    if (a.f_nv_anchor_on != 0u) nv_off += nv_anchor(a);\n")}
+        if camera_kept||sprite_held {
+            // Toward the eye from where the particle is, before the mesh's own offset.
+            fmt.sbprintf(&w,"    {{ float3 to_eye = mirai_vfx_view().position - nv_place(ctx, %s + nv_off, NV_LOCAL); float d = length(to_eye);\n",placed)
+            strings.write_string(&w,"      float3 co = float3(0.0);\n")
+            if camera_kept {fmt.sbprintf(&w,"      if (d > 0.0) co += nv_way_back(ctx, to_eye * (fv(a.%s) * 0.01 / d), NV_LOCAL);\n",ident("f_",camera_attribute))}
+            if sprite_held {
+                sy:=fmt.tprintf("%s.y",size_attribute)
+                size_y:=has_field(&t,sy) ? fmt.tprintf("fv(a.%s)",ident("f_",sy)) : fmt.tprintf("fv(a.%s)",ident("f_",sprite_size_x))
+                fmt.sbprintf(&w,"      {{ float3 v = %s; float vl = length(v); float3 eye = nv_way_back(ctx, to_eye, NV_LOCAL);\n",has_velocity ? velocity : "nv_way_back(ctx, particle.velocity, NV_LOCAL)")
+                strings.write_string(&w,"        float3 dir = vl > 0.0 ? v / vl : float3(0.0, 0.0, 1.0); float3 right = cross(eye, dir); float rl = length(right); right = rl > 0.0 ? right / rl : float3(0.0);\n")
+                fmt.sbprintf(&w,"        co += right * (fv(a.%s) * %s) - dir * (%s * %s); }}\n",ident("f_",sprite_size_x),slang_f32(0.5-sprite_pivot.x),size_y,slang_f32(0.5-sprite_pivot.y))
+            }
+            strings.write_string(&w,"      a.f_nv_view_x = nf(co.x); a.f_nv_view_y = nf(co.y); a.f_nv_view_z = nf(co.z); nv_off += co; }\n")
+        }
+        if pivot_kept {strings.write_string(&w,"    { float3 pv = nv_mesh_pivot(ctx, particle, a); a.f_nv_pivot_x = nf(pv.x); a.f_nv_pivot_y = nf(pv.y); a.f_nv_pivot_z = nf(pv.z); nv_off += pv; }\n")}
         fmt.sbprintf(&w,"    particle.position = nv_place(ctx, %s + nv_off, NV_LOCAL);\n",placed)
     }
     if has_field(&t,"Lifetime") {strings.write_string(&w,"    particle.lifetime = max(fv(a.f_Lifetime), 1e-4);\n")}
@@ -1361,6 +1399,7 @@ cooked_vfx_program :: proc(name:string,system,emitter,renderer:json.Object,alloc
     strings.write_string(&w,"    float3 nv_birth_pos = particle.position; bool nv_channel_birth = (ctx.birth == 0xFFFFFFFFu);\n")
     // The slot may keep what a particle before left: nothing of it is offset yet.
     if pivot_kept {strings.write_string(&w,"    a.f_nv_pivot_x = 0u; a.f_nv_pivot_y = 0u; a.f_nv_pivot_z = 0u;\n")}
+    if camera_kept||sprite_held {strings.write_string(&w,"    a.f_nv_view_x = 0u; a.f_nv_view_y = 0u; a.f_nv_view_z = 0u;\n")}
     if anchored {
         strings.write_string(&w,"    a.f_nv_anchor_on = 0u;\n")
         strings.write_string(&w,"    if (nv_channel_birth) { float3 nv_at = nv_place_back(ctx, nv_birth_pos, NV_LOCAL); a.f_nv_anchor_x = nf(nv_at.x); a.f_nv_anchor_y = nf(nv_at.y); a.f_nv_anchor_z = nf(nv_at.z); a.f_nv_anchor_on = 1u; }\n")
@@ -1464,6 +1503,7 @@ cooked_vfx_program :: proc(name:string,system,emitter,renderer:json.Object,alloc
     strings.write_string(&w,"}\n")
     for unseen in ([]string{"CameraOffset","SpriteFacing","SpriteAlignment","PivotOffset"}) {
         if unseen=="PivotOffset"&&kind=="mesh" {continue}
+        if unseen=="CameraOffset"&&camera_kept {continue}
         if has_field(&t,unseen)||has_field(&t,fmt.tprintf("%s.x",unseen)) {note(&t.limits,fmt.tprintf("%s of each particle",unseen))}
     }
 
