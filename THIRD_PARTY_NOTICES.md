@@ -36,11 +36,3 @@ NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPO
 NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES
 OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-
-## ACES
-
-- Project: <https://github.com/ampas/aces-dev>
-- License: the A.M.P.A.S. license of the project, text in its `LICENSE.md`
-- Copyright (c) Academy of Motion Picture Arts and Sciences
-- Where: `editor/scene/display.odin`, the glow and red modifier of the ACES 1 reference
-  rendering transform (saturation, yc, sigmoid shaper and hue weighting), reimplemented in Odin.
